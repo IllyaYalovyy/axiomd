@@ -1,6 +1,11 @@
 //! axiomd — a fast, beautiful Markdown viewer for modern GNOME.
 
+mod document;
+mod scheme;
 mod shell;
+#[cfg(test)]
+mod testing;
+mod window;
 
 use std::process::ExitCode;
 

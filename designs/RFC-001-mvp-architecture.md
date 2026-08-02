@@ -383,7 +383,7 @@ Mirrors the GitHub issues; order is the ktask queue order.
   *(Step 1)*
 - [ ] **Step 3** — Render pipeline: HTML + anchors + syntect + ammonia +
   default stylesheet *(Step 2)*
-- [ ] **Step 4** — App shell: window, open paths, webview, custom scheme,
+- [x] **Step 4** — App shell: window, open paths, webview, custom scheme,
   MIME registration *(Step 3)*
 - [ ] **Step 4b** — e2e harness: headless app driving, DOM assertions,
   screenshot goldens with human-only pinning *(Step 4)*
