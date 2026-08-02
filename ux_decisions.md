@@ -51,9 +51,38 @@ affordance per document — never a modal, never a setting hunt.
 
 ## Why is there one document per window?
 
-Matches GNOME app conventions and keeps per-window resource accounting
-honest (Apostrophe leaked shared class-attribute state across windows).
-Tabs are a possible post-MVP decision, not an MVP gap.
+Owner ruling (2026-08-02): windows, not tabs. Matches GNOME app
+conventions and keeps per-window resource accounting honest (Apostrophe
+leaked shared class-attribute state across windows). Tabs are not planned.
+
+## What happens on a bare launch, and how are files opened?
+
+Launching axiomd with no file (owner ruling 2026-08-02) opens a NEW
+UNTITLED document in edit mode — same as Ctrl+N; the first Ctrl+S runs
+Save As. Opening an existing file always starts in READ mode. axiomd
+handles Markdown files only (`.md`/`.markdown`); it does not register for
+or open other formats.
+
+## Why read/edit toggle instead of a split view?
+
+Owner ruling (2026-08-02): two modes initially — read and edit (Ctrl+E) —
+no split view with scroll sync in MVP. The architecture keeps the door
+open (view container and document model must not assume a single visible
+surface), but no split implementation ships until decided. Switching modes
+preserves the reading/editing position in both directions via the
+span/anchor map.
+
+## Is YAML frontmatter rendered?
+
+No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as
+metadata (used for things like the export title) and hidden from the
+rendered view.
+
+## Is there a vault?
+
+No (owner ruling 2026-08-02): the document's folder is the root. Wikilinks
+resolve within the document's directory tree; there is no vault detection
+and no vault configuration.
 
 ## Why does the theme follow the system by default?
 

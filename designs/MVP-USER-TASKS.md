@@ -189,26 +189,63 @@ layout reflows; `Ctrl+0` restores 100 %.
 
 **Regression coverage:** integration test on zoom action and persistence.
 
-## UT-012: Edit a document with live preview
+## UT-012: Edit a document
 
-**Precondition:** A document is open in read mode.
+**Precondition:** A document is open in read mode, scrolled mid-document.
 
 **Flow:**
 
-1. User presses `Ctrl+E` (or the mode switcher) to enter split mode.
-2. User types in the editor pane.
-3. User presses `Ctrl+S`.
+1. User presses `Ctrl+E` — edit mode opens with the caret at the source
+   line of what was visible.
+2. User types; autosave (default on) persists after the configured delay.
+3. User presses `Ctrl+E` again — read mode shows the updated render at
+   the same position.
 
-**Outcome:** Keystrokes echo instantly regardless of document size; the
-preview patches incrementally within the debounce window; the saved file
-matches the buffer exactly (atomic write); scroll stays synced between
-panes in both directions.
+**Outcome:** Keystrokes echo instantly regardless of document size;
+position survives both switches; the file on disk matches the buffer
+after autosave (atomic write) without pressing Ctrl+S.
 
 **Interactions:** 3
 
-**Regression coverage:** e2e: edit → preview DOM equals full re-render;
-doc-model atomic-save and external-change-matrix tests; perf harness
-keystroke-echo budget.
+**Regression coverage:** e2e: mode-switch position both directions; edited
+DOM equals full re-render; autosave clock-controlled tests; doc-model
+atomic-save and external-change-matrix tests; perf harness keystroke-echo
+budget.
+
+## UT-015: Create a new document
+
+**Precondition:** None (or any window open).
+
+**Flow:**
+
+1. User launches axiomd with no file (or presses `Ctrl+N`).
+2. User types into the untitled document (opens directly in edit mode).
+3. User presses `Ctrl+S` and picks a location (Save As).
+
+**Outcome:** A new `.md` file exists with the typed content; the window
+title updates; autosave takes over from there.
+
+**Interactions:** 3
+
+**Regression coverage:** e2e: bare launch → edit-mode untitled window;
+save-as flow; unsaved-untitled close shows the (sanctioned) dialog.
+
+## UT-016: Toggle a task checkbox while reading
+
+**Precondition:** A document with task-list items is open in read mode.
+
+**Flow:**
+
+1. User clicks a checkbox in the rendered view.
+
+**Outcome:** The checkbox flips visually; the source file gains/loses the
+`[x]` at exactly that item (via the document model + autosave); undo in
+edit mode reverts it.
+
+**Interactions:** 1
+
+**Regression coverage:** e2e: click → source span updated → re-render
+consistent; identical-twin items toggle only the clicked one.
 
 ## UT-013: Print a document
 

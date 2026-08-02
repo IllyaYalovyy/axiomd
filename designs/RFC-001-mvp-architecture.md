@@ -243,15 +243,31 @@ GtkSourceView's buffer in the app layer. Modal dialogs are reserved for
 explicit user-initiated actions (Save As, preferences,
 close-with-unsaved) per `ux_decisions.md`.
 
-### Editor and layout modes (`axiomd-app`)
+### Editor and modes (`axiomd-app`)
 
-GtkSourceView 5 editor pane with the Markdown language definition and
-Adwaita scheme. Three window modes: read (default when opening), split
-(editor + preview, scroll-synced through the span/anchor map in both
-directions), source-only. Typing latency is independent of preview cost:
-keystrokes hit the buffer synchronously; parse+render runs debounced
-(150 ms) on the worker with cancellation; the preview patches
-incrementally. Editor keystroke-to-echo must never wait on rendering.
+GtkSourceView 5 editor pane with the Markdown language definition, Adwaita
+scheme, and optional edit-mode-only spellcheck (libspelling, preferences
+toggle). Two window modes (owner ruling 2026-08-02): **read** (default
+when opening a file) and **edit**, toggled with Ctrl+E. No split view in
+MVP — but the view container and document model must not assume a single
+visible surface, so split + scroll sync can be added later without
+rework. Mode switches preserve position in both directions through the
+span/anchor map (read→edit: caret at the source line of the topmost
+visible anchor; edit→read: scroll to the anchor nearest the caret).
+Bare launch and Ctrl+N open a new untitled document in edit mode.
+Typing latency is independent of render cost: keystrokes hit the buffer
+synchronously; parse+render runs debounced (150 ms) on the worker with
+cancellation, keeping the read view current so switching back is instant.
+
+### Preferences (`axiomd-app`)
+
+Owner ruling (2026-08-02): all features are configurable in preferences.
+A gschema-backed settings module (deep, typed, no scattered key strings)
+plus `AdwPreferencesDialog`: theme override, reading width (on/off +
+width), autosave (on/off, default ON + delay), spellcheck toggle, plugin
+toggles, default engine (per-document override lives in the view menu).
+Every setting applies live; every feature task lands its own preferences
+row as an exit criterion.
 
 ### Print and export (`axiomd-app` + `axiomd-render`)
 
@@ -333,24 +349,29 @@ thereafter it is a regression test like any other.
 
 ## MVP Scope
 
-In scope (mirrors `designs/MVP-USER-TASKS.md` UT-001…UT-011 plus the
-2026-08-02 owner expansion): open from file manager/CLI/dialog;
-best-in-class core render (CommonMark/GFM with first-class tables and
-images); **editing** (source editor, read/split/source modes, save,
-bidirectional scroll sync, instant typing latency); **print** and
-**export to PDF/HTML**; plugin layer with mermaid and math as the first
-built-in optional plugins; two engines behind the boundary with runtime
-selection and a measured comparison; live reload with position
-preservation; outline sidebar; in-document search; link handling; remote
-images as one-click-load placeholders; live theming; zoom; multi-window;
-perf budgets; a local flatpak build (flathub polish explicitly
-deprioritized).
+In scope (mirrors `designs/MVP-USER-TASKS.md` plus the 2026-08-02 owner
+rulings): open from file manager/CLI/dialog; best-in-class core render
+(CommonMark/GFM with first-class tables and images); **editing** (read/
+edit modes with position-preserving switch, new-untitled on bare launch
+and Ctrl+N, atomic save, configurable autosave default-ON, optional
+edit-mode spellcheck, instant typing latency); **interactive task-list
+checkboxes** (click in read mode updates the source); **print** and
+**export to PDF/HTML**; **preferences dialog** (every feature knob,
+applied live); plugin layer with mermaid and math as the first built-in
+optional plugins; two engines with app-default + per-document selection
+and a measured comparison; live reload with position preservation;
+outline sidebar; search in both modes; link handling; remote images as
+one-click-load placeholders; live theming; zoom; configurable reading
+width; multi-window; perf budgets; a local flatpak build (flathub polish
+explicitly deprioritized).
 
-Out of scope for MVP: recents UI, tabs, checkbox toggling, footnote
-hover-popovers, formatting toolbars/WYSIWYG, native-widget renderer
-(out of scope entirely, not just for MVP), settings dialog beyond theme
-override and plugin toggles, third-party plugin loading (the API ships,
-built-ins prove it; external distribution is post-MVP).
+Out of scope for MVP: recents UI, tabs (windows only — owner ruling),
+split view with scroll sync (door kept open architecturally), frontmatter
+rendering (parsed as metadata, hidden), footnote hover-popovers,
+formatting toolbars/WYSIWYG, vim-style keybindings, native-widget
+renderer (out of scope entirely, not just for MVP), third-party plugin
+loading (the API ships, built-ins prove it; external distribution is
+post-MVP).
 
 ## Development Plan
 
@@ -387,6 +408,8 @@ Mirrors the GitHub issues; order is the ktask queue order.
   read/split/source modes, save, bidirectional scroll sync, typing-latency
   budget *(Steps 4b, 5)*
 - [ ] **Step 19** — Print + export to PDF/HTML *(Step 4)*
+- [ ] **Step 20** — Preferences dialog + settings infrastructure; later
+  feature tasks land their own rows *(Step 4)*
 
 ---
 

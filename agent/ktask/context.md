@@ -21,9 +21,10 @@ creates a new invariant, add it here with the issue number.
    non-trivial documents happen off the main loop and are cancellable; UI
    state is touched only from the main thread. No synchronous I/O in
    signal handlers.
-5. **Live-reload preserves the reading position.** Any change to parsing,
-   rendering, or file monitoring must keep UT-004 true: re-render without
-   flash, scroll anchored to the same content.
+5. **Position is always preserved.** Live reload (UT-004), theme/width
+   changes, per-document engine switches, AND read↔edit mode switches all
+   keep the user's place — mapped through the span/anchor machinery, never
+   proportional scroll. Losing the user's position is a defect.
 6. **Zero implicit network.** Nothing fetches remote content on render —
    bundled assets only, test-enforced. The only permitted network use is
    an explicit one-click user action (e.g. a remote-image placeholder's
@@ -56,6 +57,10 @@ creates a new invariant, add it here with the issue number.
    nothing (no assets, no scans); a failing plugin degrades to the source
    block with an inline badge and never breaks the document, other
    plugins, or the app.
+14. **Every behavior knob lives in preferences (#20) and applies live.**
+   A feature with configurable behavior ships its preferences row in the
+   same task, with an exit criterion; settings changes never require a
+   restart or document reload.
 
 ## Non-negotiable expectations (learned from prior rejected work)
 
