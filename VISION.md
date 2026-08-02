@@ -13,11 +13,14 @@ renders perfectly, and stays fast with many windows and huge documents.
 
 ## Solution
 
-axiomd is a native Markdown **viewer** for modern GNOME, written in Rust.
-It opens `.md` files instantly, renders them at Obsidian-grade fidelity, and
-stays responsive no matter how many windows are open or how large the file
-is. It is a reader first: the fastest, most faithful way to *look at*
-Markdown on a GNOME desktop.
+axiomd is a native Markdown application for modern GNOME, written in Rust.
+It opens `.md` files instantly, renders them with best-in-class fidelity,
+and stays responsive no matter how many windows are open or how large the
+file is. Reading is the soul of the app — but editing, print, and export
+(PDF/HTML) are built in from day one: a Markdown app without them is
+pointless for daily work. Rendering capabilities (diagrams, math, and
+whatever comes next) are optional plugins on a well-architected extension
+layer.
 
 ## Core principles
 
@@ -32,28 +35,39 @@ Markdown on a GNOME desktop.
    time, reload latency, memory per window) are stated numbers enforced by
    tests, not aspirations.
 3. **A pluggable rendering pipeline.** The parser sits behind an engine
-   boundary: document in, typed AST with source spans out. Engines and
-   flavors can be added or swapped without touching the view layer. No
-   engine-specific type leaks past the boundary.
+   boundary: document in, typed events with source spans out. Multiple
+   engines are selectable — the default is chosen by measured conformance
+   and performance, not by assumption — and no engine-specific type leaks
+   past the boundary. On top of it, a plugin layer adds rendering
+   capabilities (diagrams, math, UML, …) as optional, independently
+   toggleable modules. Tables and images are core, never plugins.
 4. **Native modern GNOME.** GTK4 + libadwaita, HIG-compliant, adaptive,
    dark/light/high-contrast aware. It should look like it shipped with the
    desktop.
-5. **Viewer first.** axiomd is not an editor. Reading-centric affordances
-   (navigation, outline, search, zoom, printing) always win over authoring
-   features.
-6. **Local-first, zero network.** All assets (math fonts, styles,
-   highlighters) are bundled. The flatpak requests no network access. A
-   document never causes a network fetch without an explicit user action.
-7. **TDD.** Behavior lands with tests demonstrated red first. The
+5. **Reading first, editing built in.** The reading experience leads UX
+   decisions, but the document model is editable from day one — an
+   afterthought editor is unfixable later. Print and export are core
+   workflows, not extras.
+6. **Best effort, never a modal.** Every document renders as well as it
+   can, immediately. The app never interrupts with blocking questions
+   (Apostrophe's security dialog is the anti-pattern). Degraded content
+   gets an inline, one-click affordance instead.
+7. **Local-first, zero implicit network.** All assets (fonts, styles,
+   highlighters, diagram renderers) are bundled. A document never causes a
+   network fetch without an explicit one-click user action.
+8. **TDD.** Behavior lands with tests demonstrated red first. The
    rendering pipeline is golden-tested against spec fixtures; regressions
    are caught by the gate, not by users.
+9. **Deep modules, simple APIs.** Every module hides significant
+   functionality behind a small interface. Shallow modules with wide
+   interfaces are design defects. Each change leaves interfaces no wider
+   than it found them; code quality and clarity improve continuously.
 
 ## What axiomd is NOT
 
-- Not an editor (no editing surface in v1; "open in editor" delegates out).
 - Not a note manager — no vault, no database, no sync. Files are files.
-- Not an export studio — pandoc-style multi-format export is out of scope
-  for MVP.
+- Not a universal converter — export means print-quality PDF and HTML,
+  not pandoc's 19 formats.
 - Not a browser — remote content is never loaded implicitly.
 
 ## Target users
@@ -71,3 +85,6 @@ Markdown on a GNOME desktop.
 - Ten windows open: no cross-window slowdown, bounded memory per window.
 - CommonMark spec conformance suite passes; GFM extension suites pass.
 - An Obsidian user opens their notes and sees the same document.
+- Editing a document keeps typing latency instant while the preview
+  updates incrementally; print and PDF/HTML export reproduce the rendered
+  document faithfully.

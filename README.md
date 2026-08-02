@@ -2,11 +2,12 @@
 
 A fast, beautiful Markdown viewer for modern GNOME, written in Rust.
 
-axiomd opens `.md` files instantly, renders them at Obsidian-grade fidelity
-(CommonMark + GFM + math + callouts + wikilinks + mermaid), and stays
-responsive with many windows and huge documents. It is a **viewer**: the
-fastest, most faithful way to read Markdown on a GNOME desktop. See
-`VISION.md` for the full product vision and
+axiomd opens `.md` files instantly, renders them with best-in-class
+fidelity (CommonMark + GFM core with first-class tables and images;
+diagrams, math, callouts, wikilinks via optional plugins), and stays
+responsive with many windows and huge documents. Reading is the soul of
+the app; editing, print, and PDF/HTML export are built in from day one.
+See `VISION.md` for the full product vision and
 `designs/RFC-001-mvp-architecture.md` for the architecture.
 
 Status: pre-MVP. The development plan lives in RFC-001; work items are
@@ -14,11 +15,13 @@ GitHub issues mirrored into the local ktask queue.
 
 ## Stack
 
-- Rust, cargo workspace: `axiomd-engine` (parser behind a sealed engine
-  boundary; comrak first), `axiomd-render` (events → sanitized HTML with
-  source anchors, MathML math, syntect highlighting), `axiomd-app`
-  (gtk4-rs + libadwaita + WebKitGTK 6).
-- No external converters, no network access, all assets bundled.
+- Rust, cargo workspace: `axiomd-engine` (selectable parsers behind a
+  sealed engine boundary; comrak and pulldown-cmark), `axiomd-render`
+  (events → sanitized HTML with source anchors, syntect highlighting, and
+  the plugin layer), `axiomd-doc` (editable document model),
+  `axiomd-app` (gtk4-rs + libadwaita + WebKitGTK 6 + GtkSourceView).
+- No external converters; zero implicit network (all assets bundled; the
+  only network use is an explicit one-click remote-image load).
 
 Build prerequisites (Fedora): `gtk4-devel`, `libadwaita-devel`,
 `webkitgtk6.0-devel`.

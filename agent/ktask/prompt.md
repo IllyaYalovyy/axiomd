@@ -89,10 +89,23 @@ for the human operator only; agents must never set them.
 wait for, inspect, or depend on remote CI status; do not create workflow
 files or CI configuration. If a task seems to need CI, STOP and flag it.
 
+## Code structure — deep modules with simple APIs (enforced)
+
+Owner mandate, no drift allowed: every module hides significant
+functionality behind a small interface. Shallow modules, pass-through
+layers, and wide/leaky interfaces are design defects that fail review —
+load the `deep-modules` skill BEFORE designing any interface or adding any
+public item. Every task report must state whether the public API surface
+of touched crates grew, held, or shrank, and justify any growth. Each
+commit leaves the codebase structurally tighter than it found it:
+opportunistic deepening inside your change's blast radius is part of the
+task; findings outside it go in the report.
+
 ## Skills
 
 Load each skill from `.claude/skills/` at the step where it applies:
 
+- `deep-modules` — before designing any interface or adding a public item.
 - `verify` — before claiming completion.
 - `test-quality` — before writing or changing ANY test.
 - `commit-review` — before every commit.

@@ -28,16 +28,25 @@ the MVP scope and the ordered development plan the GitHub issues mirror.
 - **G3** — Swappable engines: the view layer never sees parser types;
   a second engine can be added without touching rendering or UI.
 - **G4** — Native modern GNOME: GTK4 + libadwaita, HIG-compliant, adaptive,
-  themed live, flatpak-packaged with no network permission.
+  themed live, flatpak-packaged with zero implicit network (test-enforced;
+  the only network use is an explicit one-click image load).
+- **G5** — Complete daily-work loop: edit with instant typing latency and
+  incremental preview, print, and export to PDF/HTML — built on the same
+  pipeline, from day one.
+- **G6** — Extensible by design: a plugin layer for optional rendering
+  capabilities (diagrams, math, …) and selectable engines behind the
+  boundary; deep modules with simple APIs throughout.
 
 ## Non-Goals
 
-- **NG1** — Editing. axiomd renders; it does not modify documents (the one
-  exception, checkbox toggling, is post-MVP and gated on its own decision).
-- **NG2** — Multi-format export (pandoc territory). Print/PDF is post-MVP.
-- **NG3** — Vault/notebook management, indexing, or sync.
-- **NG4** — A second engine in MVP. The boundary ships; only comrak ships
-  behind it.
+- **NG1** — Vault/notebook management, indexing, or sync.
+- **NG2** — Universal conversion (pandoc's 19 formats). Export means
+  print-quality PDF and standalone HTML.
+- **NG3** — A native (non-webview) renderer. Out of scope by owner
+  decision (2026-08-02); scalability effort goes into the webview path.
+- **NG4** — Rich authoring chrome (formatting toolbars, table editors,
+  WYSIWYG). MVP editing is a first-class source editor with live preview;
+  authoring conveniences come later on the day-one document model.
 
 ## Background and Motivation
 
@@ -78,7 +87,7 @@ Research findings (August 2026) that shape the choices below:
 |---|---|
 | End users | `xdg-open README.md` gives an instant, beautiful, Obsidian-faithful render; no hangs with many windows. |
 | Contributors | Clear crate boundaries; golden-test-driven rendering work; standard GNOME stack. |
-| Operators / packagers | Flatpak on org.gnome.Platform, no network permission, no bundled pandoc (~150 MB saved vs Apostrophe). |
+| Operators / packagers | Flatpak on org.gnome.Platform, zero implicit network, no bundled pandoc (~150 MB saved vs Apostrophe). |
 
 ## Considered Options
 
@@ -116,16 +125,17 @@ and `design_decisions.md` forbids it.
 
 ## Decision
 
-**Chosen option: Option A for v1, with Option B as the stated long-term
-direction** — pending human ratification of **D1** below. The engine
-boundary and the Rust-side pre-rendering pipeline are renderer-agnostic by
-construction: everything up to and including sanitized HTML with source
-anchors survives a later migration to native widgets block-by-block.
+**Chosen option: Option A — ratified by the owner 2026-08-02 (D1), with
+the amendment that a native renderer is OUT of scope entirely (NG3).**
+Scalability and responsiveness inside the webview are first-class
+requirements: even a large, complex document must never hang the app —
+incremental DOM patching, lazy/virtualized rendering of heavy content, and
+cancellable background work are the mechanisms, and the perf budgets are
+the enforcement.
 
 Rationale: rendering perfection is the product's critical goal and Option A
 reaches it fastest at zero packaging cost; the main cost (web-process
-memory) does not threaten the responsiveness budgets, and the pipeline is
-built so the expensive part is reusable when native rendering matures.
+memory) does not threaten the responsiveness budgets.
 
 ## Design
 
@@ -134,12 +144,18 @@ built so the expensive part is reusable when native rendering matures.
 ```
 axiomd/
 ├── crates/
-│   ├── axiomd-engine/     # engine boundary + comrak engine
-│   ├── axiomd-render/     # AST/events → sanitized HTML with anchors
+│   ├── axiomd-engine/     # engine boundary + engines (comrak first)
+│   ├── axiomd-render/     # events → sanitized HTML with anchors + plugin layer
+│   ├── axiomd-doc/        # editable document model (buffer = source of truth)
 │   └── axiomd-app/        # gtk4 + libadwaita + webkit6 application
 ├── data/                  # desktop file, icons, gschema, blueprints, CSS
 └── build-aux/flatpak/     # manifest
 ```
+
+Module design rule (owner mandate, 2026-08-02): **deep modules with simple
+APIs**. Each crate hides significant machinery behind a small surface;
+shallow pass-through modules and wide interfaces are design defects that
+reviews reject. Interfaces only get narrower over time.
 
 ### Engine boundary (`axiomd-engine`)
 
@@ -163,6 +179,13 @@ language, math, callout kind, wikilink target, footnote ref/def, table
 cells with alignment). No comrak type appears in any public signature —
 enforced by the crate's public API surface and reviewed at the boundary.
 
+Selectable engines are a MUST (owner ruling on D2, 2026-08-02): the
+boundary is proven by at least two real engines (comrak first,
+pulldown-cmark second) plus an engine registry the app selects from at
+runtime. The default engine is an open question settled by measurement —
+conformance suites and the perf harness run against every registered
+engine, and the comparison report goes to the owner for the ruling.
+
 ### Rendering pipeline (`axiomd-render`)
 
 `events → HTML string + anchor map`, all in Rust, all off the main thread:
@@ -181,6 +204,62 @@ enforced by the crate's public API surface and reviewed at the boundary.
    local scheme).
 
 The pipeline is pure (no I/O, no GTK): golden-testable byte-for-byte.
+
+### Plugin layer (`axiomd-render`)
+
+Optional rendering capabilities are plugins with a small, versioned API —
+owner mandate (2026-08-02). A plugin can register:
+
+- **fence handlers** — claim a code-fence language (```mermaid, ```plantuml)
+  and produce HTML or defer to in-view rendering;
+- **event transforms** — rewrite typed event streams (callout detection,
+  wikilink resolution live here for flavor profiles);
+- **post-render hooks** — decorate the HTML/anchor map;
+- **assets** — CSS/JS/fonts served via `axiomd://`, injected only when the
+  plugin is active AND the document needs it.
+
+Plugins are independently toggleable at runtime, off-cost-free when unused,
+and sandboxed by the same CSP/no-network rules as everything else. Core
+rendering — CommonMark/GFM including tables and images — is never a
+plugin. Math and mermaid ship as the first two built-in plugins, proving
+the API from both the pure-Rust side (MathML) and the asset-injection side
+(mermaid). Failure of a plugin degrades to the source block with an inline
+badge — never an error dialog, never a broken document.
+
+### Document model (`axiomd-doc`)
+
+Editing is built in from day one (owner decision, 2026-08-02): while a
+window owns a file, the **buffer is the source of truth** — rendering,
+outline, search, and export all consume the buffer, not the file. The
+model provides: load/save/save-as with atomic writes, dirty state,
+external-change reconciliation (the file monitor feeds the model; an
+unmodified buffer follows the file silently, a modified buffer surfaces an
+inline banner — never a modal), and change notifications that drive the
+same debounced incremental render path as live reload. Undo/redo rides
+GtkSourceView's buffer in the app layer.
+
+### Editor and layout modes (`axiomd-app`)
+
+GtkSourceView 5 editor pane with the Markdown language definition and
+Adwaita scheme. Three window modes: read (default when opening), split
+(editor + preview, scroll-synced through the span/anchor map in both
+directions), source-only. Typing latency is independent of preview cost:
+keystrokes hit the buffer synchronously; parse+render runs debounced
+(150 ms) on the worker with cancellation; the preview patches
+incrementally. Editor keystroke-to-echo must never wait on rendering.
+
+### Print and export (`axiomd-app` + `axiomd-render`)
+
+- **Print**: WebKit's print operation over the rendered document, with a
+  dedicated print stylesheet (page margins, break rules for headings/code
+  blocks/tables, no app chrome). GTK print dialog; print preview is the
+  document itself.
+- **Export to PDF**: the same print machinery driven headlessly to a file
+  destination — one code path for print and PDF ensures they never drift.
+- **Export to HTML**: the render pipeline emits a standalone document
+  (inlined styles, embedded images as data URIs or a sibling assets
+  folder — user choice in the save dialog, not a modal).
+- No converter subprocesses, per `design_decisions.md`.
 
 ### App shell (`axiomd-app`)
 
@@ -224,6 +303,13 @@ the same interface when the 10 MB budget test demands it.
 | Budgets (startup, 10 MB scroll, N windows) | perf harness | `tests/perf/` with generated fixtures, asserted numbers |
 | User flows (UT-001…011) | e2e harness (headless app, DOM assertions) | `axiomd-e2e` suite |
 | Visual regressions | screenshot goldens (human-pinned once, diffed forever) | `tests/goldens/` |
+| Typing latency vs preview cost | perf harness (keystroke echo budget while a heavy doc renders) | `tests/perf/` |
+| Edit → preview correctness | e2e (buffer change → patched DOM matches full re-render) | `axiomd-e2e` |
+| Data loss on save | doc-model tests (atomic write, external-change reconciliation) | `axiomd-doc` tests |
+| Print/PDF fidelity | export golden (PDF text+structure extraction vs fixture; page-break rules) | export tests |
+| Standalone HTML export | golden (self-contained, renders offline) | export tests |
+| Plugin isolation | render tests (plugin off = zero cost/assets; plugin failure = inline badge, doc intact) | plugin tests |
+| Engine parity | conformance+perf matrix across registered engines | engine comparison harness |
 
 Testability is a MUST (docs/TESTING.md): no automated test → not done;
 untestable behavior escalates to the human. Subjective beauty of the default
@@ -242,16 +328,24 @@ thereafter it is a regression test like any other.
 
 ## MVP Scope
 
-In scope (mirrors `designs/MVP-USER-TASKS.md` UT-001…UT-011): open from
-file manager/CLI/dialog, Obsidian-grade render (GFM + math + callouts +
-wikilinks + footnotes + mermaid), live reload with position preservation,
-outline sidebar, in-document search, link handling (relative .md in-app,
-anchors, external to browser on click), local images, live theming,
-zoom, multi-window, perf budgets, flatpak.
+In scope (mirrors `designs/MVP-USER-TASKS.md` UT-001…UT-011 plus the
+2026-08-02 owner expansion): open from file manager/CLI/dialog;
+best-in-class core render (CommonMark/GFM with first-class tables and
+images); **editing** (source editor, read/split/source modes, save,
+bidirectional scroll sync, instant typing latency); **print** and
+**export to PDF/HTML**; plugin layer with mermaid and math as the first
+built-in optional plugins; two engines behind the boundary with runtime
+selection and a measured comparison; live reload with position
+preservation; outline sidebar; in-document search; link handling; remote
+images as one-click-load placeholders; live theming; zoom; multi-window;
+perf budgets; a local flatpak build (flathub polish explicitly
+deprioritized).
 
-Out of scope for MVP: editing of any kind, export/print, recents UI,
-tabs, checkbox toggling, footnote hover-popovers, a second engine,
-native-widget renderer, settings dialog beyond theme override.
+Out of scope for MVP: recents UI, tabs, checkbox toggling, footnote
+hover-popovers, formatting toolbars/WYSIWYG, native-widget renderer
+(out of scope entirely, not just for MVP), settings dialog beyond theme
+override and plugin toggles, third-party plugin loading (the API ships,
+built-ins prove it; external distribution is post-MVP).
 
 ## Development Plan
 
@@ -277,29 +371,44 @@ Mirrors the GitHub issues; order is the ktask queue order.
 - [ ] **Step 11** — Math: LaTeX→MathML + bundled font *(Step 3)*
 - [ ] **Step 12** — Obsidian extensions: callouts, wikilinks, footnotes,
   task lists *(Step 3)*
-- [ ] **Step 13** — Mermaid (bundled, lazy, offline) *(Step 4)*
-- [ ] **Step 14** — Flatpak packaging *(Step 4)*
+- [ ] **Step 13** — Mermaid as the first asset-injection plugin *(Steps 4,
+  16)*
+- [ ] **Step 14** — Flatpak packaging, local build only *(Step 4)*
+- [ ] **Step 16** — Plugin layer: fence handlers, event transforms,
+  post-render hooks, conditional assets, runtime toggles *(Step 3)*
+- [ ] **Step 17** — Second engine (pulldown-cmark) + engine registry/
+  selection + measured comparison report for the default ruling *(Step 2)*
+- [ ] **Step 18** — Document model + editor: buffer as source of truth,
+  read/split/source modes, save, bidirectional scroll sync, typing-latency
+  budget *(Steps 4b, 5)*
+- [ ] **Step 19** — Print + export to PDF/HTML *(Step 4)*
 
 ---
 
 ## Decisions to Ratify
 
-- [ ] **D1** — v1 renderer is a WebKitGTK 6 webview with Rust-side
-  pre-rendering; native widget tree is the long-term direction.
-  *(proposed: Option A now, migrate block-by-block later; alternative:
-  native-first à la Manuscript, accepting slower path to math/mermaid
-  fidelity and ~months more work, in exchange for a small memory
-  footprint)*
-- [ ] **D2** — Primary engine is comrak. *(proposed: comrak for its full
-  Obsidian extension surface + sourcepos; alternative: pulldown-cmark for
-  throughput, hand-rolling callouts/emoji/header-IDs)*
-- [ ] **D3** — Obsidian flavor is the default rendering profile (math,
-  callouts, wikilinks on by default). *(proposed: yes — matches the
-  product promise; alternative: strict GFM default with a per-file or
-  per-app flavor switch)*
-- [ ] **D4** — Remote images render as placeholders with per-document
-  opt-in. *(proposed: placeholder + explicit action; alternative: global
-  setting, or always-block)*
+- [x] **D1** — RATIFIED by owner 2026-08-02: renderer is a WebKitGTK 6
+  webview with Rust-side pre-rendering. Amendment: native renderer is OUT
+  of scope entirely; scalability/responsiveness inside the webview is a
+  hard requirement — a large, complex document must never hang the app.
+- [x] **D2** — RULED by owner 2026-08-02: no engine is anointed by
+  assumption. Selectable engines behind the abstraction are a MUST; at
+  least comrak and pulldown-cmark ship behind the boundary, the candidates
+  are tested (conformance + perf comparison), and the DEFAULT remains an
+  open decision (**D5**) taken on that evidence.
+- [x] **D3** — RULED by owner 2026-08-02: Obsidian is a fidelity
+  benchmark, not the profile definition. Tables and images are first-class
+  core priorities; diagrams matter more than math to the owner; neither is
+  a blocker. Capabilities beyond core (math, UML/diagrams, …) are OPTIONAL
+  plugins on a well-architected plugin API.
+- [x] **D4** — RATIFIED by owner 2026-08-02 with refinement: always render
+  best-effort; NO modal questions ever (Apostrophe's dialog is the named
+  anti-pattern). Remote images: placeholder by default, and the
+  placeholder is a one-click load button (plus an inline per-document
+  "load all").
+- [ ] **D5** — Default engine, ruled AFTER Step 17's measured comparison
+  report. *(candidates: comrak, pulldown-cmark; criteria: conformance
+  pass rates, extension coverage, parse throughput, span quality)*
 
 ## Open Questions
 

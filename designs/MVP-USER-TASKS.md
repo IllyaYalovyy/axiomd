@@ -188,3 +188,59 @@ layout reflows; `Ctrl+0` restores 100 %.
 **Interactions:** 1
 
 **Regression coverage:** integration test on zoom action and persistence.
+
+## UT-012: Edit a document with live preview
+
+**Precondition:** A document is open in read mode.
+
+**Flow:**
+
+1. User presses `Ctrl+E` (or the mode switcher) to enter split mode.
+2. User types in the editor pane.
+3. User presses `Ctrl+S`.
+
+**Outcome:** Keystrokes echo instantly regardless of document size; the
+preview patches incrementally within the debounce window; the saved file
+matches the buffer exactly (atomic write); scroll stays synced between
+panes in both directions.
+
+**Interactions:** 3
+
+**Regression coverage:** e2e: edit → preview DOM equals full re-render;
+doc-model atomic-save and external-change-matrix tests; perf harness
+keystroke-echo budget.
+
+## UT-013: Print a document
+
+**Precondition:** A rendered document is open.
+
+**Flow:**
+
+1. User presses `Ctrl+P`.
+2. User confirms in the print dialog.
+
+**Outcome:** Printed pages reproduce the rendered document with sane page
+breaks (no orphan headings), no app chrome, light palette.
+
+**Interactions:** 2
+
+**Regression coverage:** print/PDF single-path test + PDF structure
+extraction on the crafted break-rule fixture.
+
+## UT-014: Export to PDF or HTML
+
+**Precondition:** A rendered document (with active plugin content) is open.
+
+**Flow:**
+
+1. User presses `Ctrl+Shift+E`.
+2. User picks format and destination in the file dialog.
+
+**Outcome:** PDF matches print output byte-for-byte (same code path); HTML
+is fully self-contained and renders offline in a browser, including images
+and active-plugin output.
+
+**Interactions:** 2
+
+**Regression coverage:** export goldens; zero-external-refs check on HTML;
+pdftotext content-order assertions.

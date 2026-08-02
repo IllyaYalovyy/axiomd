@@ -24,8 +24,10 @@ creates a new invariant, add it here with the issue number.
 5. **Live-reload preserves the reading position.** Any change to parsing,
    rendering, or file monitoring must keep UT-004 true: re-render without
    flash, scroll anchored to the same content.
-6. **Zero implicit network.** Nothing fetches remote content on render.
-   Bundled assets only. If a feature seems to need a fetch, stop and flag.
+6. **Zero implicit network.** Nothing fetches remote content on render —
+   bundled assets only, test-enforced. The only permitted network use is
+   an explicit one-click user action (e.g. a remote-image placeholder's
+   load button). If a feature seems to need any other fetch, stop and flag.
 7. **Per-window isolation.** No shared mutable state between windows
    (Apostrophe leaked class-attribute state across windows). Closing a
    window frees its resources.
@@ -35,6 +37,22 @@ creates a new invariant, add it here with the issue number.
 9. **Theme changes restyle, never re-parse.** Light/dark/high-contrast
    switching swaps styling live; it must not re-run the parser or reload
    the document.
+10. **Deep modules, simple APIs — no drift.** Shallow/pass-through modules
+   and wide or leaky interfaces are defects (see the `deep-modules`
+   skill). Every report states whether touched crates' public API grew,
+   held, or shrank; growth needs justification. Each commit tightens.
+11. **The buffer is the source of truth while a window owns a file.**
+   Rendering, outline, search, and export consume the document model, not
+   the file. Any feature reading the file directly while a buffer exists
+   is a bug.
+12. **Never a modal.** Degraded or blocked content (remote image, failed
+   plugin, unrenderable block, external file change on a dirty buffer)
+   surfaces inline with a one-click affordance. A blocking dialog is a
+   design defect (ux_decisions.md).
+13. **Plugins are optional and isolated.** A disabled plugin costs
+   nothing (no assets, no scans); a failing plugin degrades to the source
+   block with an inline badge and never breaks the document, other
+   plugins, or the app.
 
 ## Non-negotiable expectations (learned from prior rejected work)
 

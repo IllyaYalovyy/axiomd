@@ -23,6 +23,8 @@ Focused rule sets live in `.claude/skills/` (installed from the tracked
 directory is missing). Load each at its step; they are the standard you are
 held to:
 
+- `deep-modules` — before designing any interface or adding any public
+  item: deep modules with simple APIs, enforced; each commit tightens.
 - `verify` — before claiming completion: gate usage and failure triage.
 - `test-quality` — before writing or changing ANY test: state assertions,
   mandatory red-check, forbidden fake-coverage patterns, anti-capitulation.

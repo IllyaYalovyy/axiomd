@@ -12,28 +12,57 @@ per change and reloading a full WebKit page with the result. axiomd parses
 in-process with a Rust parser behind the engine boundary. **No rendering
 path may ever shell out to an external converter.** This is set in stone.
 If a format seems to need one, that format is out of scope until decided
-otherwise by a human.
+otherwise by a human. Export follows the same rule: PDF comes from
+WebKit's own print machinery over the already-rendered document, HTML from
+the pipeline itself — never from a converter subprocess.
 
 ## Is axiomd an editor?
 
-No. Viewer first (VISION principle 5). No editing surface ships in v1.
-Feature requests that presuppose editing are recorded, not implemented.
+Yes — by owner decision (2026-08-02) editing is built in from day one,
+because retrofitting an editor onto a viewer-shaped document model is
+unfixable later. The document model is an editable buffer that is the
+source of truth while a window owns a file; rendering consumes the buffer,
+not the file. Reading still leads UX decisions (VISION principle 5).
+Print and PDF/HTML export are likewise core, not extras.
+
+## Is a native (non-webview) renderer planned?
+
+No. Out of scope by owner decision (2026-08-02). The renderer is a
+WebKitGTK 6 webview fed pre-rendered HTML; effort goes into making that
+scale (incremental patching, virtualization for huge documents), not into
+a parallel renderer.
 
 ## Why an engine boundary instead of committing to one parser?
 
-Rendering compatibility differs by tool ecosystem (CommonMark vs GFM vs
-Obsidian flavor). The view layer consumes a typed AST with source spans;
-which engine produced it is an implementation detail behind a trait. This
-keeps "perfect rendering" achievable per-flavor without rewrites and allows
-multiple engines to coexist. No engine type leaks past the boundary.
+Owner decision (2026-08-02): selectable engines are a MUST, and the
+default engine is an open question to be settled by measurement
+(conformance suites + performance comparison), not assumption. The view
+layer consumes typed events with source spans; which engine produced them
+is invisible past the boundary trait. comrak is merely the first engine
+implemented; at least one alternative (pulldown-cmark) must exist behind
+the same boundary before the default is ruled.
 
-## Why does the flatpak have no network permission?
+## Why a plugin layer on top of the engine boundary?
 
-Bundled assets only (VISION principle 6). Apostrophe needed
-`--share=network` because pandoc emitted a MathJax CDN script tag. axiomd
-bundles its math and highlighting assets. A document must never trigger a
-network fetch on render; external links open in the browser only on
-explicit user activation. Loosening the sandbox is a human-only decision.
+Owner decision (2026-08-02): rendering capabilities beyond the core —
+math, diagrams/UML, and future ones — are optional plugins with a
+well-architected API (event/render-stage hooks plus asset injection),
+independently toggleable. Core rendering (CommonMark/GFM including tables
+and images) is never a plugin. Priority order from the owner: tables and
+images first-class, diagrams before math, neither math nor diagrams a
+blocker for core quality.
+
+## What is the network policy?
+
+**Zero implicit network, enforced by tests — not zero capability.** All
+rendering assets (fonts, styles, highlighters, diagram renderers) are
+bundled; rendering a document performs zero network requests, ever
+(Apostrophe fetched MathJax from a CDN — the anti-pattern). The ONLY
+network use is an explicit one-click user action: loading a remote image
+via its placeholder button (D4 ruling, 2026-08-02) — so the flatpak may
+carry network permission, but any request outside a click handler is a
+bug with a failing test. External links open in the browser on explicit
+activation only.
 
 ## How is scroll sync / outline tracking mapped?
 
