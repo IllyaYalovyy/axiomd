@@ -48,10 +48,11 @@ layer.
    decisions, but the document model is editable from day one — an
    afterthought editor is unfixable later. Print and export are core
    workflows, not extras.
-6. **Best effort, never a modal.** Every document renders as well as it
-   can, immediately. The app never interrupts with blocking questions
-   (Apostrophe's security dialog is the anti-pattern). Degraded content
-   gets an inline, one-click affordance instead.
+6. **Best effort, no questions on open.** Every document renders as well
+   as it can, immediately — the open/view path is never interrupted by a
+   dialog (Apostrophe's security modal is the anti-pattern). Degraded
+   content gets an inline, one-click affordance. Modals are reserved for
+   explicit user-initiated actions (Save As, preferences, and the like).
 7. **Local-first, zero implicit network.** All assets (fonts, styles,
    highlighters, diagram renderers) are bundled. A document never causes a
    network fetch without an explicit one-click user action.

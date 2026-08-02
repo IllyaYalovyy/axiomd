@@ -232,11 +232,16 @@ Editing is built in from day one (owner decision, 2026-08-02): while a
 window owns a file, the **buffer is the source of truth** — rendering,
 outline, search, and export all consume the buffer, not the file. The
 model provides: load/save/save-as with atomic writes, dirty state,
-external-change reconciliation (the file monitor feeds the model; an
-unmodified buffer follows the file silently, a modified buffer surfaces an
-inline banner — never a modal), and change notifications that drive the
-same debounced incremental render path as live reload. Undo/redo rides
-GtkSourceView's buffer in the app layer.
+external-change reconciliation (the file monitor feeds the model; a clean
+buffer follows the file silently with the reading position preserved, a
+modified buffer surfaces an inline banner — never a blocking dialog on the
+view path), **optional autosave** (debounced after idle plus on focus
+loss; atomic writes; self-triggered monitor events ignored so autosave
+never loops the reload path), and change notifications that drive the same
+debounced incremental render path as live reload. Undo/redo rides
+GtkSourceView's buffer in the app layer. Modal dialogs are reserved for
+explicit user-initiated actions (Save As, preferences,
+close-with-unsaved) per `ux_decisions.md`.
 
 ### Editor and layout modes (`axiomd-app`)
 

@@ -10,14 +10,36 @@ direction.
 `xdg-open README.md` must produce a rendered document with no dialogs, no
 onboarding, no vault setup. The first-run experience is the document.
 
-## Why are there no modal questions, ever?
+## When is a modal dialog acceptable?
 
-Owner decision (2026-08-02): every document renders best-effort,
-immediately. The app never interrupts opening or rendering with a blocking
-dialog — Apostrophe's preview-security modal is the named anti-pattern.
-Anything degraded (unrenderable block, unloaded remote image, failed
-plugin) shows inline with a one-click affordance to resolve it. If a
-feature seems to need a modal question, the design is wrong.
+Owner ruling (2026-08-02, refined): the line is the **open/view path**.
+Opening a file renders best-effort, immediately — the app NEVER interrupts
+opening, rendering, or reading with a blocking question (Apostrophe's
+preview-security modal is the named anti-pattern). Anything degraded
+(unrenderable block, unloaded remote image, failed plugin) shows inline
+with a one-click affordance.
+
+Modal dialogs ARE acceptable for important, explicit, user-initiated
+actions: Save As, preferences, about, print, close-with-unsaved-changes,
+and similar. The test: did the user just ask for something that needs
+input or confirmation? Fine. Is the app volunteering a question while the
+user just wants to see or read a document? Design defect.
+
+## How are external file changes handled?
+
+Best effort, no questions (owner ruling 2026-08-02): if the buffer is
+clean, the app silently reloads the changed file and preserves the reading
+position whenever possible. Only a dirty buffer meeting an external change
+surfaces anything — an inline banner with one-click choices, never a
+blocking dialog. With autosave enabled, dirty windows are rare by
+construction.
+
+## Why autosave?
+
+Owner decision (2026-08-02): edits should be autosaved — as an optional,
+clearly-toggleable behavior. Losing work to a crash is worse than any
+autosave surprise; atomic writes and the clean-buffer reload rule make
+autosave safe.
 
 ## Why do external links not open on render or hover?
 

@@ -45,10 +45,13 @@ creates a new invariant, add it here with the issue number.
    Rendering, outline, search, and export consume the document model, not
    the file. Any feature reading the file directly while a buffer exists
    is a bug.
-12. **Never a modal.** Degraded or blocked content (remote image, failed
-   plugin, unrenderable block, external file change on a dirty buffer)
-   surfaces inline with a one-click affordance. A blocking dialog is a
-   design defect (ux_decisions.md).
+12. **No modals on the open/view path.** Opening, rendering, and reading
+   are never interrupted by a question. Degraded or blocked content
+   (remote image, failed plugin, unrenderable block, external change on a
+   dirty buffer) surfaces inline with a one-click affordance. Modals are
+   acceptable ONLY for explicit user-initiated actions (Save As,
+   preferences, close-with-unsaved, print) — see ux_decisions.md.
+   Clean-buffer external changes reload silently, position preserved.
 13. **Plugins are optional and isolated.** A disabled plugin costs
    nothing (no assets, no scans); a failing plugin degrades to the source
    block with an inline badge and never breaks the document, other
