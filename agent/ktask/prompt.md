@@ -85,6 +85,10 @@ in retelling:
 A non-zero exit means the task is not complete. Skip env vars inside it are
 for the human operator only; agents must never set them.
 
+**No CI/CD (human decision, 2026-08-02).** Local tests are the gate. Do not
+wait for, inspect, or depend on remote CI status; do not create workflow
+files or CI configuration. If a task seems to need CI, STOP and flag it.
+
 ## Skills
 
 Load each skill from `.claude/skills/` at the step where it applies:

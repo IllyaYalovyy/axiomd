@@ -37,8 +37,10 @@ Use the lowest layer that catches the risk clearly:
 
 ## What is accepted as not fully automatable
 
-This list is exhaustive; growing it is a human decision. Everything on it has
-a defined partial check:
+Ratified by the project owner on 2026-08-02 (categories 2 and 3 explicitly:
+integration and packaging checks beyond the automated boundary are done
+manually by the owner). This list is exhaustive; growing it is a human
+decision. Everything on it has a defined partial check:
 
 1. **First-time visual approval** of a new rendered surface — human approves
    once; the screenshot golden pins it forever after.

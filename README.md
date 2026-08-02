@@ -62,10 +62,12 @@ without an explicit decision to change direction.
 │   ├── quality.sh               # The quality gate (one command)
 │   ├── install-agent-files.sh   # agent/ → gitignored .claude/ + .ktask/
 │   └── install-git-hooks.sh     # Pre-commit AI-file guard
-└── .github/                     # Issue templates, quality workflow
+└── .github/                     # Issue templates
 ```
 
 ## Quality Gate
+
+Local tests are the gate — there is no CI/CD (deliberate decision, 2026-08-02):
 
 ```bash
 ./scripts/quality.sh
