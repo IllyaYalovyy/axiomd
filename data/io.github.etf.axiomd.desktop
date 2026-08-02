@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=axiomd
+GenericName=Markdown Viewer
+Comment=Read and write Markdown documents
+Exec=axiomd %F
+Icon=io.github.etf.axiomd
+Terminal=false
+Categories=GNOME;GTK;Office;Viewer;
+Keywords=markdown;md;readme;notes;
+MimeType=text/markdown;
+StartupNotify=true
+StartupWMClass=io.github.etf.axiomd

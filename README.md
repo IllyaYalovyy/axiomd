@@ -56,6 +56,7 @@ without an explicit decision to change direction.
 ├── agent/
 │   ├── skills/                  # Tracked source of agent skills
 │   └── ktask/                   # Tracked source of ktask prompt/context
+├── data/                        # Desktop entry and other installed data
 ├── designs/
 │   ├── RFC-001-mvp-architecture.md
 │   ├── MVP-USER-TASKS.md        # User workflows as test plans

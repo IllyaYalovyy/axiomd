@@ -16,12 +16,18 @@ const BIN: &str = env!("CARGO_BIN_EXE_axiomd");
 /// `WAYLAND_DISPLAY` is an absolute path, so libwayland uses it verbatim instead
 /// of falling back to the default `wayland-0` socket in `XDG_RUNTIME_DIR`, and
 /// pinning `GDK_BACKEND` stops GDK from trying X11 next.
+///
+/// The session bus is taken away as well. axiomd is a single-instance application:
+/// with a bus to reach, a second copy hands its arguments to the first and exits
+/// happily — so a developer who happens to have axiomd open would see this suite
+/// fail for no reason. Without a bus there is no first copy to hand anything to.
 fn headless_axiomd() -> Command {
     let mut command = Command::new(BIN);
     command
         .env_remove("DISPLAY")
         .env("GDK_BACKEND", "wayland")
         .env("WAYLAND_DISPLAY", "/nonexistent/axiomd-tests-no-display")
+        .env("DBUS_SESSION_BUS_ADDRESS", "disabled:")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command

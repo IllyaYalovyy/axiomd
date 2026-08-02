@@ -14,3 +14,7 @@ repository = "https://github.com/IllyaYalovyy/axiomd"
 # Do not raise these feature gates above what the target platform ships.
 adw = { package = "libadwaita", version = "0.9.2", features = ["v1_8"] }
 gtk = { package = "gtk4", version = "0.11.4", features = ["v4_20"] }
+# WebKitGTK 6.0. Left at the bindings' 2.40 baseline on purpose: every API the
+# shell uses predates it, so the build works on any runtime the GNOME 49
+# platform or a distro ships. Raise a `v2_xx` gate only for an API that needs it.
+webkit6 = "0.6.1"
