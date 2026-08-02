@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<h1 data-line="1">Blocks</h1>
+<p data-line="3">A paragraph with a
+soft break inside it.</p>
+<h2 data-line="6">Every heading level</h2>
+<h3 data-line="8">Third</h3>
+<h4 data-line="10">Fourth</h4>
+<h5 data-line="12">Fifth</h5>
+<h6 data-line="14">Sixth</h6>
+<h1 data-line="16">Setext heading</h1>
+<hr data-line="19">
+<blockquote data-line="21">
+<p>A quote.</p>
+<blockquote>
+<p>Nested deeper.</p>
+</blockquote>
+</blockquote>
+<ul data-line="25">
+<li>tight one</li>
+<li>tight two
+<ul>
+<li>nested tight</li>
+</ul>
+</li>
+</ul>
+<ul data-line="29">
+<li>
+<p>loose one</p>
+</li>
+<li>
+<p>loose two</p>
+</li>
+</ul>
+<ol data-line="33">
+<li>first</li>
+<li>second</li>
+</ol>
+<p data-line="36">A list that starts counting elsewhere:</p>
+<ol start="7" data-line="38">
+<li>seventh</li>
+<li>eighth</li>
+</ol>
+<ul data-line="41">
+<li class="task-list-item"><input disabled="" type="checkbox"> not done</li>
+<li class="task-list-item"><input disabled="" checked="" type="checkbox"> done</li>
+</ul>
+<p data-line="44">An indented code block:</p>
+<pre class="sy-code" data-line="46"><code>an indented code block
+second line
+</code></pre>
+<pre class="sy-code" data-line="49"><code class="language-rust"><span class="sy-source sy-rust"><span class="sy-meta sy-function sy-rust"><span class="sy-meta sy-function sy-rust"><span class="sy-storage sy-type sy-function sy-rust">fn</span> </span><span class="sy-entity sy-name sy-function sy-rust">main</span></span><span class="sy-meta sy-function sy-rust"><span class="sy-meta sy-function sy-parameters sy-rust"><span class="sy-punctuation sy-section sy-parameters sy-begin sy-rust">(</span></span><span class="sy-meta sy-function sy-rust"><span class="sy-meta sy-function sy-parameters sy-rust"><span class="sy-punctuation sy-section sy-parameters sy-end sy-rust">)</span></span></span></span><span class="sy-meta sy-function sy-rust"> </span><span class="sy-meta sy-function sy-rust"><span class="sy-meta sy-block sy-rust"><span class="sy-punctuation sy-section sy-block sy-begin sy-rust">{</span>
+    <span class="sy-support sy-macro sy-rust">println!</span><span class="sy-meta sy-group sy-rust"><span class="sy-punctuation sy-section sy-group sy-begin sy-rust">(</span></span><span class="sy-meta sy-group sy-rust"><span class="sy-string sy-quoted sy-double sy-rust"><span class="sy-punctuation sy-definition sy-string sy-begin sy-rust">"</span>hi &lt;&amp;&gt;<span class="sy-punctuation sy-definition sy-string sy-end sy-rust">"</span></span></span><span class="sy-meta sy-group sy-rust"><span class="sy-punctuation sy-section sy-group sy-end sy-rust">)</span></span><span class="sy-punctuation sy-terminator sy-rust">;</span>
+</span><span class="sy-meta sy-block sy-rust"><span class="sy-punctuation sy-section sy-block sy-end sy-rust">}</span></span></span>
+</span></code></pre>
+<pre class="sy-code" data-line="55"><code class="language-not-a-real-language">plain &amp; &lt;text&gt;
+</code></pre>
+<pre class="sy-code" data-line="59"><code>no info string
+</code></pre>
+</article>
+</body>
+</html>

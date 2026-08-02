@@ -8,3 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+axiomd-engine = { path = "../axiomd-engine" }
+ammonia = "4.1"
+# `default-fancy` is `default-onig` with the pure-Rust regex engine: no oniguruma
+# C library in the build, and the same syntax and theme dumps.
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }

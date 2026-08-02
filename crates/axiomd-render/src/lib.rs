@@ -1,7 +1,125 @@
-//! Rendering pipeline.
+//! Rendering pipeline: engine events in, one sanitized HTML document out.
 //!
-//! Turns engine events into sanitized HTML with `data-line` anchors derived from
-//! source spans, and hosts the optional plugin layer (math, diagrams). Core
-//! rendering — CommonMark/GFM including tables and images — is never a plugin.
+//! The crate is pure — no I/O, no GTK, no network, no subprocess — so a render is
+//! reproducible byte for byte and safe to run on a worker thread while the main loop
+//! stays free.
 //!
-//! The pipeline lands with issue #3; this crate is a placeholder until then.
+//! ```
+//! use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
+//!
+//! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
+//! let rendered = axiomd_render::render(&parsed);
+//! assert!(rendered.html().contains("<h1 data-line=\"1\">Title</h1>"));
+//! // One anchor per top-level block, each carrying the source it came from.
+//! assert_eq!(rendered.anchors().len(), 2);
+//! assert_eq!(rendered.anchors()[1].line, 3);
+//! ```
+//!
+//! # What the document guarantees
+//!
+//! * **Anchored.** Every top-level block carries `data-line`, and [`Rendered::anchors`]
+//!   is the same map as typed data. Scroll sync, outline tracking, search and
+//!   live-reload position preservation read it rather than measuring heights.
+//! * **Inert.** The body is sanitized with ammonia after templating and the document
+//!   declares a strict CSP: no script, no plugin, no frame, and images only from the
+//!   app's own `axiomd:` scheme. A malicious document renders as text.
+//! * **Offline.** Nothing the pipeline emits can cause a fetch. Remote image sources
+//!   are moved to `data-remote-src`, which loads only when the user asks it to.
+//! * **Themed by CSS alone.** Colours — including the code palettes — live in
+//!   [`stylesheet`], in a light block and a `prefers-color-scheme: dark` block, so
+//!   switching theme restyles a rendered document without re-parsing it.
+
+#![deny(missing_docs)]
+
+mod body;
+mod highlight;
+mod sanitize;
+
+use std::ops::Range;
+use std::sync::OnceLock;
+
+use axiomd_engine::Parsed;
+
+/// Where the rendered document loads [`stylesheet`] from. The app serves this URI
+/// from its own scheme handler; nothing else in the document is fetchable.
+pub const STYLESHEET_URI: &str = "axiomd://assets/axiomd.css";
+
+/// The policy the rendered document is displayed under: no script, no plugins, no
+/// frames, no form submission, and images and styles only from the app's own scheme.
+const CONTENT_SECURITY_POLICY: &str =
+    "default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'";
+
+/// A render happens on a worker thread and its result is handed to the main loop,
+/// so the document must be able to cross a thread boundary.
+const _: () = {
+    const fn crosses_threads<T: Send>() {}
+    crosses_threads::<Rendered>();
+};
+
+/// A rendered document: the HTML to display, and the map from it back to the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rendered {
+    html: String,
+    anchors: Vec<Anchor>,
+}
+
+impl Rendered {
+    /// The complete HTML document.
+    pub fn html(&self) -> &str {
+        &self.html
+    }
+
+    /// One entry per top-level block, in document order, with strictly increasing
+    /// lines. The block rendered from `anchors()[i]` is the element whose
+    /// `data-line` attribute equals `anchors()[i].line`.
+    pub fn anchors(&self) -> &[Anchor] {
+        &self.anchors
+    }
+}
+
+/// Where one rendered block came from in the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    /// 1-based source line, and the value of the block's `data-line` attribute.
+    pub line: u32,
+    /// Byte range of the block in the source the parse was handed.
+    pub source: Range<usize>,
+}
+
+/// Renders a parsed document.
+pub fn render(parsed: &Parsed<'_>) -> Rendered {
+    let (body, anchors) = body::render(parsed);
+    let body = sanitize::clean(&body);
+    let html = format!(
+        "<!DOCTYPE html>\n\
+         <html>\n\
+         <head>\n\
+         <meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"{CONTENT_SECURITY_POLICY}\">\n\
+         <link rel=\"stylesheet\" href=\"{STYLESHEET_URI}\">\n\
+         </head>\n\
+         <body>\n\
+         <article class=\"markdown\">\n\
+         {body}</article>\n\
+         </body>\n\
+         </html>\n"
+    );
+    Rendered { html, anchors }
+}
+
+/// The default stylesheet, light and dark palettes included.
+///
+/// It is built once per process: the document typography plus the two code palettes
+/// generated from the bundled syntect themes, so the classes the highlighter emits
+/// and the classes the stylesheet defines cannot drift apart.
+pub fn stylesheet() -> &'static str {
+    static STYLESHEET: OnceLock<String> = OnceLock::new();
+    STYLESHEET.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            include_str!("../assets/axiomd.css"),
+            highlight::palettes()
+        )
+    })
+}

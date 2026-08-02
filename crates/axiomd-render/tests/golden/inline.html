@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<p data-line="1"><em>Emphasis</em>, <strong>strong</strong>, <em><strong>both</strong></em>, <del>struck</del>, <code>inline code</code>, and A &amp; B &lt; C.</p>
+<p data-line="3">An <a href="docs/guide.md" title="Guide" rel="noopener noreferrer">inline link</a>, a <a href="reference/target.md" title="Reference title" rel="noopener noreferrer">reference link</a>, an autolink
+<a href="https://example.com/path" rel="noopener noreferrer">https://example.com/path</a>, and a bare <a href="http://www.example.com" rel="noopener noreferrer">www.example.com</a> link.</p>
+<p data-line="6">An escaped *asterisk* and an entity &amp; and ©.</p>
+<p data-line="8">A local image: <img src="assets/diagram.png" alt="a local diagram" title="Diagram"></p>
+<p data-line="10">A remote image: <img class="remote-image" data-remote-src="https://example.com/remote.png" alt="remote"></p>
+<p data-line="12">A protocol-relative image: <img class="remote-image" data-remote-src="//example.com/relative.png" alt="scheme relative"></p>
+<p data-line="14">An image whose label has markup: <img src="assets/x.png" alt="bold and code"></p>
+<p data-line="16">A line ending in two spaces<br>forces a hard break.</p>
+<p data-line="19">Some <em>inline html</em> and a <span class="x">span</span>.</p>
+</article>
+</body>
+</html>

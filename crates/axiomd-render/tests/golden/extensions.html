@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<h1 data-line="1">Extensions</h1>
+<p data-line="3">A footnote reference<sup class="footnote-ref"><a href="#fn-note" rel="noopener noreferrer">note</a></sup> in a sentence.</p>
+<p data-line="5">Inline math <span class="math math-inline">E = mc^2</span> and display math:</p>
+<p data-line="7"><span class="math math-display">
+\int_0^1 x^2 \, dx
+</span></p>
+<p data-line="11">A <a class="wikilink" href="Wiki Link" rel="noopener noreferrer">Wiki Link</a> and a <a class="wikilink" href="target" rel="noopener noreferrer">labelled one</a>.</p>
+<blockquote class="callout callout-note" data-line="13">
+<p class="callout-title">Note</p>
+<p>Callouts keep their kind.</p>
+</blockquote>
+<blockquote class="callout callout-warning" data-line="16">
+<p class="callout-title">Custom title</p>
+<p>And their author's title.</p>
+</blockquote>
+<blockquote class="callout callout-tip" data-line="19">
+<p class="callout-title">Tip</p>
+<p>Tips too.</p>
+</blockquote>
+<div class="footnote-definition" id="fn-note" data-line="22">
+<sup class="footnote-label">note</sup>
+<p>The definition, which keeps its own anchor.</p>
+</div>
+</article>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<h1 data-line="1">Malicious</h1>
+<span class="source-anchor" data-line="3"></span>
+
+<span class="source-anchor" data-line="5"></span>
+<img src="x">
+<p data-line="7"><a rel="noopener noreferrer">a javascript link</a></p>
+<p data-line="9"><a rel="noopener noreferrer">a javascript markdown link</a></p>
+<p data-line="11"><img class="remote-image" data-remote-src="data:image/svg+xml;base64,PHN2Zy8+" alt="a data-uri image"></p>
+<p data-line="13"><img class="remote-image" data-remote-src="https://evil.example/tracker.png" alt="a remote image"></p>
+<span class="source-anchor" data-line="15"></span>
+
+<span class="source-anchor" data-line="17"></span>
+
+<span class="source-anchor" data-line="19"></span>
+<input type="checkbox">go
+<p data-line="21"></p>
+<span class="source-anchor" data-line="23"></span>
+
+<span class="source-anchor" data-line="25"></span>
+
+<span class="source-anchor" data-line="27"></span>
+<p>Event handlers and styles.</p>
+<p data-line="29"></p>
+<span class="source-anchor" data-line="31"></span>
+
+<p data-line="33">A <code>&lt;script&gt;</code> in code, and an <a href="https://example.com/ok" rel="noopener noreferrer">ordinary link</a>.</p>
+</article>
+</body>
+</html>
