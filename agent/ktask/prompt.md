@@ -36,13 +36,28 @@ completion:
 
 {{TASK}}
 
-## TDD requirement
+## TDD requirement — testability is a MUST
 
-Every behavior change lands with a test that was demonstrably RED before the
-change and GREEN after. State the red check explicitly in the task report.
-A test never seen red may be asserting nothing. When the issue lists
-"Tests (red first)", implement exactly those tests, red first, plus any the
-interaction sweep demands.
+**A feature or bug fix is NOT done without an automated test.** A manual
+check never closes a task; at most it supplements automation. Every behavior
+change lands with a test that was demonstrably RED before the change and
+GREEN after. State the red check explicitly in the task report. A test never
+seen red may be asserting nothing. When the issue lists "Tests (red first)",
+implement exactly those tests, red first, plus any the interaction sweep
+demands.
+
+If a required behavior cannot be tested automatically, STOP and escalate:
+report exactly what is untestable, why, and at least one candidate way to
+test it (or a proposal to drop the behavior). The human decides. The only
+pre-accepted exceptions are the three categories in `docs/TESTING.md`
+("What is accepted as not fully automatable") — each still requires its
+defined partial check. Never silently ship untested behavior; never
+silently drop scope to avoid writing a test.
+
+Visual fidelity is tested with screenshot goldens: a human approves a
+rendered fixture once, then it is pinned and diffed. Re-pinning a golden is
+a human-approved act — an agent may never re-pin to make a failing visual
+test pass.
 
 ## Validate assumptions against reality
 

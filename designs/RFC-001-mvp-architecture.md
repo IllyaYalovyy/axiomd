@@ -222,9 +222,14 @@ the same interface when the 10 MB budget test demands it.
 | No implicit network | app integration | CSP + URI-scheme test: remote ref renders placeholder, zero requests |
 | Live reload preserves position | app integration | monitor event → anchor unchanged |
 | Budgets (startup, 10 MB scroll, N windows) | perf harness | `tests/perf/` with generated fixtures, asserted numbers |
+| User flows (UT-001…011) | e2e harness (headless app, DOM assertions) | `axiomd-e2e` suite |
+| Visual regressions | screenshot goldens (human-pinned once, diffed forever) | `tests/goldens/` |
 
-Not automatable: subjective beauty of the default stylesheet; verified by
-side-by-side review against Obsidian's reading view on a fixture corpus.
+Testability is a MUST (docs/TESTING.md): no automated test → not done;
+untestable behavior escalates to the human. Subjective beauty of the default
+stylesheet is handled by the screenshot-golden model — one-time human
+side-by-side approval against Obsidian's reading view pins the goldens;
+thereafter it is a regression test like any other.
 
 ## Goals Alignment
 
@@ -260,7 +265,9 @@ Mirrors the GitHub issues; order is the ktask queue order.
   default stylesheet *(Step 2)*
 - [ ] **Step 4** — App shell: window, open paths, webview, custom scheme,
   MIME registration *(Step 3)*
-- [ ] **Step 5** — Live reload with anchor preservation *(Step 4)*
+- [ ] **Step 4b** — e2e harness: headless app driving, DOM assertions,
+  screenshot goldens with human-only pinning *(Step 4)*
+- [ ] **Step 5** — Live reload with anchor preservation *(Steps 4, 4b)*
 - [ ] **Step 6** — Links and images: relative nav, anchors, external,
   placeholder policy *(Step 4)*
 - [ ] **Step 7** — Outline sidebar + position tracking *(Step 4)*

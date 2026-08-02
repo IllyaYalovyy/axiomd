@@ -27,4 +27,7 @@ Out of scope / frozen:
 ## Exit criteria
 
 - [ ] <!-- Observable, checkable statements. "Works" is not a criterion. -->
+- [ ] Every behavior above is covered by an automated test (manual checks
+      may supplement, never substitute); untestable behavior escalated per
+      docs/TESTING.md, not shipped.
 - [ ] `./scripts/quality.sh` green.

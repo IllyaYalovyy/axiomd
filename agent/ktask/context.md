@@ -38,6 +38,10 @@ creates a new invariant, add it here with the issue number.
 
 ## Non-negotiable expectations (learned from prior rejected work)
 
+- **Testability is a MUST.** No automated test → not done. Untestable
+  behavior is escalated to the human (with a candidate testing approach or
+  a drop proposal), never shipped on a manual check and never silently
+  dropped. The only pre-accepted exceptions are listed in `docs/TESTING.md`.
 - **Tests must assert what the USER SEES** — rendered output, visible
   state — not that an internal call happened.
 - **Meet the issue's acceptance criteria literally.** Disabling a behavior

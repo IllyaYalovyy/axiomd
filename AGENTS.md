@@ -9,7 +9,9 @@ These instructions apply to AI coding agents working in this repository.
 - Keep changes scoped to the task. Do not perform unrelated cleanup.
 - Preserve user changes. Never revert files you did not intentionally modify.
 - Use fast search tools such as `rg` before slower recursive commands.
-- Add tests with the change unless the reason not to is explicit.
+- Testability is a MUST: no automated test, not done. Untestable behavior
+  is escalated with a candidate testing approach or drop proposal — never
+  shipped on a manual check (see docs/TESTING.md).
 - Run `./scripts/quality.sh` before declaring implementation complete when
   practical. The gate is that one command — never retype its checks from
   memory; a prose gate loses flags in retelling.
