@@ -1,0 +1,16 @@
+[package]
+name = "axiomd-app"
+description = "axiomd application shell: GTK 4 + libadwaita windows over the render pipeline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "axiomd"
+path = "src/main.rs"
+
+[dependencies]
+adw.workspace = true
+gtk.workspace = true

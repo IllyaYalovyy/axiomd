@@ -1,0 +1,10 @@
+[package]
+name = "axiomd-doc"
+description = "Editable document model; the buffer is the source of truth while a window owns a file."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
