@@ -379,7 +379,7 @@ Mirrors the GitHub issues; order is the ktask queue order.
 
 - [ ] **Step 1** — Workspace bootstrap: crates, quality gate, hello
   Adw window *(prerequisite: -)*
-- [ ] **Step 2** — Engine boundary + comrak engine + spec conformance
+- [x] **Step 2** — Engine boundary + comrak engine + spec conformance
   *(Step 1)*
 - [ ] **Step 3** — Render pipeline: HTML + anchors + syntect + ammonia +
   default stylesheet *(Step 2)*
