@@ -33,7 +33,10 @@
 //! * **Themed by CSS alone.** Colours — including the code palettes — live in
 //!   [`stylesheet`], in a light block and a screen-only `prefers-color-scheme: dark`
 //!   block, so switching theme restyles a rendered document without re-parsing it,
-//!   and neither paper nor an exported file ever goes dark.
+//!   and neither paper nor an exported file ever goes dark. What the reader's own
+//!   desktop asks for on top of that — a measure, high contrast — is a second
+//!   stylesheet ([`reader_stylesheet`]) the app installs over the first, for the same
+//!   reason and at the same cost.
 //! * **Portable.** The same parse becomes a page that needs the app
 //!   ([`render`]) or one that needs nothing at all ([`standalone`]): styling inlined,
 //!   pictures carried inside it, and not one reference that would be fetched when
@@ -263,23 +266,44 @@ fn exported_stylesheet() -> &'static str {
     })
 }
 
-/// The stylesheet that puts the reader's own layout choices over [`stylesheet`].
+/// How much contrast the reader is reading at — the desktop's accessibility answer,
+/// not a preference of axiomd's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contrast {
+    /// The palette the document defines, light or dark.
+    Normal,
+    /// The desktop is asking for high contrast: full-strength ink, borders that are
+    /// there rather than suggested, and links told apart by more than their colour.
+    High,
+}
+
+/// The stylesheet that puts the reader's own way of reading over [`stylesheet`].
 ///
 /// `reading_width` is the measure a document's text is held to, in rem, or `None` for
-/// a document that fills the window.
+/// a document that fills the window; `contrast` is what the desktop's accessibility
+/// setting asks for.
 ///
 /// It is meant to be installed as a *user* stylesheet on the view rather than folded
 /// into the document, which is what makes a change to it free: the page on screen
 /// restyles in place, and nothing is re-parsed, re-rendered or reloaded to change how
-/// wide a document is. `!important` is not decoration — under the cascade (CSS
-/// Cascading and Inheritance Level 5, §6.2) a normal user declaration loses to the
-/// document's own author one, and only an important user declaration outranks it.
-pub fn reader_stylesheet(reading_width: Option<u32>) -> String {
+/// wide a document is or how much contrast it has. `!important` is not decoration —
+/// under the cascade (CSS Cascading and Inheritance Level 5, §6.2) a normal user
+/// declaration loses to the document's own author one, and only an important user
+/// declaration outranks it. That is also why high contrast is written here rather
+/// than as a `prefers-contrast` block in the document's own stylesheet: WebKitGTK
+/// does not answer `prefers-contrast` from the application's style manager at all
+/// (probed on WebKitGTK 2.52.5 and libadwaita 1.8.6 — the media query stayed false
+/// with the desktop in high contrast), so the application has to say it.
+pub fn reader_stylesheet(reading_width: Option<u32>, contrast: Contrast) -> String {
     let measure = match reading_width {
         Some(rem) => format!("{rem}rem"),
         None => "none".to_owned(),
     };
-    format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n")
+    let mut sheet = format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n");
+    if contrast == Contrast::High {
+        sheet.push_str(include_str!("../assets/high-contrast.css"));
+    }
+    sheet
 }
 
 /// The default stylesheet, light and dark palettes included.

@@ -1,0 +1,92 @@
+/*
+ * High contrast: what a desktop asking for it changes about a rendered document.
+ *
+ * Not "the dark palette". The desktop's high-contrast setting is orthogonal to
+ * light and dark — a reader can be in either — so this repaints both, and it
+ * repaints the *properties the document stylesheet already reads* rather than
+ * restyling elements, so it costs the page a recalculation and nothing else.
+ *
+ * Three dedicated overrides beyond the palette, each for something a
+ * high-contrast reader loses under the ordinary one:
+ *
+ *   - borders are drawn at full strength instead of a 12%-alpha suggestion, and
+ *     the remote-image card's dashed outline becomes solid;
+ *   - links stop being told apart by colour alone and carry an underline;
+ *   - dimmed text (h6, footnotes, quotes, placeholder captions) stops being
+ *     dimmed, because a 55%-alpha grey is exactly what the setting exists to
+ *     remove.
+ *
+ * It is delivered as a *user* stylesheet, so every declaration has to be
+ * important to outrank the document's own — including the ones inside the
+ * document's `prefers-color-scheme` block, which is why the dark reading is
+ * repeated here rather than left to it.
+ *
+ * Screen only, for the same reason the dark palette is: a print job and an
+ * exported PDF are paginated from the very page on screen with this stylesheet
+ * still installed (`export.rs`), and neither paper nor a file opened on somebody
+ * else's machine is a place this reader's accessibility setting applies.
+ */
+
+@media screen {
+  :root {
+    --axiomd-bg: #ffffff !important;
+    --axiomd-fg: #000000 !important;
+    --axiomd-fg-dim: #000000 !important;
+    --axiomd-accent: #0000cc !important;
+    --axiomd-border: #000000 !important;
+    --axiomd-surface: #ebebeb !important;
+    --axiomd-surface-strong: #dcdcdc !important;
+
+    --axiomd-note: #0000cc !important;
+    --axiomd-tip: #005c1f !important;
+    --axiomd-important: #6b0080 !important;
+    --axiomd-warning: #6b4400 !important;
+    --axiomd-caution: #a30000 !important;
+
+    --axiomd-find: #ffff00 !important;
+    --axiomd-find-current: #ff6600 !important;
+    --axiomd-find-ink: #000000 !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --axiomd-bg: #000000 !important;
+      --axiomd-fg: #ffffff !important;
+      --axiomd-fg-dim: #ffffff !important;
+      --axiomd-accent: #8cb4ff !important;
+      --axiomd-border: #ffffff !important;
+      --axiomd-surface: #1a1a1a !important;
+      --axiomd-surface-strong: #2e2e2e !important;
+
+      --axiomd-note: #8cb4ff !important;
+      --axiomd-tip: #6ee79b !important;
+      --axiomd-important: #eaa8ec !important;
+      --axiomd-warning: #ffd84d !important;
+      --axiomd-caution: #ff9b8a !important;
+
+      --axiomd-find: #ffff00 !important;
+      --axiomd-find-current: #ff9d3d !important;
+      --axiomd-find-ink: #000000 !important;
+    }
+  }
+
+  /* A link is a link whatever the page is painted in. */
+  .markdown a {
+    text-decoration: underline !important;
+    text-decoration-color: currentColor !important;
+  }
+
+  /* Except the two that are not prose links: a footnote marker and the card
+     standing in for a remote image are already set apart by their own shape, and
+     underlining them would read as a typo in the sentence they sit in. */
+  .markdown .footnote-ref a,
+  .markdown a.remote-image {
+    text-decoration: none !important;
+  }
+
+  /* A dashed 12%-alpha outline is the first thing to disappear at high contrast,
+     and it is the whole of what says "this card is a button". */
+  .markdown a.remote-image {
+    border-style: solid !important;
+  }
+}

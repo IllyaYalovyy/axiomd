@@ -36,42 +36,56 @@ const APP_ID: &str = "io.github.etf.axiomd";
 /// Every keyboard shortcut the application installs, and the action each one runs.
 ///
 /// The two halves are asserted together: a shortcut naming an action that does not
-/// exist is a key that silently does nothing.
-const SHORTCUTS: &[(&str, &str)] = &[
-    ("app.new", "<Control>n"),
-    ("app.open", "<Control>o"),
-    ("app.preferences", "<Control>comma"),
-    ("app.close-window", "<Control>w"),
-    ("app.quit", "<Control>q"),
+/// exist is a key that silently does nothing. An action may be on more than one key,
+/// because some of them are on more than one key on a real keyboard — zooming in is
+/// `Ctrl+plus`, and `Ctrl+equal` is the same key without the shift a plus needs.
+const SHORTCUTS: &[(&str, &[&str])] = &[
+    ("app.new", &["<Control>n"]),
+    ("app.open", &["<Control>o"]),
+    ("app.preferences", &["<Control>comma"]),
+    ("app.close-window", &["<Control>w"]),
+    ("app.quit", &["<Control>q"]),
 ];
 
 /// The same, for the actions that belong to a window rather than to the application:
 /// where the reader has been in that window, which of the two ways of looking at the
 /// document they are in, and what happens to their work (`window.rs`).
-const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
-    (crate::window::BACK, "<Alt>Left"),
-    (crate::window::FORWARD, "<Alt>Right"),
-    (crate::window::MODE, "<Control>e"),
-    (crate::window::OUTLINE, "F9"),
-    (crate::find::FIND, "<Control>f"),
-    (crate::find::FIND_NEXT, "<Control>g"),
-    (crate::find::FIND_PREVIOUS, "<Shift><Control>g"),
+const WINDOW_SHORTCUTS: &[(&str, &[&str])] = &[
+    (crate::window::BACK, &["<Alt>Left"]),
+    (crate::window::FORWARD, &["<Alt>Right"]),
+    (crate::window::MODE, &["<Control>e"]),
+    (crate::window::OUTLINE, &["F9"]),
+    // How big the document is (UT-011). `Ctrl+equal` beside `Ctrl+plus` and
+    // `Ctrl+KP_Add` beside both: a plus needs shift on most layouts and lives on the
+    // keypad on none of them, and every desktop browser and editor accepts all three.
+    (
+        crate::zoom::IN,
+        &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
+    ),
+    (
+        crate::zoom::OUT,
+        &["<Control>minus", "<Control>KP_Subtract"],
+    ),
+    (crate::zoom::RESET, &["<Control>0", "<Control>KP_0"]),
+    (crate::find::FIND, &["<Control>f"]),
+    (crate::find::FIND_NEXT, &["<Control>g"]),
+    (crate::find::FIND_PREVIOUS, &["<Shift><Control>g"]),
     // Escape, and only while the bar is up: the action is disabled the rest of the
     // time (`find.rs`), and a shortcut whose action is disabled does not fire — probed
     // on GTK 4.20.4, where `gtk_shortcut_action_activate` on a `GtkNamedAction` naming
     // a disabled action answers FALSE and answers TRUE the moment it is enabled. A
     // shortcut that did not activate does not consume the key, so Escape goes on
     // meaning whatever else it means in this window.
-    (crate::find::FIND_CLOSE, "Escape"),
-    (crate::window::SAVE, "<Control>s"),
+    (crate::find::FIND_CLOSE, &["Escape"]),
+    (crate::window::SAVE, &["<Control>s"]),
     // Ctrl+Shift+S, spelled the way GTK normalises it — `accels_for_action`
     // answers in this order, so writing it the other way round would make the table
     // and the running application disagree.
-    (crate::window::SAVE_AS, "<Shift><Control>s"),
-    (crate::window::UNDO, "<Control>z"),
-    (crate::window::REDO, "<Control>y"),
-    (crate::window::PRINT, "<Control>p"),
-    (crate::window::EXPORT, "<Shift><Control>e"),
+    (crate::window::SAVE_AS, &["<Shift><Control>s"]),
+    (crate::window::UNDO, &["<Control>z"]),
+    (crate::window::REDO, &["<Control>y"]),
+    (crate::window::PRINT, &["<Control>p"]),
+    (crate::window::EXPORT, &["<Shift><Control>e"]),
 ];
 
 /// Runs axiomd to completion and reports the process exit status.
@@ -310,8 +324,8 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     });
     add_action(&app, "quit", |app| app.quit());
 
-    for (action, accelerator) in SHORTCUTS.iter().chain(WINDOW_SHORTCUTS) {
-        app.set_accels_for_action(action, &[accelerator]);
+    for (action, accelerators) in SHORTCUTS.iter().chain(WINDOW_SHORTCUTS) {
+        app.set_accels_for_action(action, accelerators);
     }
 
     app
@@ -429,26 +443,38 @@ mod tests {
     fn the_window_shortcuts_are_on_the_keys_a_desktop_uses_for_them() {
         let app = application();
 
-        for (action, accelerator) in [
-            ("win.back", "<Alt>Left"),
-            ("win.forward", "<Alt>Right"),
-            ("win.mode", "<Control>e"),
-            ("win.outline", "F9"),
-            ("win.save", "<Control>s"),
-            ("win.save-as", "<Shift><Control>s"),
-            ("win.undo", "<Control>z"),
-            ("win.redo", "<Control>y"),
-            ("win.print", "<Control>p"),
-            ("win.export", "<Shift><Control>e"),
-            ("win.find", "<Control>f"),
-            ("win.find-next", "<Control>g"),
-            ("win.find-previous", "<Shift><Control>g"),
-            ("win.find-close", "Escape"),
+        for (action, accelerators) in [
+            ("win.back", &["<Alt>Left"][..]),
+            ("win.forward", &["<Alt>Right"]),
+            ("win.mode", &["<Control>e"]),
+            ("win.outline", &["F9"]),
+            ("win.save", &["<Control>s"]),
+            ("win.save-as", &["<Shift><Control>s"]),
+            ("win.undo", &["<Control>z"]),
+            ("win.redo", &["<Control>y"]),
+            ("win.print", &["<Control>p"]),
+            ("win.export", &["<Shift><Control>e"]),
+            ("win.find", &["<Control>f"]),
+            ("win.find-next", &["<Control>g"]),
+            ("win.find-previous", &["<Shift><Control>g"]),
+            ("win.find-close", &["Escape"]),
+            // Zoom, which is on every key a desktop puts it on: the plus that needs
+            // shift, the equal beside it that does not, and the keypad's own.
+            (
+                "win.zoom-in",
+                &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
+            ),
+            ("win.zoom-out", &["<Control>minus", "<Control>KP_Subtract"]),
+            ("win.zoom-reset", &["<Control>0", "<Control>KP_0"]),
         ] {
+            let installed: Vec<glib::GString> = accelerators
+                .iter()
+                .map(|accelerator| glib::GString::from(*accelerator))
+                .collect();
             assert_eq!(
                 app.accels_for_action(action),
-                vec![glib::GString::from(accelerator)],
-                "{action} is not on {accelerator}",
+                installed,
+                "{action} is not on {accelerators:?}",
             );
         }
     }

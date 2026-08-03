@@ -265,6 +265,34 @@ impl Session {
                 self.target(shell)?.export_to(Path::new(payload));
                 Ok(String::new())
             }
+            // The wheel and the touchpad over the document. A headless compositor has
+            // no pointer and no touchpad, and GTK 4 offers no way to inject one, so
+            // these land in the calls the view's own scroll controller and zoom
+            // gesture make, with the values they pass (`zoom.rs`) — the same shape as
+            // `press`, which emits a button's own `clicked` rather than moving a
+            // pointer onto it.
+            "scroll" => {
+                let (modifier, delta) = payload
+                    .split_once(' ')
+                    .ok_or_else(|| format!("not a <modifier> <delta> scroll: {payload:?}"))?;
+                let control = match modifier {
+                    "ctrl" => true,
+                    "plain" => false,
+                    other => return Err(format!("not a scroll modifier: {other:?}")),
+                };
+                let delta = delta
+                    .parse::<f64>()
+                    .map_err(|_| format!("not a scroll delta: {delta:?}"))?;
+                self.target(shell)?.scroll_over_document(delta, control);
+                Ok(String::new())
+            }
+            "pinch" => {
+                let scale = payload
+                    .parse::<f64>()
+                    .map_err(|_| format!("not a pinch scale: {payload:?}"))?;
+                self.target(shell)?.pinch_over_document(scale);
+                Ok(String::new())
+            }
             // Resizing the window, as dragging its edge or tiling it does. The width is
             // what decides whether the outline sits beside a document or overlays it,
             // and a breakpoint is only ever exercised by a window that really is that
@@ -348,6 +376,10 @@ impl Session {
         // the counter says, whether the last step wrapped, and what the source shows
         // highlighted.
         if let Some(answer) = window.search(name) {
+            return Ok(answer);
+        }
+        // And how big the document is, in the words the primary menu shows.
+        if let Some(answer) = window.zoom(name) {
             return Ok(answer);
         }
         match name {
