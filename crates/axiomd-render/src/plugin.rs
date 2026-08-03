@@ -28,7 +28,11 @@
 //! * **A plugin is no more privileged than a document.** Its markup goes through the
 //!   same sanitiser as the document's own and the page keeps the same content-security
 //!   policy, so a plugin can no more run a script or fetch from the network than the
-//!   markdown could.
+//!   markdown could. A capability that has to *draw* — a diagram is a picture, not
+//!   markup — carries a script the application runs beside the document rather than
+//!   inside it: the page is still displayed with scripting off, its policy is not
+//!   loosened by a word, and what runs is a file compiled into the application, on the
+//!   documents that used it and no others.
 //!
 //! # Versioning
 //!
@@ -40,6 +44,7 @@
 //! changes; adding a hook with a default implementation does not change it.
 
 mod emoji;
+mod mermaid;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -57,8 +62,19 @@ const ASSET_PREFIX: &str = "/plugin/";
 /// The content type of an asset the document links rather than merely names.
 const STYLESHEET: &str = "text/css";
 
-/// One file a plugin carries: styling for its output, or something that styling
-/// names — a font, an icon.
+/// The content type of an asset the *app* runs for the document, in a JavaScript world
+/// of its own.
+///
+/// A rendered document cannot run a script — scripting is off and its policy admits
+/// none — and that does not change for a plugin. What a plugin with one of these asks
+/// for is that the application run it *beside* the document, from the same world the
+/// app patches and scrolls the page in, on the documents that used the plugin and no
+/// others. The document is still inert; the app has simply been given something to do
+/// with it.
+const SCRIPT: &str = "text/javascript";
+
+/// One file a plugin carries: styling for its output, the code that draws it, or
+/// something either of those names — a font, an icon.
 ///
 /// It is compiled into the application, which is what makes "rendering fetches
 /// nothing" true of plugins too (`design_decisions.md`). It reaches a document only
@@ -67,8 +83,8 @@ const STYLESHEET: &str = "text/css";
 pub struct Asset {
     /// The file's name, unique within its plugin.
     pub name: &'static str,
-    /// What the bytes are. `text/css` is linked into the document; anything else is
-    /// served for a stylesheet to name.
+    /// What the bytes are. `text/css` is linked into the document, `text/javascript`
+    /// is run by the app beside it; anything else is served for one of those to name.
     pub content_type: &'static str,
     /// The file itself.
     pub bytes: &'static [u8],
@@ -287,6 +303,20 @@ impl Plugins {
     /// The stylesheets the document must link, in registration order: the ones
     /// belonging to plugins that contributed to it.
     pub(crate) fn stylesheets(&self, used: &Used) -> Vec<(&'static str, Asset)> {
+        self.carried(used, STYLESHEET)
+    }
+
+    /// The scripts the app must run for the document, in the order they are to be run:
+    /// the ones belonging to plugins that contributed to it.
+    pub(crate) fn scripts(&self, used: &Used) -> Vec<(&'static str, Asset)> {
+        self.carried(used, SCRIPT)
+    }
+
+    /// The files of one kind belonging to the plugins that contributed to a document,
+    /// in registration order and, within a plugin, in the order its manifest lists
+    /// them. A plugin that drew nothing carries nothing: that is what makes a
+    /// capability nobody used free rather than merely optional.
+    fn carried(&self, used: &Used, content_type: &str) -> Vec<(&'static str, Asset)> {
         self.registered
             .iter()
             .enumerate()
@@ -296,7 +326,7 @@ impl Plugins {
                 manifest
                     .assets
                     .iter()
-                    .filter(|asset| asset.content_type == STYLESHEET)
+                    .filter(move |asset| asset.content_type == content_type)
                     .map(move |asset| (manifest.id, *asset))
             })
             .collect()
@@ -360,7 +390,11 @@ pub(crate) fn asset_uri(id: &str, asset: &Asset) -> String {
 /// Every plugin compiled into the application, in the order they are offered work and
 /// listed in preferences.
 fn builtin() -> impl Iterator<Item = Arc<dyn Plugin>> {
-    [Arc::new(emoji::Emoji) as Arc<dyn Plugin>].into_iter()
+    [
+        Arc::new(emoji::Emoji) as Arc<dyn Plugin>,
+        Arc::new(mermaid::Mermaid) as Arc<dyn Plugin>,
+    ]
+    .into_iter()
 }
 
 /// Runs one hook, answering `None` if it panicked.

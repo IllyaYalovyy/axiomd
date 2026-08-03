@@ -42,7 +42,10 @@
 //!   is an optional [`Plugin`] the reader can switch off: it claims fences, rewrites
 //!   events and decorates markup through [`Plugins`], and it is held to every rule
 //!   above — its output is sanitised with the document's, its styling is bundled, and
-//!   a plugin that fails loses its own block and nothing else.
+//!   a plugin that fails loses its own block and nothing else. One that has to *draw*
+//!   rather than write markup carries the code that draws it ([`Rendered::scripts`]),
+//!   which the app runs beside the document and never inside it: the page stays as
+//!   inert as this list says it is.
 //! * **Portable.** The same parse becomes a page that needs the app
 //!   ([`render`]) or one that needs nothing at all ([`standalone`]): styling inlined,
 //!   pictures carried inside it, and not one reference that would be fetched when
@@ -101,6 +104,7 @@ pub struct Rendered {
     outline: Vec<Heading>,
     remote_images: Vec<String>,
     stylesheets: Vec<String>,
+    scripts: Vec<String>,
 }
 
 impl Rendered {
@@ -121,6 +125,23 @@ impl Rendered {
     /// [`body`]: Rendered::body
     pub fn stylesheets(&self) -> &[String] {
         &self.stylesheets
+    }
+
+    /// The code this document needs the app to run for it, in the order it is to be
+    /// run: one URI per script of a plugin that contributed to the document, and
+    /// nothing at all for a document no drawing plugin contributed to.
+    ///
+    /// It is *not* linked from [`html`], and a document could not run it if it were:
+    /// the page is displayed with scripting off and its policy admits no script. These
+    /// are files for the application to run beside the document, in the JavaScript
+    /// world it already patches and scrolls the page from — a diagram is a picture, and
+    /// something has to draw it. Each is named by the `axiomd://` URI the app's own
+    /// scheme answers for, which is both where the bytes are and what says two renders
+    /// mean the same file.
+    ///
+    /// [`html`]: Rendered::html
+    pub fn scripts(&self) -> &[String] {
+        &self.scripts
     }
 
     /// The document's blocks alone — what lies inside the `<article>` of [`html`].
@@ -242,6 +263,11 @@ pub fn render(parsed: &Parsed<'_>, name: &str, plugins: &Plugins) -> Rendered {
         outline: rendered.outline,
         remote_images: rendered.remote_images,
         stylesheets,
+        scripts: rendered
+            .scripts
+            .iter()
+            .map(|(id, asset)| plugin::asset_uri(id, asset))
+            .collect(),
     }
 }
 
@@ -268,7 +294,10 @@ pub fn standalone(
     let body = sanitize::clean_for_a_file(&rendered.markup);
     // A plugin's styling travels inside the file like everything else the document
     // needs: an exported document names nothing, so it cannot link an asset the app
-    // would have answered for.
+    // would have answered for. Its *code* does not travel at all — an exported
+    // document is read where there is no axiomd to run it, and a file that carried a
+    // script would be a file that runs one. What a drawing plugin leaves in an
+    // exported document is the source the author wrote.
     let plugin_stylesheets: String = rendered
         .stylesheets
         .iter()

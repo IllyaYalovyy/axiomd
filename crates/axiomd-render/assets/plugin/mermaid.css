@@ -1,0 +1,23 @@
+/*
+ * The Mermaid plugin's styling, linked only into a document that has a diagram in it.
+ *
+ * This is the *document's* half of a diagram: the block it stands in, and the source
+ * it holds until the page has drawn it. What the drawing itself looks like lives in
+ * `mermaid-view.js`, because a drawn diagram is inside a shadow root that no
+ * document stylesheet can reach — which is also what keeps a diagram's own styling
+ * off the rest of the document.
+ */
+
+/* A diagram is a picture and stands like one, centred with room around it. */
+.markdown .plugin-mermaid {
+  margin: 1.25rem 0;
+  text-align: center;
+}
+
+/* The source it holds until then is text and reads like text. It is what a reader
+   sees while a diagram is still below the page, what they keep if it cannot be drawn,
+   and what they get back if they switch the capability off. */
+.markdown .plugin-mermaid > pre.sy-code {
+  margin: 0;
+  text-align: left;
+}

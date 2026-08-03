@@ -81,6 +81,20 @@ fn asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     }
 }
 
+/// The source of a bundled script, named by the whole URI a render asked for it by.
+///
+/// A render says what a document needs the app to run for it as an `axiomd://` URI
+/// (`Rendered::scripts`), and this is the only way to turn one back into something
+/// that can be run. The answer comes from the same compiled-in table the handler above
+/// serves, and only for an asset that really is a script — so what the app runs beside
+/// a document is a file that shipped with it, and nothing a URI could be bent into
+/// naming.
+pub(crate) fn script(uri: &str) -> Option<String> {
+    let path = uri.strip_prefix(&format!("{SCHEME}://{ASSETS_HOST}"))?;
+    let (bytes, content_type) = asset(path)?;
+    (content_type == "text/javascript").then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// The published documents of one application, and the handler that answers for
 /// them.
 pub(crate) struct Scheme {

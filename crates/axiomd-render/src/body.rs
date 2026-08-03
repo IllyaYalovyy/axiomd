@@ -47,6 +47,10 @@ pub(crate) struct Body {
     /// The styling this document needs beyond the bundled one: one entry per
     /// stylesheet of a plugin that contributed to it, as `(plugin id, asset)`.
     pub(crate) stylesheets: Vec<(&'static str, Asset)>,
+    /// The code that draws what this document holds, in the order it is to be run,
+    /// as `(plugin id, asset)`. Empty for every document no drawing plugin
+    /// contributed to, which is what makes such a plugin free rather than optional.
+    pub(crate) scripts: Vec<(&'static str, Asset)>,
 }
 
 /// Renders one parse, with the plugins the reader is reading under.
@@ -84,6 +88,7 @@ pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>, plugins: &Plugin
     Body {
         markup,
         stylesheets: plugins.stylesheets(&used),
+        scripts: plugins.scripts(&used),
         anchors: writer.anchors,
         outline: writer.outline,
         remote_images: writer.remote_images,
