@@ -31,11 +31,20 @@
 //!   root, which stops a *symlink inside the directory* from leading out of it.
 //!
 //! A request that fails either check is refused; it is never answered with bytes.
+//!
+//! # Where startup is measured
+//!
+//! This handler is also the finish line of the cold-start budget (issue #9). The one
+//! moment that means "axiomd has a document for the reader" is the moment the page's
+//! own bytes leave here — everything before it is the app's to be quick about, and
+//! nothing after it is a thing the app does. [`Scheme::startup`] is that measurement,
+//! and it is the only number in the app the perf harness cannot take from outside.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gtk::gio;
 use gtk::glib;
@@ -69,8 +78,49 @@ fn asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
 /// The published documents of one application, and the handler that answers for
 /// them.
 pub(crate) struct Scheme {
-    documents: Rc<RefCell<HashMap<u64, Document>>>,
+    origin: Origin,
     next: Cell<u64>,
+}
+
+/// Everything an answer is made from: the documents published now, and the stopwatch
+/// the first page served stops.
+///
+/// One value rather than two because the handler closure needs both and they are the
+/// same thing — what this origin has answered, and what it has answered *with*.
+#[derive(Clone)]
+struct Origin {
+    documents: Rc<RefCell<HashMap<u64, Document>>>,
+    startup: Rc<Startup>,
+}
+
+/// How long this process took to have a document for the reader.
+///
+/// The clock starts when the application builds itself — the first thing axiomd does
+/// that is axiomd rather than the loader — and stops the first time this handler
+/// answers with a document's own bytes. Nothing else reads it and nothing branches on
+/// it: it is an instrument, like the view's navigation count, and it is what the perf
+/// harness holds to the cold-start budget.
+struct Startup {
+    began: Instant,
+    to_first_document: Cell<Option<Duration>>,
+}
+
+impl Startup {
+    fn new() -> Self {
+        Self {
+            began: Instant::now(),
+            to_first_document: Cell::new(None),
+        }
+    }
+
+    /// Called every time a document's page is served, and only the first one counts:
+    /// a re-render, a second window and a document opened an hour later are not
+    /// startup.
+    fn served_a_document(&self) {
+        if self.to_first_document.get().is_none() {
+            self.to_first_document.set(Some(self.began.elapsed()));
+        }
+    }
 }
 
 /// One document as the webview sees it: where its relative references resolve, the
@@ -111,9 +161,23 @@ enum Served {
 impl Scheme {
     pub(crate) fn new() -> Self {
         Self {
-            documents: Rc::new(RefCell::new(HashMap::new())),
+            origin: Origin {
+                documents: Rc::new(RefCell::new(HashMap::new())),
+                startup: Rc::new(Startup::new()),
+            },
             next: Cell::new(0),
         }
+    }
+
+    /// How long this process took from building itself to answering with its first
+    /// document, or `None` while it has not answered with one.
+    ///
+    /// The cold-start budget (issue #9, VISION: under 300 ms on a typical file) is this
+    /// number. It excludes what happens before the application exists — `execve` and
+    /// the dynamic loader — because that is the only part of a launch axiomd's own code
+    /// has no say in.
+    pub(crate) fn startup(&self) -> Option<Duration> {
+        self.origin.startup.to_first_document.get()
     }
 
     /// Makes `context`'s webviews serve their documents from this scheme.
@@ -121,10 +185,10 @@ impl Scheme {
     /// Must run before any webview using `context` loads a document URI; WebKit
     /// answers an unregistered scheme with a load error.
     pub(crate) fn install(&self, context: &webkit6::WebContext) {
-        let documents = self.documents.clone();
+        let origin = self.origin.clone();
         context.register_uri_scheme(SCHEME, move |request| {
             let uri = request.uri().unwrap_or_default();
-            let (status, body, content_type) = match serve(&documents, &uri) {
+            let (status, body, content_type) = match origin.serve(&uri) {
                 Served::Bytes { body, content_type } => (200, body, content_type),
                 Served::Missing => (404, Vec::new(), "text/plain".to_owned()),
                 Served::Refused => (403, Vec::new(), "text/plain".to_owned()),
@@ -151,7 +215,7 @@ impl Scheme {
             let root = file.parent().unwrap_or(Path::new("."));
             root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
         });
-        self.documents.borrow_mut().insert(
+        self.origin.documents.borrow_mut().insert(
             id,
             Document {
                 root,
@@ -160,7 +224,7 @@ impl Scheme {
             },
         );
         Publication {
-            documents: self.documents.clone(),
+            documents: self.origin.documents.clone(),
             id,
             uri: format!("{SCHEME}://{DOCUMENT_HOST_PREFIX}{id}/"),
         }
@@ -226,62 +290,70 @@ impl Drop for Publication {
     }
 }
 
-/// Answers one request URI. The whole policy of the scheme lives here.
-fn serve(documents: &RefCell<HashMap<u64, Document>>, uri: &str) -> Served {
-    let Ok(parsed) = glib::Uri::parse(uri, glib::UriFlags::NONE) else {
-        return Served::Refused;
-    };
-    if parsed.scheme() != SCHEME {
-        return Served::Refused;
-    }
-    let path = parsed.path();
-    let host = parsed.host().unwrap_or_default();
-
-    if host == ASSETS_HOST {
-        return match asset(&path) {
-            Some((body, content_type)) => Served::Bytes {
-                body,
-                content_type: content_type.to_owned(),
-            },
-            None => Served::Missing,
+impl Origin {
+    /// Answers one request URI. The whole policy of the scheme lives here.
+    fn serve(&self, uri: &str) -> Served {
+        let Ok(parsed) = glib::Uri::parse(uri, glib::UriFlags::NONE) else {
+            return Served::Refused;
         };
-    }
+        if parsed.scheme() != SCHEME {
+            return Served::Refused;
+        }
+        let path = parsed.path();
+        let host = parsed.host().unwrap_or_default();
 
-    if let Some(id) = number_after(&host, IMAGE_HOST_PREFIX) {
-        return match documents
-            .borrow()
-            .get(&id)
-            .and_then(|document| document.images.get(index_of(&path)?))
-        {
-            Some(image) => Served::Bytes {
-                body: image.body.clone(),
-                content_type: image.content_type.clone(),
-            },
-            None => Served::Missing,
+        if host == ASSETS_HOST {
+            return match asset(&path) {
+                Some((body, content_type)) => Served::Bytes {
+                    body,
+                    content_type: content_type.to_owned(),
+                },
+                None => Served::Missing,
+            };
+        }
+
+        if let Some(id) = number_after(&host, IMAGE_HOST_PREFIX) {
+            return match self
+                .documents
+                .borrow()
+                .get(&id)
+                .and_then(|document| document.images.get(index_of(&path)?))
+            {
+                Some(image) => Served::Bytes {
+                    body: image.body.clone(),
+                    content_type: image.content_type.clone(),
+                },
+                None => Served::Missing,
+            };
+        }
+
+        let Some(id) = number_after(&host, DOCUMENT_HOST_PREFIX) else {
+            return Served::Refused;
         };
-    }
-
-    let Some(id) = number_after(&host, DOCUMENT_HOST_PREFIX) else {
-        return Served::Refused;
-    };
-    let documents = documents.borrow();
-    let Some(document) = documents.get(&id) else {
-        return Served::Missing;
-    };
-
-    if path.is_empty() || path == "/" {
-        return match &document.html {
-            Some(html) => Served::Bytes {
-                body: html.clone().into_bytes(),
-                content_type: "text/html".to_owned(),
-            },
-            None => Served::Missing,
+        let documents = self.documents.borrow();
+        let Some(document) = documents.get(&id) else {
+            return Served::Missing;
         };
-    }
-    match &document.root {
-        Some(root) => file_under(root, &path),
-        // An untitled document is nowhere on disk, so there is nothing under it.
-        None => Served::Refused,
+
+        if path.is_empty() || path == "/" {
+            return match &document.html {
+                // The finish line of the cold-start budget, and the only place it can
+                // be: this is the moment a document's own bytes leave axiomd.
+                Some(html) => {
+                    self.startup.served_a_document();
+                    Served::Bytes {
+                        body: html.clone().into_bytes(),
+                        content_type: "text/html".to_owned(),
+                    }
+                }
+                None => Served::Missing,
+            };
+        }
+        match &document.root {
+            Some(root) => file_under(root, &path),
+            // An untitled document is nowhere on disk, so there is nothing under it.
+            None => Served::Refused,
+        }
     }
 }
 
@@ -387,7 +459,7 @@ mod tests {
         let publication = scheme.publish(Some(&file));
         publication.show("<!DOCTYPE html><h1>Notes</h1>".to_owned());
 
-        let (body, content_type) = served_bytes(serve(&scheme.documents, publication.uri()));
+        let (body, content_type) = served_bytes(scheme.origin.serve(publication.uri()));
 
         assert_eq!(
             String::from_utf8(body).unwrap(),
@@ -403,7 +475,7 @@ mod tests {
         let scheme = Scheme::new();
         let publication = scheme.publish(Some(&file));
 
-        assert_eq!(serve(&scheme.documents, publication.uri()), Served::Missing);
+        assert_eq!(scheme.origin.serve(publication.uri()), Served::Missing);
     }
 
     #[test]
@@ -415,7 +487,7 @@ mod tests {
         let publication = scheme.publish(Some(&file));
 
         let request = format!("{}images/logo.png", publication.uri());
-        let (body, content_type) = served_bytes(serve(&scheme.documents, &request));
+        let (body, content_type) = served_bytes(scheme.origin.serve(&request));
 
         assert_eq!(body, PIXEL_PNG);
         assert_eq!(content_type, "image/png");
@@ -439,7 +511,7 @@ mod tests {
             "/etc/passwd",
         ] {
             let request = format!("{}{escape}", publication.uri());
-            let served = serve(&scheme.documents, &request);
+            let served = scheme.origin.serve(&request);
             assert!(
                 !matches!(served, Served::Bytes { .. }),
                 "{request} was answered with {served:?}",
@@ -478,7 +550,7 @@ mod tests {
 
         let request = format!("{}leak.txt", publication.uri());
 
-        assert_eq!(serve(&scheme.documents, &request), Served::Refused);
+        assert_eq!(scheme.origin.serve(&request), Served::Refused);
     }
 
     /// The rendered document links this exact URI; if the scheme stopped answering
@@ -487,8 +559,7 @@ mod tests {
     fn serves_the_stylesheet_the_render_pipeline_links_to() {
         let scheme = Scheme::new();
 
-        let (body, content_type) =
-            served_bytes(serve(&scheme.documents, axiomd_render::STYLESHEET_URI));
+        let (body, content_type) = served_bytes(scheme.origin.serve(axiomd_render::STYLESHEET_URI));
 
         assert_eq!(
             String::from_utf8(body).unwrap(),
@@ -502,11 +573,11 @@ mod tests {
         let scheme = Scheme::new();
 
         assert_eq!(
-            serve(&scheme.documents, "axiomd://assets/../../../etc/passwd"),
+            scheme.origin.serve("axiomd://assets/../../../etc/passwd"),
             Served::Missing,
         );
         assert_eq!(
-            serve(&scheme.documents, "axiomd://assets/anything.js"),
+            scheme.origin.serve("axiomd://assets/anything.js"),
             Served::Missing,
         );
     }
@@ -515,12 +586,9 @@ mod tests {
     fn answers_for_no_scheme_but_its_own() {
         let scheme = Scheme::new();
 
+        assert_eq!(scheme.origin.serve("file:///etc/passwd"), Served::Refused,);
         assert_eq!(
-            serve(&scheme.documents, "file:///etc/passwd"),
-            Served::Refused,
-        );
-        assert_eq!(
-            serve(&scheme.documents, "https://example.com/tracker.png"),
+            scheme.origin.serve("https://example.com/tracker.png"),
             Served::Refused,
         );
     }
@@ -542,20 +610,70 @@ mod tests {
 
         assert_ne!(first.uri(), second.uri());
         assert_eq!(
-            served_bytes(serve(&scheme.documents, first.uri())).0,
+            served_bytes(scheme.origin.serve(first.uri())).0,
             b"<h1>A</h1>",
         );
         assert_eq!(
-            served_bytes(serve(&scheme.documents, second.uri())).0,
+            served_bytes(scheme.origin.serve(second.uri())).0,
             b"<h1>B</h1>",
         );
         assert_eq!(
-            serve(
-                &scheme.documents,
-                &format!("{}only-in-first.png", second.uri())
-            ),
+            scheme
+                .origin
+                .serve(&format!("{}only-in-first.png", second.uri())),
             Served::Missing,
         );
+    }
+
+    /// The cold-start budget is measured off this, so it has to start unanswered and
+    /// stop on the page rather than on anything else the handler answers. A stylesheet
+    /// or an image served first would otherwise report a startup that happened before
+    /// the reader had a document.
+    #[test]
+    fn startup_is_the_moment_the_first_document_page_is_served() {
+        let scratch = ScratchDir::new("scheme-startup");
+        let file = scratch.write("notes.md", "# Notes\n");
+        scratch.write("logo.png", PIXEL_PNG);
+        let scheme = Scheme::new();
+        let publication = scheme.publish(Some(&file));
+        publication.show("<h1>Notes</h1>".to_owned());
+
+        assert_eq!(scheme.startup(), None, "startup was over before it began");
+
+        scheme.origin.serve(axiomd_render::STYLESHEET_URI);
+        scheme
+            .origin
+            .serve(&format!("{}logo.png", publication.uri()));
+        assert_eq!(
+            scheme.startup(),
+            None,
+            "an asset the reader cannot read counted as their document",
+        );
+
+        scheme.origin.serve(publication.uri());
+        let first = scheme.startup().expect("the document was served");
+        assert!(first > Duration::ZERO, "no time at all passed");
+
+        // A second window, a re-render, a document opened an hour later: none of them
+        // are this process starting up, and none of them may move the number.
+        let second = scheme.publish(Some(&file));
+        second.show("<h1>Other</h1>".to_owned());
+        scheme.origin.serve(second.uri());
+        assert_eq!(scheme.startup(), Some(first), "a later page moved startup");
+    }
+
+    /// Nothing is served for a document whose page has not been rendered yet, so
+    /// nothing may claim startup is over either.
+    #[test]
+    fn startup_is_not_over_while_a_document_has_no_page() {
+        let scratch = ScratchDir::new("scheme-startup-blank");
+        let file = scratch.write("notes.md", "# Notes\n");
+        let scheme = Scheme::new();
+        let publication = scheme.publish(Some(&file));
+
+        assert_eq!(scheme.origin.serve(publication.uri()), Served::Missing);
+
+        assert_eq!(scheme.startup(), None);
     }
 
     /// Closing a window drops its publication; nothing it could serve survives.
@@ -573,10 +691,10 @@ mod tests {
 
         drop(publication);
 
-        assert_eq!(serve(&scheme.documents, &page), Served::Missing);
-        assert_eq!(serve(&scheme.documents, &image), Served::Missing);
-        assert_eq!(serve(&scheme.documents, &loaded), Served::Missing);
-        assert!(scheme.documents.borrow().is_empty());
+        assert_eq!(scheme.origin.serve(&page), Served::Missing);
+        assert_eq!(scheme.origin.serve(&image), Served::Missing);
+        assert_eq!(scheme.origin.serve(&loaded), Served::Missing);
+        assert!(scheme.origin.documents.borrow().is_empty());
     }
 
     /// An image the reader asked for comes back through the document's own origin,
@@ -594,15 +712,15 @@ mod tests {
         assert!(first.starts_with("axiomd://img-"), "{first}");
         assert_ne!(first, second, "two images shared one URI");
         assert_eq!(
-            served_bytes(serve(&scheme.documents, &first)),
+            served_bytes(scheme.origin.serve(&first)),
             (PIXEL_PNG.to_vec(), "image/png".to_owned()),
         );
         assert_eq!(
-            served_bytes(serve(&scheme.documents, &second)),
+            served_bytes(scheme.origin.serve(&second)),
             (b"GIF89a".to_vec(), "image/gif".to_owned()),
         );
         assert_eq!(
-            serve(&scheme.documents, &format!("{first}9")),
+            scheme.origin.serve(&format!("{first}9")),
             Served::Missing,
             "an image nobody loaded was answered",
         );
@@ -622,9 +740,9 @@ mod tests {
 
         assert_ne!(mine, theirs);
         drop(first);
-        assert_eq!(serve(&scheme.documents, &mine), Served::Missing);
+        assert_eq!(scheme.origin.serve(&mine), Served::Missing);
         assert_eq!(
-            served_bytes(serve(&scheme.documents, &theirs)).0,
+            served_bytes(scheme.origin.serve(&theirs)).0,
             b"GIF89a",
             "closing one window took another window's image with it",
         );

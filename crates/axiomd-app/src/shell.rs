@@ -172,6 +172,15 @@ impl Shell {
         self.windows.borrow().len()
     }
 
+    /// How long this launch took to have a document for the reader, or `None` while it
+    /// has not had one.
+    ///
+    /// About the process and not about any window, which is why it is asked of the
+    /// shell: a second window is not this application starting up.
+    pub(crate) fn startup(&self) -> Option<std::time::Duration> {
+        self.scheme.startup()
+    }
+
     pub(crate) fn window_at(&self, index: usize) -> Option<Rc<DocumentWindow>> {
         self.windows.borrow().get(index).cloned()
     }
