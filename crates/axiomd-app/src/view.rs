@@ -83,6 +83,17 @@ const FIND: &str = include_str!("find.js");
 /// place — has nothing to post to even if it could.
 const SECTION_MESSAGE: &str = "axiomdSection";
 
+/// One render as the page needs it when it is patched rather than loaded: the blocks,
+/// and the stylesheets the document links beside the bundled one.
+///
+/// The two travel together because they are one document: patching the blocks of a
+/// render while leaving the head of the last one is a page whose styling does not match
+/// what is in it.
+struct Patch<'a> {
+    body: &'a str,
+    stylesheets: &'a [String],
+}
+
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
     webview: webkit6::WebView,
@@ -94,7 +105,7 @@ pub(crate) struct DocumentView {
     /// A render that arrived before the first load finished, applied as soon as it
     /// does. Without this a document that changes while it is still opening would
     /// either be lost or cost a second load.
-    pending: RefCell<Option<String>>,
+    pending: RefCell<Option<(String, Vec<String>)>>,
     /// How many times this view has committed a load.
     ///
     /// The number a re-render must not move: showing a changed document by navigating
@@ -218,7 +229,11 @@ impl DocumentView {
                 webkit6::LoadEvent::Finished => {
                     view.ready.set(true);
                     let waiting = view.pending.borrow_mut().take();
-                    view.update(waiting.as_deref());
+                    view.update(
+                        waiting
+                            .as_ref()
+                            .map(|(body, stylesheets)| Patch { body, stylesheets }),
+                    );
                 }
                 _ => {}
             }
@@ -398,9 +413,13 @@ impl DocumentView {
                 fragment => format!("{}#{fragment}", publication.uri()),
             });
         } else if self.ready.get() {
-            self.update(Some(rendered.body()));
+            self.update(Some(Patch {
+                body: rendered.body(),
+                stylesheets: rendered.stylesheets(),
+            }));
         } else {
-            *self.pending.borrow_mut() = Some(rendered.body().to_owned());
+            *self.pending.borrow_mut() =
+                Some((rendered.body().to_owned(), rendered.stylesheets().to_vec()));
         }
     }
 
@@ -493,11 +512,17 @@ impl DocumentView {
     /// Both in one task, in that order, because two tasks would race and the reader
     /// would sometimes be left looking at the placeholder for an image they already
     /// loaded.
-    fn update(self: &Rc<Self>, body: Option<&str>) {
+    fn update(self: &Rc<Self>, next: Option<Patch<'_>>) {
         if !self.ready.get() {
             return;
         }
-        let patch = body.map(|body| format!("({PATCH})({})", as_js_string(body)));
+        let patch = next.map(|next| {
+            format!(
+                "({PATCH})({}, {})",
+                as_js_string(next.body),
+                as_js_array(next.stylesheets),
+            )
+        });
         let remote = format!("({REMOTE})({})", self.remote_state());
         let place = self
             .place
@@ -700,6 +725,13 @@ fn mark(webview: &webkit6::WebView, finding: &Rc<RefCell<Option<Finding>>>, brin
 /// A document is arbitrary text — quotes, backslashes, newlines, and the two
 /// separators a JavaScript parser treats as line breaks — and all of it has to survive
 /// the trip into the page as data rather than as syntax.
+/// The same, for a list of them: what the patch is handed as the document's
+/// stylesheets.
+fn as_js_array(values: &[String]) -> String {
+    let values: Vec<String> = values.iter().map(|value| as_js_string(value)).collect();
+    format!("[{}]", values.join(","))
+}
+
 fn as_js_string(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');

@@ -400,7 +400,7 @@ Mirrors the GitHub issues; order is the ktask queue order.
 - [ ] **Step 13** — Mermaid as the first asset-injection plugin *(Steps 4,
   16)*
 - [ ] **Step 14** — Flatpak packaging, local build only *(Step 4)*
-- [ ] **Step 16** — Plugin layer: fence handlers, event transforms,
+- [x] **Step 16** — Plugin layer: fence handlers, event transforms,
   post-render hooks, conditional assets, runtime toggles *(Step 3)*
 - [ ] **Step 17** — Second engine (pulldown-cmark) + engine registry/
   selection + measured comparison report for the default ruling *(Step 2)*

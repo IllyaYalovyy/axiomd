@@ -11,6 +11,7 @@
 
 mod support;
 
+use axiomd_render::Plugins;
 use support::{golden_dir, parse};
 
 /// A real PNG's first bytes, so an inlined image is asserted on image content rather
@@ -20,7 +21,7 @@ const PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 /// Exports `source` with `resolve` answering for the files it names.
 fn export(source: &str, name: &str) -> String {
     let parsed = parse(source);
-    axiomd_render::standalone(&parsed, name, &|reference| {
+    axiomd_render::standalone(&parsed, name, &Plugins::builtin(&[]), &|reference| {
         (reference == "images/logo.png").then(|| axiomd_render::Picture {
             bytes: PIXEL_PNG.to_vec(),
             content_type: "image/png".to_owned(),
@@ -259,7 +260,7 @@ fn an_exported_document_is_light_whoever_opens_it() {
 #[test]
 fn the_document_on_screen_says_what_it_is_called() {
     let parsed = parse("# Release Notes\n\nText.\n");
-    let rendered = axiomd_render::render(&parsed, "notes");
+    let rendered = axiomd_render::render(&parsed, "notes", &Plugins::builtin(&[]));
 
     assert!(
         rendered.html().contains("<title>Release Notes</title>"),

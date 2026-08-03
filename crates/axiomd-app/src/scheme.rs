@@ -71,7 +71,13 @@ const IMAGE_HOST_PREFIX: &str = "img-";
 fn asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
     match path {
         "/axiomd.css" => Some((axiomd_render::stylesheet().as_bytes().to_vec(), "text/css")),
-        _ => None,
+        // A plugin's own files, under `plugin/<id>/`. Compiled in like the stylesheet
+        // above and looked up the same way, so a plugin can no more reach the
+        // filesystem through this handler than the document can. A page only ever names
+        // one of these when the plugin that owns it was switched on and used while it
+        // was rendered.
+        _ => axiomd_render::Plugins::asset(path)
+            .map(|asset| (asset.bytes.to_vec(), asset.content_type)),
     }
 }
 
