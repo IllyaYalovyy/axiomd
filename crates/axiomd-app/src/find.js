@@ -26,7 +26,9 @@
 // The document is walked as one string of its text nodes, so what is searched is what
 // the reader can read: `[needle](https://example.com/needle)` is the word `needle`
 // once here and twice in the source, and a search for `example.com` finds nothing at
-// all in the rendered page. A match that runs across an element boundary — the `bo` of
+// all in the rendered page. Text that is in the document but not on the page — the
+// source under a diagram a capability has drawn — is not read either, for the same
+// reason and by the same rule. A match that runs across an element boundary — the `bo` of
 // a bolded `**bo**ld` — is marked in as many pieces as it crosses, all carrying the
 // same match number, so it counts once and highlights whole.
 //
@@ -62,11 +64,28 @@
     }
 
     // The document as one string, and where each text node starts in it.
+    //
+    // Text the reader cannot see is not part of it. A block a capability has drawn
+    // keeps the source it was drawn from — that is what makes a diagram survive a
+    // re-render, and what comes back if the capability is switched off — but the
+    // reader is looking at a picture, and a search that counted the words underneath
+    // it would report matches nothing could be scrolled to. Asked of the parent
+    // element rather than of the text node, and remembered while the parent does not
+    // change, because text nodes come in runs under one element.
     const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
     const nodes = [];
     const starts = [];
     let whole = '';
+    let parent = null;
+    let readable = false;
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      if (node.parentElement !== parent) {
+        parent = node.parentElement;
+        readable = parent !== null && parent.checkVisibility();
+      }
+      if (!readable) {
+        continue;
+      }
       nodes.push(node);
       starts.push(whole.length);
       whole += node.data;

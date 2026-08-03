@@ -440,6 +440,11 @@ fn opening_another_document_puts_the_search_away() {
     app.wait_for("the search to be put away", || !app.search().shown);
     assert_eq!(app.search().counter, "");
     assert_eq!(marks(&app), 0);
+    // The bar is put away the moment the window is given another document, which is
+    // before that document's page has finished arriving — so the page is waited for
+    // rather than assumed to be there. Under load it is not, and this assertion read
+    // the document being left.
+    app.wait_until("document.querySelector('h1').textContent === 'Other'");
     assert_eq!(app.dom_text("h1"), "Other");
 
     assert!(app.close().is_empty(), "the launch left processes behind");

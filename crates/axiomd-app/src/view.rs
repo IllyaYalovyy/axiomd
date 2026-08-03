@@ -29,6 +29,17 @@
 //! asserts both halves of the result: the document changes, and a `<script>` inside it
 //! still cannot run.
 //!
+//! # What draws a diagram
+//!
+//! Some capabilities cannot be rendered to markup at all — a diagram's size is a
+//! question about fonts and a viewport, which only exist here — so a render can say
+//! that a document needs code run for it (`Rendered::scripts`). The view runs it in
+//! the same world it patches from, after the blocks it draws into are in the page, and
+//! once per page rather than once per render. The document is not made any less inert
+//! by this: it still cannot run a script, its policy is not loosened, and what runs is
+//! a file compiled into the application, resolved through the scheme so that a URI
+//! cannot name anything else.
+//!
 //! # Where a click goes
 //!
 //! A document cannot run a script, so every link in it arrives here as a navigation
@@ -94,6 +105,13 @@ struct Patch<'a> {
     stylesheets: &'a [String],
 }
 
+/// One capability's code, as the view runs it: the URI it is known by, so that it is
+/// run once and not once per render, and the file itself.
+struct Capability {
+    uri: String,
+    source: String,
+}
+
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
     webview: webkit6::WebView,
@@ -140,6 +158,15 @@ pub(crate) struct DocumentView {
     /// for, and every one that did not arrive. Cleared when the view is sent to
     /// another document, because it describes this page and no other.
     images: RefCell<RemoteImages>,
+    /// The code the document on screen needs run for it, as the render named it —
+    /// what a capability that draws rather than writes markup carries
+    /// (`Rendered::scripts`). Replaced by every render, because switching a capability
+    /// on or off changes exactly this list.
+    needs: RefCell<Vec<String>>,
+    /// What has already been run into the page now loaded, so that a capability is
+    /// started once and not once per keystroke. Emptied when the view is sent to
+    /// another document: a page load takes the world it ran in with it.
+    running: RefCell<Vec<String>>,
     /// The search the page is showing, or `None` when the reader is not searching.
     ///
     /// Held by the view rather than by the search bar because a render is what
@@ -196,6 +223,8 @@ impl DocumentView {
             sectioned: RefCell::new(None),
             reports: Cell::new(0),
             images: RefCell::new(RemoteImages::default()),
+            needs: RefCell::new(Vec::new()),
+            running: RefCell::new(Vec::new()),
             finding: Rc::new(RefCell::new(None)),
         });
 
@@ -398,12 +427,16 @@ impl DocumentView {
             *self.root.borrow_mut() = publication.root();
             // The images belonged to the document being left, not to this one.
             *self.images.borrow_mut() = RemoteImages::default();
+            // And so did whatever was running in it: a page load leaves nothing of the
+            // world its capabilities ran in, so this page has none of them yet.
+            self.running.borrow_mut().clear();
             // And so did the marks: this page has never been searched.
             if let Some(finding) = self.finding.borrow_mut().as_mut() {
                 finding.marked = false;
             }
         }
         self.images.borrow_mut().sources = rendered.remote_images().to_vec();
+        *self.needs.borrow_mut() = rendered.scripts().to_vec();
 
         if arriving {
             self.ready.set(false);
@@ -523,6 +556,7 @@ impl DocumentView {
                 as_js_array(next.stylesheets),
             )
         });
+        let starting = self.capabilities_to_start();
         let remote = format!("({REMOTE})({})", self.remote_state());
         let place = self
             .place
@@ -559,6 +593,17 @@ impl DocumentView {
                     .await
             {
                 eprintln!("axiomd: the document could not be updated in place: {error}");
+            }
+            // And then whatever the document needs drawing, which has to come after the
+            // blocks it draws into are in the page. Every file in one evaluation: each
+            // of these runs in a scope of its own, so a library and the code that
+            // drives it are only in the same world if they arrive together.
+            if let Some(starting) = starting
+                && let Err(error) = webview
+                    .evaluate_javascript_future(&starting, Some(WORLD), None)
+                    .await
+            {
+                eprintln!("axiomd: a capability of this document could not be started: {error}");
             }
             if let Err(error) = webview
                 .evaluate_javascript_future(&remote, Some(WORLD), None)
@@ -612,6 +657,42 @@ impl DocumentView {
             return;
         }
         mark(&self.webview, &self.finding, bring);
+    }
+
+    /// The code this document needs that the page is not already running, as one
+    /// program to evaluate — or `None`, which is every update of every document no
+    /// drawing capability contributed to.
+    ///
+    /// They are marked as running here rather than after the evaluation, because two
+    /// updates can be in flight at once and the second must not start a library the
+    /// first is already starting. A capability that then fails to start says so in the
+    /// log and is not tried again on this page; it is not something a reader can be
+    /// asked about mid-document (invariant 12).
+    fn capabilities_to_start(&self) -> Option<String> {
+        let mut running = self.running.borrow_mut();
+        let starting: Vec<Capability> = self
+            .needs
+            .borrow()
+            .iter()
+            .filter(|uri| !running.contains(uri))
+            .filter_map(|uri| {
+                Some(Capability {
+                    uri: uri.clone(),
+                    source: crate::scheme::script(uri)?,
+                })
+            })
+            .collect();
+        if starting.is_empty() {
+            return None;
+        }
+        running.extend(starting.iter().map(|capability| capability.uri.clone()));
+        Some(
+            starting
+                .into_iter()
+                .map(|capability| capability.source)
+                .collect::<Vec<String>>()
+                .join("\n;\n"),
+        )
     }
 
     /// The remote images of this page as the object `remote.js` is called with.
