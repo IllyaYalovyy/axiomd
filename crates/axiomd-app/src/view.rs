@@ -37,6 +37,14 @@
 //! thing only it knows — which document it is showing — and the state that belongs to
 //! the page rather than to the file: the remote images the reader has asked for, and
 //! which of those did not arrive.
+//!
+//! # Searching what is on screen
+//!
+//! The view is one of the two surfaces the search bar drives ([`crate::find`]), and the
+//! only one whose marks a render can destroy: they stand inside the very blocks the
+//! patch replaces. So the search is held here rather than in the bar — taken off before
+//! the patch and put back after it, in the same task — and it is the patch's ordering
+//! that makes that safe rather than luck.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -46,6 +54,7 @@ use axiomd_render::Rendered;
 use gtk::glib;
 use webkit6::prelude::*;
 
+use crate::find::{Counted, Query, Searchable};
 use crate::links::{Follow, follow};
 use crate::scheme::Publication;
 
@@ -65,6 +74,9 @@ const PLACE: &str = include_str!("place.js");
 /// The page saying which section the reader is in, once per frame in which that can
 /// have changed.
 const TRACK: &str = include_str!("track.js");
+
+/// The reader's search, marked over the words of the page.
+const FIND: &str = include_str!("find.js");
 
 /// The message handler the page reports the reader's section to. Registered in
 /// [`WORLD`] and nowhere else, so a document — which cannot run a script in the first
@@ -117,6 +129,24 @@ pub(crate) struct DocumentView {
     /// for, and every one that did not arrive. Cleared when the view is sent to
     /// another document, because it describes this page and no other.
     images: RefCell<RemoteImages>,
+    /// The search the page is showing, or `None` when the reader is not searching.
+    ///
+    /// Held by the view rather than by the search bar because a render is what
+    /// invalidates it: the marks live in the blocks the patch is about to replace, so
+    /// they come off before it and go back on after it, in the same task — which is
+    /// the only place that ordering can be guaranteed. Shared rather than owned so
+    /// that that task can reach it without holding the view alive.
+    finding: Rc<RefCell<Option<Finding>>>,
+}
+
+/// A search the page is showing.
+struct Finding {
+    looking_for: Query,
+    /// Which match is the current one, counting from zero in document order.
+    nth: usize,
+    /// Whether the marks for this query are in the page now. A render takes them out.
+    marked: bool,
+    counted: Counted,
 }
 
 /// The window's answer to a link the view refused, held so that a click can reach it.
@@ -155,6 +185,7 @@ impl DocumentView {
             sectioned: RefCell::new(None),
             reports: Cell::new(0),
             images: RefCell::new(RemoteImages::default()),
+            finding: Rc::new(RefCell::new(None)),
         });
 
         // The one thing the page is allowed to say to the app, and it can only say it
@@ -336,7 +367,12 @@ impl DocumentView {
     /// The first render of a document is loaded; every render after it is patched into
     /// the page already showing, keeping the reader's place and the view's navigation
     /// count.
-    pub(crate) fn show(&self, publication: &Publication, rendered: &Rendered, fragment: &str) {
+    pub(crate) fn show(
+        self: &Rc<Self>,
+        publication: &Publication,
+        rendered: &Rendered,
+        fragment: &str,
+    ) {
         // Whatever happens to the page in front of the reader, the origin behind it
         // serves the document they are looking at.
         publication.show(rendered.html().to_owned());
@@ -347,6 +383,10 @@ impl DocumentView {
             *self.root.borrow_mut() = publication.root();
             // The images belonged to the document being left, not to this one.
             *self.images.borrow_mut() = RemoteImages::default();
+            // And so did the marks: this page has never been searched.
+            if let Some(finding) = self.finding.borrow_mut().as_mut() {
+                finding.marked = false;
+            }
         }
         self.images.borrow_mut().sources = rendered.remote_images().to_vec();
 
@@ -423,7 +463,7 @@ impl DocumentView {
 
     /// Puts an image the reader asked for into the page, at every placeholder that
     /// stands for it.
-    pub(crate) fn image_arrived(&self, source: &str, uri: String) {
+    pub(crate) fn image_arrived(self: &Rc<Self>, source: &str, uri: String) {
         {
             let mut images = self.images.borrow_mut();
             images.failed.retain(|(url, _)| url != source);
@@ -434,7 +474,7 @@ impl DocumentView {
 
     /// Says beside the placeholder why the image is not there — inline, and still one
     /// click away from being tried again.
-    pub(crate) fn image_failed(&self, source: &str, complaint: String) {
+    pub(crate) fn image_failed(self: &Rc<Self>, source: &str, complaint: String) {
         self.images
             .borrow_mut()
             .failed
@@ -453,7 +493,7 @@ impl DocumentView {
     /// Both in one task, in that order, because two tasks would race and the reader
     /// would sometimes be left looking at the placeholder for an image they already
     /// loaded.
-    fn update(&self, body: Option<&str>) {
+    fn update(self: &Rc<Self>, body: Option<&str>) {
         if !self.ready.get() {
             return;
         }
@@ -464,8 +504,28 @@ impl DocumentView {
             .take()
             .map(|line| format!("({PLACE}).scrollTo({line}, false)"));
         let track = format!("({TRACK})({PLACE}, \"{SECTION_MESSAGE}\")");
+        // The marks stand in the blocks the patch is about to compare and replace, and
+        // a block holding one would be rebuilt as changed even where the reader changed
+        // nothing. They come off here and go back on at the end of this same task.
+        //
+        // Whether or not this view believes it has marked anything: a search asked for a
+        // moment ago may still be on its way to the page, and it will get there before
+        // this does — the web process runs what it is sent in the order it is sent.
+        let unmark = self
+            .finding
+            .borrow()
+            .is_some()
+            .then(|| format!("({FIND}).clear()"));
+        let searching = self.finding.clone();
         let webview = self.webview.clone();
         glib::spawn_future_local(async move {
+            if let Some(unmark) = unmark
+                && let Err(error) = webview
+                    .evaluate_javascript_future(&unmark, Some(WORLD), None)
+                    .await
+            {
+                eprintln!("axiomd: the search could not be taken off the document: {error}");
+            }
             // Returns at once and finishes on the main loop: patching a large document
             // must not be something the window waits for (invariant 4).
             if let Some(patch) = patch
@@ -500,7 +560,33 @@ impl DocumentView {
             {
                 eprintln!("axiomd: the reader's section could not be followed: {error}");
             }
+            // And last, the reader's search, back onto the blocks the page now has —
+            // without moving them, because a document that changed under somebody
+            // searching it must not also carry them somewhere else (invariant 5).
+            //
+            // Marked afresh rather than re-selected: whatever was in the page is in the
+            // blocks the patch has just taken out of it. Said here rather than before
+            // the patch, because an answer to a search asked for a moment ago may have
+            // arrived in between and claimed otherwise.
+            if let Some(finding) = searching.borrow_mut().as_mut() {
+                finding.marked = false;
+            }
+            mark(&webview, &searching, false);
         });
+    }
+
+    /// Marks the search this page is showing, if it is showing one.
+    ///
+    /// `bring` is whether the reader asked to be taken to the current match: they did
+    /// when they typed or pressed Next, and they did not when the document changed
+    /// under them.
+    fn mark_matches(&self, bring: bool) {
+        if !self.ready.get() {
+            // The page is still arriving. Nothing is lost: the load finishes into
+            // `update`, which comes back through here.
+            return;
+        }
+        mark(&self.webview, &self.finding, bring);
     }
 
     /// The remote images of this page as the object `remote.js` is called with.
@@ -512,6 +598,101 @@ impl DocumentView {
             as_js_object(&images.failed),
         )
     }
+}
+
+impl Searchable for DocumentView {
+    /// The rendered page, searched by its words: `[needle](https://example.com/needle)`
+    /// is the word `needle` once here, where the source has it twice, and a search for
+    /// `example.com` finds nothing at all (`find.js`).
+    fn show_matches(&self, looking_for: &Query, nth: usize, bring: bool, counted: Counted) {
+        {
+            let mut finding = self.finding.borrow_mut();
+            // Only the current match moved: the marks are already where they belong,
+            // so pressing Next costs a class and a scroll rather than a walk of the
+            // document.
+            let marked = finding
+                .as_ref()
+                .is_some_and(|finding| finding.marked && finding.looking_for == *looking_for);
+            *finding = Some(Finding {
+                looking_for: looking_for.clone(),
+                nth,
+                marked,
+                counted,
+            });
+        }
+        self.mark_matches(bring);
+    }
+
+    fn hide_matches(&self) {
+        let marked = self.finding.borrow_mut().take().is_some();
+        if !marked || !self.ready.get() {
+            return;
+        }
+        let webview = self.webview.clone();
+        glib::spawn_future_local(async move {
+            if let Err(error) = webview
+                .evaluate_javascript_future(&format!("({FIND}).clear()"), Some(WORLD), None)
+                .await
+            {
+                eprintln!("axiomd: the search could not be taken off the document: {error}");
+            }
+        });
+    }
+}
+
+/// Puts the search in `finding` onto the page `webview` is showing, and tells whoever
+/// asked for it how many matches it made.
+///
+/// Free of the view on purpose: it is called both from the view and from the task that
+/// has just patched the document, and that task must be able to finish without keeping
+/// a window alive that the reader has closed.
+fn mark(webview: &webkit6::WebView, finding: &Rc<RefCell<Option<Finding>>>, bring: bool) {
+    let Some((script, looking_for)) = finding.borrow().as_ref().map(|finding| {
+        let script = if finding.marked {
+            format!("({FIND}).select({}, {bring})", finding.nth)
+        } else {
+            format!(
+                "({FIND}).apply({}, {}, {}, {bring})",
+                as_js_string(&finding.looking_for.text),
+                finding.looking_for.cased,
+                finding.nth,
+            )
+        };
+        (script, finding.looking_for.clone())
+    }) else {
+        return;
+    };
+
+    let finding = finding.clone();
+    let webview = webview.clone();
+    glib::spawn_future_local(async move {
+        let counted = match webview
+            .evaluate_javascript_future(&script, Some(WORLD), None)
+            .await
+        {
+            Ok(answer) => answer.to_str().parse().unwrap_or(0),
+            Err(error) => {
+                eprintln!("axiomd: the document could not be searched: {error}");
+                return;
+            }
+        };
+        // The reader may have typed since this went out. The answer says which query
+        // it counted, and an answer about a search they have moved on from is dropped
+        // rather than shown as the count of the one they are running.
+        let telling = {
+            let mut finding = finding.borrow_mut();
+            match finding.as_mut() {
+                Some(current) if current.looking_for == looking_for => {
+                    current.marked = true;
+                    Some(current.counted.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(telling) = telling {
+            telling(&looking_for, counted);
+        }
+    });
 }
 
 /// `text` as a JavaScript string literal.

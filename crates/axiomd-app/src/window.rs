@@ -76,6 +76,7 @@ use gtk::glib;
 
 use crate::document::{FileId, Renderer};
 use crate::editor::Editor;
+use crate::find::{Find, Searchable};
 use crate::links::Follow;
 use crate::outline::Outline;
 use crate::remote;
@@ -110,6 +111,7 @@ pub(crate) struct DocumentWindow {
     view: Rc<DocumentView>,
     editor: Rc<Editor>,
     outline: Rc<Outline>,
+    find: Rc<Find>,
     status: adw::StatusPage,
     surfaces: gtk::Stack,
     scheme: Rc<Scheme>,
@@ -295,8 +297,6 @@ impl DocumentWindow {
         let notice = Notice::new();
 
         let layout = adw::ToolbarView::new();
-        layout.add_top_bar(&header);
-        layout.add_top_bar(notice.widget());
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -305,6 +305,20 @@ impl DocumentWindow {
             .default_height(700)
             .content(&layout)
             .build();
+
+        // The search bar goes directly under the header and above everything the app
+        // has to say, because it is the reader's own doing rather than the app's. It
+        // holds both surfaces and asks whichever one the reader is looking at, so the
+        // window only has to tell it when that changes.
+        let find = Find::new(
+            &window,
+            view.clone() as Rc<dyn Searchable>,
+            editor.clone() as Rc<dyn Searchable>,
+        );
+
+        layout.add_top_bar(&header);
+        layout.add_top_bar(find.widget());
+        layout.add_top_bar(notice.widget());
 
         // The outline goes between the header and the document: it owns the split the
         // two surfaces sit in, the `F9` action, and the breakpoint that gets it out of
@@ -319,6 +333,7 @@ impl DocumentWindow {
             view,
             editor,
             outline,
+            find,
             status,
             surfaces,
             scheme: scheme.clone(),
@@ -407,6 +422,17 @@ impl DocumentWindow {
                 window.retitle();
                 window.schedule_render();
                 window.schedule_autosave();
+            }
+        });
+
+        // Closing the search gives the keyboard back to whatever the reader was doing,
+        // so that Escape out of the bar in edit mode leaves them able to type.
+        let searched = Rc::downgrade(&document_window);
+        document_window.find.connect_closed(move || {
+            if let Some(window) = searched.upgrade()
+                && window.mode.get() == Mode::Edit
+            {
+                window.editor.take_the_keyboard();
             }
         });
 
@@ -570,6 +596,24 @@ impl DocumentWindow {
         }
     }
 
+    /// The search bar as the reader sees it: whether it is up, what is in it, what the
+    /// counter says, whether walking the matches has just wrapped, and whether case is
+    /// being matched.
+    pub(crate) fn search(&self, of: &str) -> Option<String> {
+        if of == "find-highlights" {
+            // What the *source* is showing highlighted; the rendered page is read
+            // straight out of its own DOM, where every other assertion about a
+            // document lives.
+            return Some(self.editor.highlighted().join("\n"));
+        }
+        self.find.showing(of)
+    }
+
+    /// Types `text` into the search bar, exactly as pressing the keys does.
+    pub(crate) fn search_for(&self, text: &str) {
+        self.find.type_query(text);
+    }
+
     /// How many pages this window has finished showing since it was built.
     pub(crate) fn renders(&self) -> u32 {
         self.renders.get()
@@ -699,6 +743,9 @@ impl DocumentWindow {
         self.epoch.set(epoch);
         self.notice.hide();
         self.fetching.borrow_mut().clear();
+        // The search was of the document being left. A count of a document nobody is
+        // looking at any more is worse than no count at all.
+        self.find.close();
 
         let open = OpenDocument {
             id: Cell::new(file.and_then(FileId::of)),
@@ -905,6 +952,9 @@ impl DocumentWindow {
     /// Puts `mode`'s surface on screen and tells the header-bar button about it.
     fn enter(&self, mode: Mode) {
         self.mode.set(mode);
+        // A search the reader has open follows them across: the same bar, the same
+        // words, counted over what is now in front of them (issue #8).
+        self.find.look_in(mode);
         if self.showing() != STATUS_PAGE || mode == Mode::Edit {
             self.surfaces.set_visible_child_name(match mode {
                 Mode::Read => DOCUMENT_PAGE,
@@ -1588,6 +1638,9 @@ fn primary_menu_button() -> gtk::MenuButton {
     documents.append(Some("_New Window"), Some("app.new"));
     documents.append(Some("_Open…"), Some("app.open"));
 
+    let reading = gio::Menu::new();
+    reading.append(Some("_Find…"), Some(crate::find::FIND));
+
     let editing = gio::Menu::new();
     editing.append(Some("_Edit Source"), Some(MODE));
     editing.append(Some("_Save"), Some(SAVE));
@@ -1604,6 +1657,7 @@ fn primary_menu_button() -> gtk::MenuButton {
 
     let menu = gio::Menu::new();
     menu.append_section(None, &documents);
+    menu.append_section(None, &reading);
     menu.append_section(None, &editing);
     menu.append_section(None, &leaving);
     menu.append_section(None, &application);
