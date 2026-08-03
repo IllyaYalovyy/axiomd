@@ -6,6 +6,8 @@ mod scheme;
 mod shell;
 #[cfg(test)]
 mod testing;
+mod view;
+mod watch;
 mod window;
 
 use std::process::ExitCode;

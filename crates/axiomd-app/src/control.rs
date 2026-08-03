@@ -176,6 +176,13 @@ impl Session {
                 self.selected.set(None);
                 Ok(String::new())
             }
+            // The other half of opening: the document takes over the window the user
+            // is in, which is where `Ctrl+O` and the file chooser end.
+            "open-here" => {
+                let here = self.target(shell)?;
+                shell.show(app, Path::new(payload), Some(&here));
+                Ok(String::new())
+            }
             "select" => {
                 let index = payload
                     .parse::<usize>()
@@ -239,6 +246,7 @@ impl Session {
             "navigations" => Ok(window.navigations().to_string()),
             "renders" => Ok(window.renders().to_string()),
             "showing" => Ok(window.showing().to_owned()),
+            "banner" => Ok(window.banner()),
             other => Err(format!("no such window property: {other}")),
         }
     }
