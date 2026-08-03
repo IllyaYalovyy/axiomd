@@ -20,7 +20,12 @@ const WITHOUT_A_DIAGRAM: &str = "# Notes\n\nBefore.\n\n```rust\nfn main() {}\n``
 
 /// Renders as a window does, with the plugins a first run reads under.
 fn render(source: &str) -> Rendered {
-    axiomd_render::render(&parse(source), "fixture", &Plugins::builtin(&[]))
+    axiomd_render::render(
+        &parse(source),
+        "fixture",
+        &Plugins::builtin(&[]),
+        &axiomd_render::Folder::empty(),
+    )
 }
 
 /// The fence becomes an anchored block that still holds the diagram's source, so the
@@ -76,7 +81,7 @@ fn a_document_with_a_diagram_asks_for_the_bundled_library() {
     // scheme, which is the whole of what a document can reach.
     for uri in rendered.scripts() {
         let path = uri.strip_prefix("axiomd://assets").expect("an asset URI");
-        let asset = Plugins::asset(path).unwrap_or_else(|| panic!("{uri} is not bundled"));
+        let asset = axiomd_render::asset(path).unwrap_or_else(|| panic!("{uri} is not bundled"));
         assert_eq!(asset.content_type, "text/javascript");
         assert!(!asset.bytes.is_empty());
     }
@@ -100,7 +105,12 @@ fn a_document_without_a_diagram_asks_for_no_script_at_all() {
 #[test]
 fn switching_the_plugin_off_leaves_the_fence_as_an_ordinary_code_block() {
     let plugins = Plugins::builtin(&["mermaid".to_owned()]);
-    let rendered = axiomd_render::render(&parse(WITH_A_DIAGRAM), "fixture", &plugins);
+    let rendered = axiomd_render::render(
+        &parse(WITH_A_DIAGRAM),
+        "fixture",
+        &plugins,
+        &axiomd_render::Folder::empty(),
+    );
 
     assert_eq!(rendered.scripts(), [] as [String; 0]);
     assert!(
@@ -121,6 +131,7 @@ fn an_exported_document_carries_no_script() {
         &parse(WITH_A_DIAGRAM),
         "fixture",
         &Plugins::builtin(&[]),
+        &axiomd_render::Folder::empty(),
         &|_| None,
     );
 

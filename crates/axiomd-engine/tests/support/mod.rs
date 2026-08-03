@@ -367,10 +367,10 @@ impl Writer {
                 // Attribute order and the lack of a self-closing slash are what the
                 // GFM spec's own expected output uses; see spec examples 279-280.
                 match task {
-                    Some(true) => {
+                    Some(task) if task.checked => {
                         self.push("<input checked=\"\" disabled=\"\" type=\"checkbox\"> ")
                     }
-                    Some(false) => self.push("<input disabled=\"\" type=\"checkbox\"> "),
+                    Some(_) => self.push("<input disabled=\"\" type=\"checkbox\"> "),
                     None => {}
                 }
                 self.open.push(OpenTag::Item);
@@ -460,7 +460,7 @@ impl Writer {
                 self.open.push(OpenTag::Image);
                 self.plain_depth = 1;
             }
-            Tag::WikiLink { target } => {
+            Tag::WikiLink { target, .. } => {
                 self.push("<a href=\"");
                 let href = escape_href(target);
                 self.push(&href);

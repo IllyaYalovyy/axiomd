@@ -192,28 +192,37 @@ pub enum Alignment {
     Right,
 }
 
-/// The kind of a GitHub/Obsidian callout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CalloutKind {
-    /// `> [!NOTE]`
-    Note,
-    /// `> [!TIP]`
-    Tip,
-    /// `> [!IMPORTANT]`
-    Important,
-    /// `> [!WARNING]`
-    Warning,
-    /// `> [!CAUTION]`
-    Caution,
-}
-
 /// A callout marker found on a block quote.
+///
+/// The kind is carried as the author wrote it rather than as a closed set of
+/// variants: Obsidian's vocabulary is open, an unknown kind is a callout too, and
+/// deciding what a kind *looks like* is styling — which belongs to the renderer and
+/// not to the parser.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Callout<'a> {
-    /// Which callout this is.
-    pub kind: CalloutKind,
+    /// The kind between the brackets, lowercased — `note`, `tldr`, `bug`, or
+    /// whatever else the author wrote.
+    pub kind: Cow<'a, str>,
     /// The author's replacement title, if they wrote one after the marker.
     pub title: Option<Cow<'a, str>>,
+    /// Whether the author asked for the callout to fold, and how it starts:
+    /// `Some(true)` for `+` (folds, starts open), `Some(false)` for `-` (folds,
+    /// starts shut), `None` for a callout that does not fold at all.
+    pub fold: Option<bool>,
+}
+
+/// A task list item's checkbox, and where its state lives in the source.
+///
+/// The offset is what makes a checkbox something a reader can press: toggling one
+/// rewrites exactly that byte, so two identical items on two lines are told apart by
+/// where they are rather than by what they say (invariant 3 — never a text search).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Task {
+    /// Whether the box is ticked.
+    pub checked: bool,
+    /// Byte offset, in the parsed source, of the single character between the
+    /// brackets — the `x` of `[x]`, or the space of `[ ]`.
+    pub marker: usize,
 }
 
 /// A container that opens and later closes around other events.
@@ -251,8 +260,8 @@ pub enum Tag<'a> {
     },
     /// One item of a list.
     Item {
-        /// `Some(checked)` when the item is a task list item.
-        task: Option<bool>,
+        /// `Some` when the item is a task list item.
+        task: Option<Task>,
     },
     /// A footnote definition.
     FootnoteDefinition {
@@ -298,6 +307,10 @@ pub enum Tag<'a> {
     WikiLink {
         /// The link target, as written.
         target: Cow<'a, str>,
+        /// Whether the author wrote it as an embed (`![[target]]`). Transclusion is
+        /// out of scope (issue #12), so an embed is a reference to something that is
+        /// not here — the renderer shows it as such rather than dropping it.
+        embed: bool,
     },
 }
 

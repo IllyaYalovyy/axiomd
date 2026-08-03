@@ -205,24 +205,6 @@ impl Plugins {
         self.registered.iter().map(|plugin| plugin.manifest())
     }
 
-    /// The asset behind a request path under `axiomd://assets`, or `None` for a path
-    /// that names no built-in plugin's file.
-    ///
-    /// It answers for the plugins compiled into the application rather than for one
-    /// registry: a document only ever names an asset whose plugin was switched on and
-    /// used when it was rendered, and the page it named it from is the one being
-    /// displayed.
-    pub fn asset(path: &str) -> Option<Asset> {
-        let (id, name) = path.strip_prefix(ASSET_PREFIX)?.split_once('/')?;
-        builtin()
-            .map(|plugin| plugin.manifest())
-            .find(|manifest| manifest.id == id)?
-            .assets
-            .iter()
-            .find(|asset| asset.name == name)
-            .copied()
-    }
-
     /// The plugin that draws fences in `language`, if one does.
     pub(crate) fn claiming(&self, language: &str) -> Option<usize> {
         self.registered.iter().position(|plugin| {
@@ -385,6 +367,23 @@ pub(crate) fn asset_uri(id: &str, asset: &Asset) -> String {
         "axiomd://assets{ASSET_PREFIX}{id}/{name}",
         name = asset.name
     )
+}
+
+/// The asset behind a request path under `axiomd://assets`, or `None` for a path that
+/// names no built-in plugin's file.
+///
+/// It answers for the plugins compiled into the application rather than for one
+/// registry: a document only ever names an asset whose plugin was switched on and used
+/// when it was rendered, and the page it named it from is the one being displayed.
+pub(crate) fn asset(path: &str) -> Option<Asset> {
+    let (id, name) = path.strip_prefix(ASSET_PREFIX)?.split_once('/')?;
+    builtin()
+        .map(|plugin| plugin.manifest())
+        .find(|manifest| manifest.id == id)?
+        .assets
+        .iter()
+        .find(|asset| asset.name == name)
+        .copied()
 }
 
 /// Every plugin compiled into the application, in the order they are offered work and

@@ -77,6 +77,11 @@ fn builder(carrying_its_pictures: bool) -> Builder<'static> {
         .add_generic_attributes(["class", "data-line", "id"])
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled"])
+        // A foldable callout is a `<details>` that starts open or shut, which is how
+        // folding happens in a document that cannot run a script. `open` is the whole
+        // of what a document may say about it: a boolean attribute with no value, so
+        // there is nothing here for a hostile document to smuggle anything through.
+        .add_tag_attributes("details", ["open"])
         .add_tag_attributes("a", ["data-remote-src"])
         .add_url_schemes(["axiomd"])
         // `<div align="center">` is how a README centres its badges; the HTML

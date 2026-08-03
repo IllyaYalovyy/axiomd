@@ -16,8 +16,8 @@
 use std::path::Path;
 
 use axiomd_engine::{
-    Alignment, Callout, CalloutKind, ComrakEngine, EngineId, Event, Extension, Extensions,
-    MarkdownEngine, Parsed, Span, SpannedEvent, Tag, TagEnd,
+    Alignment, Callout, ComrakEngine, EngineId, Event, Extension, Extensions, MarkdownEngine,
+    Parsed, Span, SpannedEvent, Tag, TagEnd,
 };
 
 #[test]
@@ -55,9 +55,10 @@ fn the_whole_public_api_is_usable_without_comrak() {
         match event {
             Event::Start(tag) => match tag {
                 Tag::BlockQuote {
-                    callout: Some(Callout { kind, title }),
+                    callout: Some(Callout { kind, title, fold }),
                 } => {
-                    assert_eq!(*kind, CalloutKind::Tip);
+                    assert_eq!(kind.as_ref(), "tip");
+                    assert_eq!(*fold, None);
                     assert_eq!(title.as_deref(), Some("Do it"));
                 }
                 Tag::TableCell { alignment } => assert_eq!(*alignment, Alignment::Left),

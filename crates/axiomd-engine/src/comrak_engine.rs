@@ -9,15 +9,14 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use comrak::arena_tree::NodeEdge;
-use comrak::nodes::{
-    AlertType, AstNode, ListType, NodeValue, Sourcepos, TableAlignment as ComrakAlignment,
-};
+use comrak::nodes::{AstNode, ListType, NodeValue, Sourcepos, TableAlignment as ComrakAlignment};
 use comrak::{Arena, Options, parse_document};
 
 use crate::boundary::{
-    Alignment, Callout, CalloutKind, EngineId, Event, Extension, Extensions, MarkdownEngine,
-    Parsed, Span, SpannedEvent, Tag, TagEnd,
+    Alignment, EngineId, Event, Extension, Extensions, MarkdownEngine, Parsed, Span, SpannedEvent,
+    Tag, TagEnd, Task,
 };
+use crate::obsidian;
 
 /// axiomd's first markdown engine, backed by comrak.
 ///
@@ -49,7 +48,18 @@ impl MarkdownEngine for ComrakEngine {
         let enabled = extensions.intersection(self.capabilities());
         let arena = Arena::new();
         let root = parse_document(&arena, source, &options(enabled));
-        Walk::new(source).run(root)
+        let walk = Walk::new(source).run(root);
+        let mut events = walk.events;
+        // The two Obsidian shapes comrak leaves as ordinary prose, recognised on the
+        // finished stream so that every engine behind the boundary reads them the
+        // same way (`obsidian.rs`).
+        if enabled.contains(Extension::Callouts) {
+            obsidian::recognise_callouts(&mut events);
+        }
+        if enabled.contains(Extension::WikiLinks) {
+            obsidian::recognise_embeds(&mut events, source);
+        }
+        Parsed::new(events, walk.front_matter)
     }
 }
 
@@ -65,7 +75,9 @@ fn options(enabled: Extensions) -> Options<'static> {
     ext.math_dollars = enabled.contains(Extension::Math);
     ext.math_code = enabled.contains(Extension::Math);
     ext.wikilinks_title_after_pipe = enabled.contains(Extension::WikiLinks);
-    ext.alerts = enabled.contains(Extension::Callouts);
+    // Deliberately never on: callouts are recognised on the event stream instead, for
+    // the whole Obsidian vocabulary and with the fold marker intact (`obsidian.rs`).
+    ext.alerts = false;
     if enabled.contains(Extension::FrontMatter) {
         ext.front_matter_delimiter = Some("---".to_string());
     }
@@ -107,14 +119,14 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn run<'t>(mut self, root: &'t AstNode<'t>) -> Parsed<'a> {
+    fn run<'t>(mut self, root: &'t AstNode<'t>) -> Self {
         for edge in root.traverse() {
             match edge {
                 NodeEdge::Start(node) => self.enter(node),
                 NodeEdge::End(node) => self.leave(node),
             }
         }
-        Parsed::new(self.events, self.front_matter)
+        self
     }
 
     /// Byte offset of a 1-based line/column pair, clamped into the source.
@@ -235,18 +247,6 @@ impl<'a> Walk<'a> {
             NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => {
                 self.push(Event::Start(Tag::BlockQuote { callout: None }), span)
             }
-            NodeValue::Alert(alert) => {
-                let callout = Callout {
-                    kind: callout_kind(alert.alert_type),
-                    title: alert.title.as_ref().map(|t| Cow::Owned(t.clone())),
-                };
-                self.push(
-                    Event::Start(Tag::BlockQuote {
-                        callout: Some(callout),
-                    }),
-                    span,
-                );
-            }
             NodeValue::CodeBlock(code) => {
                 let info = code.info.trim();
                 let (language, meta) = match info.split_once(char::is_whitespace) {
@@ -274,12 +274,24 @@ impl<'a> Walk<'a> {
                 span,
             ),
             NodeValue::Item(_) => self.push(Event::Start(Tag::Item { task: None }), span),
-            NodeValue::TaskItem(task) => self.push(
-                Event::Start(Tag::Item {
-                    task: Some(task.symbol.is_some()),
-                }),
-                span,
-            ),
+            NodeValue::TaskItem(task) => {
+                // The character between the brackets, which is what a reader pressing
+                // the box rewrites. comrak reports its position separately from the
+                // item's, so the offset is exact rather than searched for.
+                let marker = self.offset(
+                    task.symbol_sourcepos.start.line,
+                    task.symbol_sourcepos.start.column,
+                );
+                self.push(
+                    Event::Start(Tag::Item {
+                        task: Some(Task {
+                            checked: task.symbol.is_some(),
+                            marker,
+                        }),
+                    }),
+                    span,
+                )
+            }
             NodeValue::FootnoteDefinition(definition) => self.push(
                 Event::Start(Tag::FootnoteDefinition {
                     label: Cow::Owned(definition.name.clone()),
@@ -345,6 +357,7 @@ impl<'a> Walk<'a> {
             NodeValue::WikiLink(link) => self.push(
                 Event::Start(Tag::WikiLink {
                     target: Cow::Owned(link.url.clone()),
+                    embed: false,
                 }),
                 span,
             ),
@@ -431,15 +444,5 @@ fn alignment(alignment: ComrakAlignment) -> Alignment {
         ComrakAlignment::Left => Alignment::Left,
         ComrakAlignment::Center => Alignment::Center,
         ComrakAlignment::Right => Alignment::Right,
-    }
-}
-
-fn callout_kind(alert: AlertType) -> CalloutKind {
-    match alert {
-        AlertType::Note => CalloutKind::Note,
-        AlertType::Tip => CalloutKind::Tip,
-        AlertType::Important => CalloutKind::Important,
-        AlertType::Warning => CalloutKind::Warning,
-        AlertType::Caution => CalloutKind::Caution,
     }
 }

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<title>Tasks</title>
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<h1 id="tasks" data-line="1">Tasks</h1>
+<ul data-line="3">
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=12" rel="noopener noreferrer"><input type="checkbox"></a> not done</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=27" rel="noopener noreferrer"><input checked="" type="checkbox"></a> done</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=38" rel="noopener noreferrer"><input checked="" type="checkbox"></a> done, shouted</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=58" rel="noopener noreferrer"><input type="checkbox"></a> with children
+<ul>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=80" rel="noopener noreferrer"><input type="checkbox"></a> nested and not done</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=108" rel="noopener noreferrer"><input checked="" type="checkbox"></a> nested and done</li>
+</ul>
+</li>
+<li>an ordinary item in the same list</li>
+</ul>
+<p data-line="11">Two items that say exactly the same thing:</p>
+<ul data-line="13">
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=211" rel="noopener noreferrer"><input type="checkbox"></a> same</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=222" rel="noopener noreferrer"><input type="checkbox"></a> same</li>
+</ul>
+<ol data-line="16">
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=235" rel="noopener noreferrer"><input type="checkbox"></a> numbered and not done</li>
+<li class="task-list-item"><a class="task-toggle" href="axiomd://request/task?at=264" rel="noopener noreferrer"><input checked="" type="checkbox"></a> numbered and done</li>
+</ol>
+</article>
+</body>
+</html>

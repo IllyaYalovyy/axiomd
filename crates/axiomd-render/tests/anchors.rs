@@ -126,6 +126,42 @@ fn raw_html_blocks_are_anchored_without_being_wrapped() {
     );
 }
 
+/// GFM collects footnote definitions to the foot of the document in the order they
+/// are first referred to, which is not the order they were written in. A block that
+/// therefore sits *after* one written below it carries no line at all: an anchor map
+/// that went backwards would make `place.js` stop its walk early and land the reader
+/// on a block they were never looking at.
+///
+/// What it must not do is lose the block. The reader still has every word of both
+/// definitions, and both are still what their references link to.
+#[test]
+fn a_block_the_engine_moved_is_left_out_of_the_map() {
+    let rendered = render(
+        "# Notes\n\nA[^second] and B[^first].\n\n[^first]: Written first.\n\n\
+         [^second]: Written second.\n",
+    );
+
+    assert_eq!(
+        rendered
+            .anchors()
+            .iter()
+            .map(|a| a.line)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 7],
+        "the definition written on line 5 is rendered after the one on line 7",
+    );
+    assert_eq!(data_lines(rendered.html()), vec![1, 3, 7]);
+
+    let html = rendered.html();
+    assert!(html.contains("Written first."), "{html}");
+    assert!(html.contains("Written second."), "{html}");
+    assert!(html.contains("id=\"fn-first\""), "{html}");
+    assert!(
+        html.find("id=\"fn-second\"") < html.find("id=\"fn-first\""),
+        "the definitions are not in reference order, so this test proves nothing:\n{html}",
+    );
+}
+
 /// The `data-line` values the document carries, in document order.
 fn data_lines(html: &str) -> Vec<u32> {
     let mut lines = Vec::new();
@@ -140,22 +176,35 @@ fn data_lines(html: &str) -> Vec<u32> {
 }
 
 /// The blocks a document opens at top level, as `(line, byte range)`, taken straight
-/// from the parse.
+/// from the parse — minus any the engine put out of source order.
+///
+/// The map is in document order with strictly increasing lines, and everything that
+/// navigates a document depends on it: `place.js` walks the blocks on screen and stops
+/// at the first one past the line it wants, which a block reaching backwards would end
+/// early. GFM footnote definitions are the case that makes this real — they are
+/// collected to the foot of the document in the order they are first referred to — and
+/// [`a_block_the_engine_moved_is_left_out_of_the_map`] is that case on its own.
 fn top_level_blocks(source: &str) -> Vec<(u32, Range<usize>)> {
     let parsed = parse(source);
     let mut depth = 0usize;
-    let mut blocks = Vec::new();
+    let mut blocks: Vec<(u32, Range<usize>)> = Vec::new();
+    let anchor = |line: u32, range: Range<usize>, blocks: &mut Vec<(u32, Range<usize>)>| {
+        if blocks.last().is_some_and(|(last, _)| *last >= line) {
+            return;
+        }
+        blocks.push((line, range));
+    };
     for SpannedEvent { event, span } in parsed.events() {
         match event {
             Event::Start(tag) if is_block(tag) => {
                 if depth == 0 {
-                    blocks.push((span.line, span.range.clone()));
+                    anchor(span.line, span.range.clone(), &mut blocks);
                 }
                 depth += 1;
             }
             Event::End(end) if is_block_end(end) => depth -= 1,
             Event::ThematicBreak | Event::HtmlBlock(_) if depth == 0 => {
-                blocks.push((span.line, span.range.clone()));
+                anchor(span.line, span.range.clone(), &mut blocks);
             }
             _ => {}
         }

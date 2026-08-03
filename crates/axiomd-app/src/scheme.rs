@@ -76,8 +76,7 @@ fn asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
         // filesystem through this handler than the document can. A page only ever names
         // one of these when the plugin that owns it was switched on and used while it
         // was rendered.
-        _ => axiomd_render::Plugins::asset(path)
-            .map(|asset| (asset.bytes.to_vec(), asset.content_type)),
+        _ => axiomd_render::asset(path).map(|asset| (asset.bytes.to_vec(), asset.content_type)),
     }
 }
 
@@ -588,6 +587,33 @@ mod tests {
         assert_eq!(content_type, "text/css");
     }
 
+    /// A callout's icon is a file the app answers for, which is what keeps the
+    /// document's policy at `axiomd:` and nothing else while it still has icons
+    /// (issue #12). Every URI the stylesheet names is one of these.
+    #[test]
+    fn serves_every_icon_the_stylesheet_names() {
+        let scheme = Scheme::new();
+        let stylesheet = axiomd_render::stylesheet();
+
+        let mut served = 0;
+        let mut rest = stylesheet;
+        while let Some(at) = rest.find("url(\"") {
+            rest = &rest[at + "url(\"".len()..];
+            let uri = &rest[..rest.find('"').expect("a closed url")];
+            let (body, content_type) = served_bytes(scheme.origin.serve(uri));
+            assert!(
+                body.starts_with(b"<svg"),
+                "{uri} is named by the stylesheet and is not an icon",
+            );
+            assert_eq!(content_type, "image/svg+xml");
+            served += 1;
+        }
+        assert!(
+            served >= 13,
+            "only {served} icons were asked for; the stylesheet names one per callout kind",
+        );
+    }
+
     #[test]
     fn has_no_asset_other_than_the_ones_it_bundles() {
         let scheme = Scheme::new();
@@ -598,6 +624,16 @@ mod tests {
         );
         assert_eq!(
             scheme.origin.serve("axiomd://assets/anything.js"),
+            Served::Missing,
+        );
+        assert_eq!(
+            scheme.origin.serve("axiomd://assets/icon/nothing.svg"),
+            Served::Missing,
+        );
+        assert_eq!(
+            scheme
+                .origin
+                .serve("axiomd://assets/icon/nothing/at/all.svg"),
             Served::Missing,
         );
     }

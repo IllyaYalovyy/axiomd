@@ -18,7 +18,7 @@
 //! has open?" by identity rather than by spelling, so `./README.md`, an absolute path
 //! and a symlink all name the same document.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +72,13 @@ impl Renderer {
     ///
     /// Returns at once. The page arrives later through the callback, on the calling
     /// thread; a superseded render never arrives at all.
-    pub(crate) fn render(&self, source: String, name: String, plugins: Plugins) {
+    pub(crate) fn render(
+        &self,
+        source: String,
+        name: String,
+        plugins: Plugins,
+        root: Option<PathBuf>,
+    ) {
         let mine = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = self.generation.clone();
         let show = self.show.clone();
@@ -80,7 +86,7 @@ impl Renderer {
         glib::spawn_future_local(async move {
             let worker = generation.clone();
             let composed = gio::spawn_blocking(move || {
-                compose(&source, &name, &plugins, &|| {
+                compose(&source, &name, &plugins, root.as_deref(), &|| {
                     worker.load(Ordering::SeqCst) != mine
                 })
             })
@@ -112,10 +118,15 @@ pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
 
 /// Parses and renders `source` with the plugins the reader is reading under, giving up
 /// as soon as `superseded` says the result is no longer wanted.
+///
+/// `root` is the document's own folder, which is what a `[[wikilink]]` in it may reach
+/// (`ux_decisions.md`: there is no vault). It is walked here, on the worker, because
+/// the pipeline itself opens nothing: what it is given is a list of names.
 fn compose(
     source: &str,
     name: &str,
     plugins: &Plugins,
+    root: Option<&Path>,
     superseded: &dyn Fn() -> bool,
 ) -> Option<Rendered> {
     if superseded() {
@@ -126,7 +137,69 @@ fn compose(
     if superseded() {
         return None;
     }
-    Some(axiomd_render::render(&parsed, name, plugins))
+    let beside = beside(root);
+
+    if superseded() {
+        return None;
+    }
+    Some(axiomd_render::render(&parsed, name, plugins, &beside))
+}
+
+/// How many documents deep a wikilink may reach, and how many of them there may be.
+///
+/// A folder is walked afresh for every render, so a reader who drops a note beside
+/// their document sees links to it resolve at the next keystroke rather than at the
+/// next launch. These bounds are what keep that from ever being expensive: a home
+/// directory opened by accident costs a bounded walk instead of an unbounded one.
+const REACH: usize = 8;
+const MOST_DOCUMENTS: usize = 20_000;
+
+/// The Markdown documents under `root`, each named relative to it.
+///
+/// Blocking: for a worker, never for the main loop. Hidden directories are skipped —
+/// nobody links into `.git` — and directory symlinks are not followed, because a link
+/// pointing at its own ancestor is a walk that never ends.
+fn beside(root: Option<&Path>) -> axiomd_render::Folder {
+    let Some(root) = root else {
+        return axiomd_render::Folder::empty();
+    };
+    let mut documents = Vec::new();
+    let mut folders = vec![(root.to_path_buf(), String::new(), 0usize)];
+    while let Some((folder, prefix, depth)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = format!("{prefix}{name}");
+            if kind.is_dir() && depth + 1 < REACH {
+                folders.push((entry.path(), format!("{path}/"), depth + 1));
+            } else if kind.is_file() && is_markdown(&name) {
+                documents.push(path);
+                if documents.len() >= MOST_DOCUMENTS {
+                    return axiomd_render::Folder::holding(documents);
+                }
+            }
+        }
+    }
+    axiomd_render::Folder::holding(documents)
+}
+
+/// The extensions axiomd claims (`ux_decisions.md`: Markdown files only), which is
+/// also the whole of what a wikilink can name.
+fn is_markdown(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+        })
 }
 
 /// The same document as one file that carries everything it needs — the export path's
@@ -143,10 +216,11 @@ pub(crate) fn compose_standalone(
     source: &str,
     name: &str,
     plugins: &Plugins,
+    root: Option<&Path>,
     embed: &dyn Fn(&str) -> Option<axiomd_render::Picture>,
 ) -> String {
     let parsed = ComrakEngine::new().parse(source, Extensions::FULL);
-    axiomd_render::standalone(&parsed, name, plugins, embed)
+    axiomd_render::standalone(&parsed, name, plugins, &beside(root), embed)
 }
 
 #[cfg(test)]
@@ -232,6 +306,7 @@ mod tests {
                 "# Title\n\nBody text.\n".to_owned(),
                 "notes".to_owned(),
                 Plugins::builtin(&[]),
+                None,
             );
             harness.run_until_a_page_is_shown();
         });
@@ -256,6 +331,7 @@ mod tests {
                 "# Title\n".to_owned(),
                 "notes".to_owned(),
                 Plugins::builtin(&[]),
+                None,
             );
             assert!(
                 harness.shown().is_empty(),
@@ -279,11 +355,13 @@ mod tests {
                 "# Stale\n".to_owned(),
                 "notes".to_owned(),
                 Plugins::builtin(&[]),
+                None,
             );
             renderer.render(
                 "# Wanted\n".to_owned(),
                 "notes".to_owned(),
                 Plugins::builtin(&[]),
+                None,
             );
             harness.run_until_a_page_is_shown();
         });

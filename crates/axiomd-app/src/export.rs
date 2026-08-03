@@ -169,10 +169,13 @@ fn write_a_page(document: &Document, file: &Path, then: impl Fn(Outcome) + 'stat
         let written = {
             let file = file.clone();
             gio::spawn_blocking(move || {
-                let page =
-                    crate::document::compose_standalone(&source, &name, &plugins, &|reference| {
-                        picture(root.as_deref(), reference)
-                    });
+                let page = crate::document::compose_standalone(
+                    &source,
+                    &name,
+                    &plugins,
+                    root.as_deref(),
+                    &|reference| picture(root.as_deref(), reference),
+                );
                 std::fs::write(&file, page).map_err(|trouble| trouble.to_string())
             })
             .await

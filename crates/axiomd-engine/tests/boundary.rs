@@ -3,7 +3,7 @@
 mod support;
 
 use axiomd_engine::{
-    Alignment, CalloutKind, ComrakEngine, Event, Extension, Extensions, MarkdownEngine, Parsed, Tag,
+    Alignment, ComrakEngine, Event, Extension, Extensions, MarkdownEngine, Parsed, Tag,
 };
 
 /// A document that only parses into `marker` when `extension` is recognised.
@@ -184,19 +184,170 @@ fn absent_front_matter_is_none() {
     );
 }
 
-/// Callout kind and author title survive the boundary.
+/// Callout kind, author title and fold marker survive the boundary — for the kinds
+/// GitHub knows and for the ones only Obsidian does, which is the whole point of
+/// carrying the kind as the author wrote it (issue #12).
 #[test]
-fn callouts_carry_kind_and_title() {
+fn callouts_carry_kind_title_and_fold() {
     let engine = ComrakEngine::new();
-    let parsed = engine.parse("> [!WARNING] Mind the gap\n> body\n", Extensions::FULL);
-    let Some(Event::Start(Tag::BlockQuote {
-        callout: Some(callout),
-    })) = parsed.events().first().map(|e| &e.event)
-    else {
-        panic!("expected a callout block quote, got {:?}", parsed.events());
+    let callout = |source: &str| {
+        let parsed = engine.parse(source, Extensions::FULL);
+        let Some(Event::Start(Tag::BlockQuote {
+            callout: Some(callout),
+        })) = parsed.events().first().map(|e| &e.event)
+        else {
+            panic!("expected a callout block quote, got {:?}", parsed.events());
+        };
+        (
+            callout.kind.to_string(),
+            callout.title.as_deref().map(str::to_owned),
+            callout.fold,
+        )
     };
-    assert_eq!(callout.kind, CalloutKind::Warning);
-    assert_eq!(callout.title.as_deref(), Some("Mind the gap"));
+
+    assert_eq!(
+        callout("> [!WARNING] Mind the gap\n> body\n"),
+        ("warning".to_owned(), Some("Mind the gap".to_owned()), None),
+    );
+    assert_eq!(
+        callout("> [!bug]\n> body\n"),
+        ("bug".to_owned(), None, None),
+    );
+    assert_eq!(
+        callout("> [!tldr]- Folded away\n> body\n"),
+        (
+            "tldr".to_owned(),
+            Some("Folded away".to_owned()),
+            Some(false)
+        ),
+    );
+    assert_eq!(
+        callout("> [!question]+ Open\n> body\n"),
+        ("question".to_owned(), Some("Open".to_owned()), Some(true)),
+    );
+}
+
+/// The marker is not the quote's first sentence: a reader must not be shown
+/// `[!note]` above the body, and the body itself must survive intact.
+#[test]
+fn a_callout_marker_leaves_the_quotes_own_prose_alone() {
+    let engine = ComrakEngine::new();
+    let parsed = engine.parse("> [!note] Titled\n> body text\n", Extensions::FULL);
+    let text: Vec<String> = parsed
+        .events()
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Text(text) => Some(text.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(text, ["body text"], "{:?}", parsed.events());
+}
+
+/// A block quote that merely looks like a callout is still a block quote, and every
+/// word of it is still there.
+#[test]
+fn a_quote_that_is_not_a_callout_keeps_its_brackets() {
+    let engine = ComrakEngine::new();
+    let parsed = engine.parse("> [!note]x not a marker\n", Extensions::FULL);
+    let Some(Event::Start(Tag::BlockQuote { callout: None })) =
+        parsed.events().first().map(|e| &e.event)
+    else {
+        panic!("expected a plain block quote, got {:?}", parsed.events());
+    };
+    assert!(
+        parsed.events().iter().any(|e| matches!(&e.event,
+            Event::Text(text) if text.contains("[!note]x not a marker"))),
+        "{:?}",
+        parsed.events(),
+    );
+}
+
+/// A callout inside a callout is two callouts. Obsidian nests them, and recognising
+/// the marker on the finished stream is what makes that need no special case.
+#[test]
+fn callouts_nest() {
+    let engine = ComrakEngine::new();
+    let parsed = engine.parse(
+        "> [!note] Outer\n> text\n>\n> > [!tip] Inner\n> > deep\n",
+        Extensions::FULL,
+    );
+    let kinds: Vec<String> = parsed
+        .events()
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Start(Tag::BlockQuote {
+                callout: Some(callout),
+            }) => Some(callout.kind.to_string()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(kinds, ["note", "tip"]);
+}
+
+/// Where a task's box lives in the source, which is what makes it something a reader
+/// can press: two identical items are two different offsets, and each one names the
+/// character between its own brackets.
+#[test]
+fn task_items_carry_the_source_offset_of_their_own_box() {
+    let engine = ComrakEngine::new();
+    let source = "- [ ] same\n- [x] same\n  - [ ] nested\n";
+    let parsed = engine.parse(source, Extensions::FULL);
+    let tasks: Vec<(bool, usize)> = parsed
+        .events()
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Start(Tag::Item { task: Some(task) }) => Some((task.checked, task.marker)),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tasks.len(), 3, "{:?}", parsed.events());
+    for (checked, marker) in &tasks {
+        assert_eq!(
+            &source[marker - 1..marker + 2],
+            if *checked { "[x]" } else { "[ ]" },
+            "the offset {marker} does not name a checkbox",
+        );
+    }
+    assert_eq!(tasks[0].1, 3);
+    assert_eq!(tasks[1].1, 14);
+}
+
+/// An embed is a reference to something axiomd does not transclude (issue #12), and a
+/// parser leaves it as literal text. It reaches the boundary as a wikilink that says
+/// what it is, at a span that slices the source it came from.
+#[test]
+fn an_embed_is_a_wikilink_that_says_it_is_one() {
+    let engine = ComrakEngine::new();
+    let source = "See ![[diagram.png]] and [[guide]].\n";
+    let parsed = engine.parse(source, Extensions::FULL);
+    let links: Vec<(String, bool, String)> = parsed
+        .events()
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Start(Tag::WikiLink { target, embed }) => Some((
+                target.to_string(),
+                *embed,
+                source[e.span.range.clone()].to_owned(),
+            )),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        links,
+        [
+            (
+                "diagram.png".to_owned(),
+                true,
+                "![[diagram.png]]".to_owned()
+            ),
+            ("guide".to_owned(), false, "[[guide]]".to_owned()),
+        ],
+    );
 }
 
 /// Table column alignments reach the cells that need them.

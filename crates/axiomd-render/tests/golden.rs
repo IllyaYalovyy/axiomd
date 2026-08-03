@@ -10,7 +10,7 @@ mod support;
 
 use std::fs;
 
-use support::{fixtures, golden_dir, render};
+use support::{fixtures, folder_for, golden_dir, render, render_beside};
 
 #[test]
 fn every_fixture_renders_to_its_golden_document() {
@@ -18,7 +18,7 @@ fn every_fixture_renders_to_its_golden_document() {
         let path = golden_dir().join(name.replace(".md", ".html"));
         let golden = fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("{name}: no golden document at {}", path.display()));
-        let rendered = render(&source);
+        let rendered = render_beside(&source, &folder_for(&name));
         assert_eq!(
             rendered.html(),
             golden,

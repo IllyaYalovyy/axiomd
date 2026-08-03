@@ -195,7 +195,8 @@ fn deeply_nested_blocks_do_not_take_time_out_of_proportion_to_their_size() {
         || {
             let began = Instant::now();
             let parsed = ComrakEngine::new().parse(&source, Extensions::FULL);
-            let rendered = axiomd_render::render(&parsed, "nested", &plugins);
+            let rendered =
+                axiomd_render::render(&parsed, "nested", &plugins, &axiomd_render::Folder::empty());
             let took = began.elapsed();
             assert!(rendered.html().contains("Bottom."), "the document was lost");
             took
@@ -286,7 +287,8 @@ fn a_ten_megabyte_document_is_parsed_and_rendered_within_its_budget() {
     budget::time(what, budgets::TEN_MEGABYTE_RENDER, || {
         let began = Instant::now();
         let parsed = ComrakEngine::new().parse(&source, Extensions::FULL);
-        let rendered = axiomd_render::render(&parsed, "corpus", &plugins);
+        let rendered =
+            axiomd_render::render(&parsed, "corpus", &plugins, &axiomd_render::Folder::empty());
         let took = began.elapsed();
         assert!(
             rendered.anchors().len() > 10_000,

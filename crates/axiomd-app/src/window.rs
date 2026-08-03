@@ -1066,7 +1066,33 @@ impl DocumentWindow {
                     self.fetch_image(source);
                 }
             }
+            Follow::Ask(Request::ToggleTask(at)) => self.toggle_task(at),
         }
+    }
+
+    /// Ticks a task off, or un-ticks it: the reader pressed its box in the rendered
+    /// document (issue #12).
+    ///
+    /// The edit goes into the buffer, which is the document (invariant 11) — so it is
+    /// one step of the editor's own undo history, it marks the document unsaved,
+    /// autosave picks it up like any other change, and the page is patched rather than
+    /// reloaded, leaving the reader exactly where they were pressing.
+    ///
+    /// `at` is where the parser said the marker was in the source that page was
+    /// rendered from. The buffer may have moved on since — the reader was typing in
+    /// the other surface, the file changed underneath — so the byte is checked to be a
+    /// checkbox before anything is written. A stale press does nothing rather than
+    /// rewriting a character of somebody's prose.
+    fn toggle_task(self: &Rc<Self>, at: usize) {
+        self.pull_text();
+        let text = self.document.borrow().text().to_owned();
+        let Some(state) = ticked(&text, at) else {
+            return;
+        };
+        self.editor.replace_marker(at, state);
+        // Right away rather than at the end of the typing debounce: the reader pressed
+        // a box and the box is what they are looking at.
+        self.rerender_now();
     }
 
     /// The one thing axiomd fetches, and only because the reader pressed the card
@@ -1118,12 +1144,20 @@ impl DocumentWindow {
     /// Renders what the reader has in front of them, right now.
     fn rerender_now(&self) {
         self.pull_text();
-        let (source, name) = {
+        let (source, name, root) = {
             let document = self.document.borrow();
-            (document.text().to_owned(), document.name())
+            (
+                document.text().to_owned(),
+                document.name(),
+                document
+                    .file()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf),
+            )
         };
         if let Some(open) = self.open.borrow().as_ref() {
-            open.renderer.render(source, name, self.settings.plugins());
+            open.renderer
+                .render(source, name, self.settings.plugins(), root);
         }
     }
 
@@ -1528,6 +1562,23 @@ enum Deed {
     Export,
 }
 
+/// What a task list marker at `at` should become when the reader presses it, or `None`
+/// when `at` is not a marker at all any more.
+///
+/// The three bytes have to spell a checkbox — `[`, its state, `]` — because the only
+/// thing that says the source has not moved under the page is what the source says.
+fn ticked(text: &str, at: usize) -> Option<char> {
+    let bytes = text.as_bytes();
+    if at == 0 || bytes.get(at - 1) != Some(&b'[') || bytes.get(at + 1) != Some(&b']') {
+        return None;
+    }
+    match bytes.get(at) {
+        Some(b' ') => Some('x'),
+        Some(b'x') | Some(b'X') => Some(' '),
+        _ => None,
+    }
+}
+
 /// An action's bare name, as a window registers it, from the full one a widget uses.
 fn bare(action: &str) -> &str {
     action.strip_prefix("win.").unwrap_or(action)
@@ -1832,6 +1883,39 @@ mod tests {
         assert_eq!(with_a_markdown_name("Untitled"), "Untitled.md");
         assert_eq!(with_a_markdown_name("notes.md"), "notes.md");
         assert_eq!(with_a_markdown_name("README.markdown"), "README.markdown");
+    }
+
+    /// Pressing a box rewrites one character, and only when that character is still
+    /// the box the page was rendered from. The reader may have typed in the other
+    /// surface, or the file may have changed underneath — a press that arrives against
+    /// a source that has moved must do nothing rather than damage a word of prose.
+    #[test]
+    fn a_press_only_ever_turns_a_checkbox_the_other_way_round() {
+        let source = "- [ ] not done\n- [x] done\n- [X] shouted\n";
+
+        assert_eq!(ticked(source, 3), Some('x'));
+        assert_eq!(ticked(source, 18), Some(' '));
+        assert_eq!(ticked(source, 29), Some(' '));
+
+        // Everywhere else in the same document.
+        for at in 0..source.len() {
+            if [3, 18, 29].contains(&at) {
+                continue;
+            }
+            assert_eq!(
+                ticked(source, at),
+                None,
+                "offset {at} ({:?}) was taken for a checkbox",
+                &source[at..(at + 1).min(source.len())],
+            );
+        }
+
+        // And against a document that has moved on since the page was rendered.
+        assert_eq!(ticked("nothing here at all\n", 3), None);
+        assert_eq!(ticked("", 3), None);
+        assert_eq!(ticked(source, source.len() + 100), None);
+        // A bracketed thing that is not a checkbox is not one.
+        assert_eq!(ticked("- [-] partly\n", 3), None);
     }
 
     /// An action is named once, in full, and registered by its bare name. A window

@@ -30,11 +30,21 @@
   --axiomd-surface: rgb(0 0 6 / 4%);
   --axiomd-surface-strong: rgb(0 0 6 / 8%);
 
+  /* One colour per callout kind axiomd knows (`callout.rs`). Aliases share the
+     colour of the kind they are an alias of, because they share its class. */
   --axiomd-note: #3584e4;
+  --axiomd-abstract: #21b0b0;
+  --axiomd-info: #3584e4;
+  --axiomd-todo: #1c71d8;
   --axiomd-tip: #2ec27e;
-  --axiomd-important: #9141ac;
+  --axiomd-success: #26a269;
+  --axiomd-question: #c88800;
   --axiomd-warning: #e5a50a;
-  --axiomd-caution: #e01b24;
+  --axiomd-failure: #e01b24;
+  --axiomd-danger: #c01c28;
+  --axiomd-bug: #a51d2d;
+  --axiomd-example: #9141ac;
+  --axiomd-quote: #5e5c64;
 
   --axiomd-find: #f9f06b;
   --axiomd-find-current: #ff7800;
@@ -256,12 +266,35 @@ body {
   margin-left: -1.4rem;
 }
 
+.markdown li.task-list-item > .task-toggle,
 .markdown li.task-list-item > input[type="checkbox"] {
+  display: inline-block;
+  margin: 0 0.45em 0 0;
+}
+
+.markdown li.task-list-item input[type="checkbox"] {
   width: 0.95em;
   height: 0.95em;
-  margin: 0 0.45em 0 0;
+  margin: 0;
   vertical-align: -0.08em;
   accent-color: var(--axiomd-accent);
+}
+
+/* The box is a link, because a document that cannot run a script has no other way to
+   tell the app it was pressed. The checkbox inside it must not swallow that press:
+   with pointer events off, a click anywhere on the box is a click on the link, and
+   what the reader sees change is the re-render that follows.
+
+   `cursor: pointer` rather than a link's underline and colour, because this is a
+   checkbox and has to keep looking like one. */
+.markdown li.task-list-item > .task-toggle {
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1;
+}
+
+.markdown li.task-list-item > .task-toggle > input[type="checkbox"] {
+  pointer-events: none;
 }
 
 /* Quotes and callouts */
@@ -273,7 +306,9 @@ body {
   color: var(--axiomd-fg-dim);
 }
 
-.markdown blockquote.callout {
+.markdown blockquote.callout,
+.markdown details.callout {
+  margin: 0 0 1rem;
   padding: 0.75rem 1rem;
   border-left: 3px solid var(--axiomd-callout, var(--axiomd-note));
   border-radius: 0 8px 8px 0;
@@ -281,34 +316,127 @@ body {
   color: var(--axiomd-fg);
 }
 
-.markdown blockquote.callout > .callout-title {
+.markdown .callout > .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
   margin: 0 0 0.35rem;
   color: var(--axiomd-callout, var(--axiomd-note));
   font-weight: 700;
 }
 
-.markdown blockquote.callout > :last-child {
+/* The kind's icon. The shape itself comes from the bundled Lucide subset, set as a
+   mask per kind by the rules `callout.rs` generates, so the icon takes the callout's
+   own colour in light, dark and high contrast alike from this one declaration. */
+.markdown .callout > .callout-title::before {
+  content: "";
+  flex: none;
+  width: 1.05em;
+  height: 1.05em;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.markdown .callout > :last-child {
   margin-bottom: 0;
+}
+
+/* A foldable callout — `> [!note]-` — is a `<details>`, so folding is the browser's
+   own and the document needs no script to do it. The marker a browser would draw is
+   replaced by the same kind of mask the icons use, on the other side of the title. */
+.markdown details.callout > summary.callout-title {
+  cursor: default;
+  list-style: none;
+}
+
+.markdown details.callout > summary.callout-title::-webkit-details-marker {
+  display: none;
+}
+
+.markdown details.callout > .callout-title::after {
+  content: "";
+  flex: none;
+  width: 0.9em;
+  height: 0.9em;
+  margin-left: auto;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  transition: transform 120ms ease;
+}
+
+.markdown details.callout[open] > .callout-title::after {
+  transform: rotate(90deg);
 }
 
 .markdown .callout-note {
   --axiomd-callout: var(--axiomd-note);
 }
 
+.markdown .callout-abstract {
+  --axiomd-callout: var(--axiomd-abstract);
+}
+
+.markdown .callout-info {
+  --axiomd-callout: var(--axiomd-info);
+}
+
+.markdown .callout-todo {
+  --axiomd-callout: var(--axiomd-todo);
+}
+
 .markdown .callout-tip {
   --axiomd-callout: var(--axiomd-tip);
 }
 
-.markdown .callout-important {
-  --axiomd-callout: var(--axiomd-important);
+.markdown .callout-success {
+  --axiomd-callout: var(--axiomd-success);
+}
+
+.markdown .callout-question {
+  --axiomd-callout: var(--axiomd-question);
 }
 
 .markdown .callout-warning {
   --axiomd-callout: var(--axiomd-warning);
 }
 
-.markdown .callout-caution {
-  --axiomd-callout: var(--axiomd-caution);
+.markdown .callout-failure {
+  --axiomd-callout: var(--axiomd-failure);
+}
+
+.markdown .callout-danger {
+  --axiomd-callout: var(--axiomd-danger);
+}
+
+.markdown .callout-bug {
+  --axiomd-callout: var(--axiomd-bug);
+}
+
+.markdown .callout-example {
+  --axiomd-callout: var(--axiomd-example);
+}
+
+.markdown .callout-quote {
+  --axiomd-callout: var(--axiomd-quote);
+}
+
+/* Wikilinks. A resolved one is a link like any other; an unresolved one is a span,
+   which is why it cannot be clicked — the styling only says so. */
+.markdown .wikilink-unresolved {
+  color: var(--axiomd-fg-dim);
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+  cursor: default;
 }
 
 /* Code */
@@ -404,6 +532,16 @@ body {
 .markdown .footnote-definition > .footnote-label {
   margin-right: 0.4rem;
   color: var(--axiomd-accent);
+}
+
+.markdown .footnote-backref {
+  text-decoration: none;
+  margin-left: 0.35em;
+  font-size: 0.9em;
+}
+
+.markdown .footnote-backrefs {
+  margin: 0.2rem 0 0;
 }
 
 .markdown .footnote-definition > p {

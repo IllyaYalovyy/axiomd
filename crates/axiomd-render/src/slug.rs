@@ -41,7 +41,7 @@ pub(crate) fn heading_ids(parsed: &Parsed<'_>) -> Vec<String> {
             Event::Start(Tag::Heading { .. }) => heading = Some(String::new()),
             Event::End(TagEnd::Heading(_)) => {
                 if let Some(text) = heading.take() {
-                    ids.push(unique(slug(&text), &mut occurrences));
+                    ids.push(unique(of(&text), &mut occurrences));
                 }
             }
             Event::Start(Tag::Image { .. }) => in_image += 1,
@@ -66,7 +66,10 @@ pub(crate) fn heading_ids(parsed: &Parsed<'_>) -> Vec<String> {
 }
 
 /// Steps 1 to 3: the slug of one heading's text, before disambiguation.
-fn slug(text: &str) -> String {
+///
+/// Also what a `[[note#Heading]]` wikilink is turned into: the anchor a heading gets
+/// here and the fragment a link to it carries are the same string by construction.
+pub(crate) fn of(text: &str) -> String {
     let mut slug = String::with_capacity(text.len());
     for c in text.chars().flat_map(char::to_lowercase) {
         if c == ' ' {
@@ -112,21 +115,21 @@ mod tests {
 
     #[test]
     fn punctuation_is_deleted_and_spaces_become_hyphens() {
-        assert_eq!(slug("Hello, World!"), "hello-world");
-        assert_eq!(slug("a.b.c"), "abc");
-        assert_eq!(slug("snake_case and-dashes"), "snake_case-and-dashes");
-        assert_eq!(slug("  double  space "), "--double--space-");
+        assert_eq!(of("Hello, World!"), "hello-world");
+        assert_eq!(of("a.b.c"), "abc");
+        assert_eq!(of("snake_case and-dashes"), "snake_case-and-dashes");
+        assert_eq!(of("  double  space "), "--double--space-");
     }
 
     /// The counter is per original slug, and every result is reserved.
     #[test]
     fn a_repeat_is_numbered_from_the_slug_it_repeats() {
         let mut seen = HashMap::new();
-        assert_eq!(unique(slug("Notes"), &mut seen), "notes");
-        assert_eq!(unique(slug("Notes"), &mut seen), "notes-1");
-        assert_eq!(unique(slug("Notes"), &mut seen), "notes-2");
-        assert_eq!(unique(slug("Notes 1"), &mut seen), "notes-1-1");
-        assert_eq!(unique(slug("Notes 1"), &mut seen), "notes-1-2");
+        assert_eq!(unique(of("Notes"), &mut seen), "notes");
+        assert_eq!(unique(of("Notes"), &mut seen), "notes-1");
+        assert_eq!(unique(of("Notes"), &mut seen), "notes-2");
+        assert_eq!(unique(of("Notes 1"), &mut seen), "notes-1-1");
+        assert_eq!(unique(of("Notes 1"), &mut seen), "notes-1-2");
     }
 
     /// An unsluggable heading is not reserved, so it cannot start a numbering run
@@ -134,8 +137,8 @@ mod tests {
     #[test]
     fn a_heading_with_nothing_sluggable_in_it_has_no_id() {
         let mut seen = HashMap::new();
-        assert_eq!(unique(slug("!!!"), &mut seen), "");
-        assert_eq!(unique(slug("???"), &mut seen), "");
+        assert_eq!(unique(of("!!!"), &mut seen), "");
+        assert_eq!(unique(of("???"), &mut seen), "");
         assert!(seen.is_empty());
     }
 }

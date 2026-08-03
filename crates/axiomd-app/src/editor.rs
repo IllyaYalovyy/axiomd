@@ -259,6 +259,35 @@ impl Editor {
         self.buffer.insert_at_cursor(text);
     }
 
+    /// Replaces the one character at byte offset `at` with `marker` — what pressing a
+    /// task list item's box in the rendered document does to the source (issue #12).
+    ///
+    /// Through the buffer, and as one user action, so that it is one step of undo
+    /// rather than two and reaches everything a keystroke reaches: the document is
+    /// marked unsaved, autosave is started, and the page is re-rendered from the buffer
+    /// that changed. Nothing here searches the text — the offset is the parser's, and
+    /// it is the caller's job to have checked what is there (`window.rs`).
+    ///
+    /// The buffer counts in characters and the source in bytes, so the offset is
+    /// converted rather than assumed: a document with one accented letter above the
+    /// checkbox would otherwise have its boxes rewritten one place to the left.
+    pub(crate) fn replace_marker(&self, at: usize, marker: char) {
+        let text = self.text();
+        let Some(before) = text.get(..at) else {
+            return;
+        };
+        let character = before.chars().count() as i32;
+        if character + 1 > self.buffer.char_count() {
+            return;
+        }
+        let mut from = self.buffer.iter_at_offset(character);
+        let mut to = self.buffer.iter_at_offset(character + 1);
+        self.buffer.begin_user_action();
+        self.buffer.delete(&mut from, &mut to);
+        self.buffer.insert(&mut from, &marker.to_string());
+        self.buffer.end_user_action();
+    }
+
     /// Undo and redo, as `Ctrl+Z` and `Ctrl+Y` ask for them.
     pub(crate) fn undo(&self) {
         self.buffer.undo();
