@@ -17,6 +17,7 @@ use crate::boundary::{
     Tag, TagEnd, Task,
 };
 use crate::obsidian;
+use crate::source::Source;
 
 /// axiomd's first markdown engine, backed by comrak.
 ///
@@ -86,9 +87,7 @@ fn options(enabled: Extensions) -> Options<'static> {
 
 /// Turns one comrak AST into the boundary event stream.
 struct Walk<'a> {
-    source: &'a str,
-    /// Byte offset of the first character of each line, 0-based index by line - 1.
-    line_starts: Vec<usize>,
+    source: Source<'a>,
     events: Vec<SpannedEvent<'a>>,
     front_matter: Option<&'a str>,
     /// Column alignments of every table currently open, innermost last.
@@ -105,11 +104,8 @@ struct Walk<'a> {
 
 impl<'a> Walk<'a> {
     fn new(source: &'a str) -> Self {
-        let mut line_starts = vec![0];
-        line_starts.extend(source.match_indices('\n').map(|(i, _)| i + 1));
         Self {
-            source,
-            line_starts,
+            source: Source::new(source),
             events: Vec::new(),
             front_matter: None,
             table_alignments: Vec::new(),
@@ -129,84 +125,17 @@ impl<'a> Walk<'a> {
         self
     }
 
-    /// Byte offset of a 1-based line/column pair, clamped into the source.
-    fn offset(&self, line: usize, column: usize) -> usize {
-        let base = self
-            .line_starts
-            .get(line.saturating_sub(1))
-            .copied()
-            .unwrap_or(self.source.len());
-        base.saturating_add(column.saturating_sub(1))
-            .min(self.source.len())
-    }
-
     /// Converts comrak's inclusive line/column pair into a byte span.
     ///
     /// comrak reports columns as 1-based UTF-8 byte offsets within the line, with the
     /// end column pointing at the node's last character. The exclusive end is
-    /// therefore the next character boundary after it.
+    /// therefore the next character boundary after it, which `Source::span` finds.
     fn span(&self, sourcepos: Sourcepos) -> Span {
-        let mut start = self.offset(sourcepos.start.line, sourcepos.start.column);
-        while start > 0 && !self.source.is_char_boundary(start) {
-            start -= 1;
-        }
-
-        let last = self.offset(sourcepos.end.line, sourcepos.end.column);
-        let mut end = last.saturating_add(1).min(self.source.len());
-        while end < self.source.len() && !self.source.is_char_boundary(end) {
-            end += 1;
-        }
-        let end = end.max(start);
-
-        Span {
-            range: start..end,
-            line: self.line_of(start),
-        }
-    }
-
-    /// 1-based line number containing a byte offset.
-    fn line_of(&self, offset: usize) -> u32 {
-        self.line_starts.partition_point(|&start| start <= offset) as u32
-    }
-
-    /// Confines a span to the innermost open block.
-    ///
-    /// comrak occasionally reports a child that overshoots its parent — a list item
-    /// that swallows the blank line after the list ends, or the phantom cell GFM adds
-    /// to a short table row. Outline, scroll sync and search all assume a child's
-    /// source lies inside its parent's, so the boundary makes that true rather than
-    /// passing the inconsistency on.
-    fn clamped(&self, span: Span) -> Span {
-        let Some(parent) = self.blocks.last() else {
-            return span;
-        };
-        let start = span.range.start.clamp(parent.start, parent.end);
-        let end = span.range.end.clamp(start, parent.end);
-        if start == span.range.start && end == span.range.end {
-            return span;
-        }
-        Span {
-            range: start..end,
-            line: self.line_of(start),
-        }
-    }
-
-    /// Widens a span leftwards over the whitespace that precedes it on its line.
-    ///
-    /// An indented code block *is* its indentation: comrak's position points at the
-    /// first content character, so slicing by it would yield text that no longer
-    /// parses as code. Stopping at the first non-whitespace byte keeps the span
-    /// inside any container marker (`>`, `-`) on the same line.
-    fn extended_over_indent(&self, span: Span) -> Span {
-        let bytes = self.source.as_bytes();
-        let mut start = span.range.start;
-        while start > 0 && matches!(bytes[start - 1], b' ' | b'\t') {
-            start -= 1;
-        }
-        Span {
-            range: start..span.range.end.max(start),
-            line: self.line_of(start),
-        }
+        let start = self
+            .source
+            .offset(sourcepos.start.line, sourcepos.start.column);
+        let last = self.source.offset(sourcepos.end.line, sourcepos.end.column);
+        self.source.span(start..last.saturating_add(1))
     }
 
     fn push(&mut self, event: Event<'a>, span: Span) {
@@ -219,9 +148,9 @@ impl<'a> Walk<'a> {
         if let NodeValue::CodeBlock(code) = &ast.value
             && !code.fenced
         {
-            span = self.extended_over_indent(span);
+            span = self.source.over_indent(span);
         }
-        let span = self.clamped(span);
+        let span = self.source.clamped(span, self.blocks.last());
 
         if let Some((block, _)) = closing(&ast.value) {
             self.open.push(span.clone());
@@ -234,7 +163,7 @@ impl<'a> Walk<'a> {
             NodeValue::Document => {}
 
             NodeValue::FrontMatter(_) => {
-                self.front_matter = Some(&self.source[span.range.clone()]);
+                self.front_matter = Some(&self.source.text()[span.range.clone()]);
             }
 
             NodeValue::Paragraph => self.push(Event::Start(Tag::Paragraph), span),
@@ -278,7 +207,7 @@ impl<'a> Walk<'a> {
                 // The character between the brackets, which is what a reader pressing
                 // the box rewrites. comrak reports its position separately from the
                 // item's, so the offset is exact rather than searched for.
-                let marker = self.offset(
+                let marker = self.source.offset(
                     task.symbol_sourcepos.start.line,
                     task.symbol_sourcepos.start.column,
                 );
