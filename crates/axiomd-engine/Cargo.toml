@@ -9,3 +9,10 @@ repository.workspace = true
 
 [dependencies]
 comrak = { version = "0.54", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
+
+[dev-dependencies]
+# The comparison harness (issue #17) measures parse throughput on the very documents
+# the performance budgets are measured on, rather than on a second set that could
+# quietly diverge from them (`axiomd_e2e::corpus`).
+axiomd-e2e = { path = "../axiomd-e2e" }

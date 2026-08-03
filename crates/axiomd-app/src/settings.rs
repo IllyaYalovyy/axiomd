@@ -67,7 +67,7 @@ pub(crate) enum Key {
         allow(dead_code, reason = "the schema's key for spell checking; see above")
     )]
     Spellcheck,
-    /// The engine new documents are parsed with (#17 consumes it).
+    /// The engine documents are read with unless a window says otherwise.
     Engine,
     /// The rendering plugins the reader has switched off, by id.
     DisabledPlugins,
@@ -226,6 +226,29 @@ impl Settings {
     /// (invariant 14).
     pub(crate) fn plugins(&self) -> axiomd_render::Plugins {
         axiomd_render::Plugins::builtin(&self.disabled_plugins())
+    }
+
+    /// The engine documents are read with unless the window they are in says
+    /// otherwise (issue #17).
+    ///
+    /// Answered through the registry rather than handed back as the reader wrote it,
+    /// so a store naming an engine this build does not have — one that has been
+    /// renamed, or a preference written by a newer build — reads with the default
+    /// instead of with nothing.
+    pub(crate) fn engine(&self) -> axiomd_engine::EngineId {
+        let stored = self.store.string(Key::Engine.name());
+        axiomd_engine::engine(&stored)
+            .unwrap_or_else(|| axiomd_engine::engines()[0])
+            .id()
+    }
+
+    /// Tells `rerender` that the engine has changed, whenever it does.
+    ///
+    /// Like a plugin and unlike the measure, an engine decides what the document *is*,
+    /// so it costs a render — but never a reload: the window patches the page it is
+    /// already showing and the reader keeps their place (invariants 5, 9 and 14).
+    pub(crate) fn follow_engine(self: &Rc<Self>, rerender: impl Fn() + 'static) -> Watch {
+        self.watch(&[Key::Engine], rerender)
     }
 
     /// Tells `rerender` that the plugins have changed, whenever they do.
@@ -473,10 +496,35 @@ mod tests {
         let default = default.get::<String>().expect("an engine name");
 
         assert!(
-            crate::document::engines()
-                .iter()
-                .any(|engine| engine.as_str() == default),
+            axiomd_engine::engine(&default).is_some(),
             "documents default to the {default} engine and this build has none",
+        );
+        // And it is the engine the registry itself calls the default, so the schema
+        // and the code cannot drift into naming two different ones.
+        assert_eq!(
+            default,
+            axiomd_engine::engines()[0].id().as_str(),
+            "the schema and the registry disagree about the default engine",
+        );
+    }
+
+    /// A store naming an engine this build does not have still reads documents.
+    ///
+    /// The failure this guards is a reader upgrading — or downgrading — into a window
+    /// that renders nothing because of a string nobody can act on.
+    #[test]
+    fn an_engine_the_build_does_not_have_falls_back_to_the_default() {
+        let scratch = ScratchDir::new("settings-engine");
+
+        assert_eq!(
+            stored(&scratch, "known.keyfile", "engine='pulldown-cmark'").engine(),
+            axiomd_engine::PulldownEngine::ID,
+        );
+        assert_eq!(
+            stored(&scratch, "unknown.keyfile", "engine='no-such-engine'").engine(),
+            axiomd_engine::engines()[0].id(),
+            "a store naming an engine this build has never heard of left the reader \
+             with no engine at all",
         );
     }
 

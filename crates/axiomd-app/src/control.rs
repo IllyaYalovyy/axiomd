@@ -196,9 +196,16 @@ impl Session {
                 self.selected.set(Some(index));
                 Ok(String::new())
             }
-            "activate" => WidgetExt::activate_action(self.target(shell)?.window(), payload, None)
-                .map(|()| String::new())
-                .map_err(|_| format!("{payload} is not an action this window can activate")),
+            // A detailed action name, so a parameterised action — the engine a window
+            // reads with, whose menu items each carry their own target — is activated
+            // exactly as pressing its menu item does: `win.engine::pulldown-cmark`.
+            "activate" => {
+                let (name, target) = gio::Action::parse_detailed_name(payload)
+                    .map_err(|error| format!("{payload} is not an action name: {error}"))?;
+                WidgetExt::activate_action(self.target(shell)?.window(), &name, target.as_ref())
+                    .map(|()| String::new())
+                    .map_err(|_| format!("{payload} is not an action this window can activate"))
+            }
             "eval" => {
                 let webview = self.target(shell)?.webview().clone();
                 let value = webview
@@ -393,6 +400,9 @@ impl Session {
                 _ => "read".to_owned(),
             }),
             "modified" => Ok(window.is_modified().to_string()),
+            // Which engine the main menu shows this window reading with — its own
+            // choice, or the reader's preference while it has made none.
+            "engine" => Ok(window.engine().to_string()),
             "caret" => Ok(window.caret_line().to_string()),
             "source" => Ok(window.editor_text()),
             "banner" => Ok(window.banner()),

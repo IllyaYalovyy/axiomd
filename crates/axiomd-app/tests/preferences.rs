@@ -139,10 +139,10 @@ fn the_theme_override_recolours_the_document_without_rendering_it_again() {
 /// Every row the dialog offers, turned and read back, and the setting behind it
 /// written down where the next launch will find it.
 ///
-/// The rows whose feature has not landed yet — autosave, spelling, the engine — are
-/// here for exactly that reason: what they do today is remember, and #17 and #18 read
-/// what they remembered. The plugin switch is not one of them: what it writes is read
-/// by the very next render (`plugins.rs`).
+/// The one row whose feature has not landed yet — spelling — is here for exactly that
+/// reason: what it does today is remember, and #18 reads what it remembered. The plugin
+/// switch and the engine row are not: what they write is read by the very next render
+/// (`plugins.rs`, `engines.rs`).
 #[test]
 fn every_row_the_dialog_offers_turns_and_is_written_down() {
     let fixture = Fixture::new("preferences-rows");
@@ -174,6 +174,13 @@ fn every_row_the_dialog_offers_turns_and_is_written_down() {
             "disabled-plugins",
             "['emoji']",
         ),
+        (
+            "Markdown engine",
+            "comrak",
+            "pulldown-cmark",
+            "engine",
+            "'pulldown-cmark'",
+        ),
     ];
 
     for (row, first_run, turned_to, key, stored) in rows {
@@ -186,12 +193,6 @@ fn every_row_the_dialog_offers_turns_and_is_written_down() {
         assert_eq!(app.preference(row), turned_to, "{row} did not stay turned");
         preferences.wait_until(key, stored);
     }
-
-    // The engine row is the same kind of row as the theme one above, and this build
-    // has exactly one engine — so it shows which, and there is nothing to turn it to
-    // until #17 brings the second. A row that offered a choice of one thing and wrote
-    // it down would be pretending.
-    assert_eq!(app.preference("Markdown engine"), "comrak");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

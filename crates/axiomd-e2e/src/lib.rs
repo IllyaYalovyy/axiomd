@@ -242,7 +242,16 @@ impl Preferences {
 ///
 /// Returns once the document is on screen, so a test never has to wait for it.
 pub fn launch(document: &Path) -> App {
-    let app = App::start(Some(document), None);
+    let app = App::start(Some(document), None, None);
+    app.wait_for_a_rendered_document();
+    app
+}
+
+/// The same, for an application launched with `--engine <engine>` — the testing flag
+/// that reads documents with an engine other than the reader's preference, without
+/// writing anything to their settings (issue #17).
+pub fn launch_with_engine(document: &Path, engine: &str) -> App {
+    let app = App::start(Some(document), None, Some(engine));
     app.wait_for_a_rendered_document();
     app
 }
@@ -250,7 +259,7 @@ pub fn launch(document: &Path) -> App {
 /// The same, for an application whose preferences are `preferences` — a store that
 /// outlives it, so a second launch over the same one is the reader coming back.
 pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
-    let app = App::start(Some(document), Some(preferences));
+    let app = App::start(Some(document), Some(preferences), None);
     app.wait_for_a_rendered_document();
     app
 }
@@ -260,14 +269,14 @@ pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
 ///
 /// Returns once its window exists.
 pub fn launch_without_document() -> App {
-    let app = App::start(None, None);
+    let app = App::start(None, None, None);
     app.wait_until_windows(1);
     app
 }
 
 /// The same, over a settings store the test controls.
 pub fn launch_without_document_with(preferences: &Preferences) -> App {
-    let app = App::start(None, Some(preferences));
+    let app = App::start(None, Some(preferences), None);
     app.wait_until_windows(1);
     app
 }
@@ -288,7 +297,11 @@ pub struct App {
 }
 
 impl App {
-    fn start(document: Option<&Path>, preferences: Option<&Preferences>) -> App {
+    fn start(
+        document: Option<&Path>,
+        preferences: Option<&Preferences>,
+        engine: Option<&str>,
+    ) -> App {
         let scratch = Scratch::new("app");
         let display = Display::start(scratch.path());
         let environment = Environment::pin(
@@ -308,6 +321,9 @@ impl App {
                 .map(|(name, value)| (name.to_owned(), value))
                 .chain([("AXIOMD_TEST_CONTROL".to_owned(), socket.clone())]),
         );
+        if let Some(engine) = engine {
+            command.arg(format!("--engine={engine}"));
+        }
         if let Some(document) = document {
             command.arg(document);
         }
@@ -575,6 +591,19 @@ impl App {
     pub fn wait_until_mode(&self, wanted: &str) {
         self.settle(&format!("the window to be in {wanted} mode"), || {
             Ok(self.try_command("window", "mode")? == wanted)
+        });
+    }
+
+    /// Which markdown engine the addressed window's main menu shows it reading with —
+    /// the reader's preference, or the engine this window was switched to.
+    pub fn engine(&self) -> String {
+        self.property("engine")
+    }
+
+    /// Waits until the addressed window is reading with `wanted`.
+    pub fn wait_until_engine(&self, wanted: &str) {
+        self.settle(&format!("the window to read with {wanted}"), || {
+            Ok(self.try_command("window", "engine")? == wanted)
         });
     }
 

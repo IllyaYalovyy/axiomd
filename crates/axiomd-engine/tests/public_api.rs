@@ -1,27 +1,31 @@
-//! The engine boundary is sealed: no comrak type may appear in axiomd-engine's
-//! public API.
+//! The engine boundary is sealed: no parser's own types may appear in axiomd-engine's
+//! public API, for any engine.
 //!
 //! Two independent guards, because neither alone is complete:
 //!
-//! 1. [`the_whole_public_api_is_usable_without_comrak`] is a compile-time proof.
-//!    Integration tests link against the crate's *public* interface only — comrak is
-//!    a private dependency and is not in scope here — so if any public item required
-//!    a comrak type to name, construct or consume, this file would not compile.
-//! 2. [`comrak_is_confined_to_one_module`] inspects the crate's own source. This is
-//!    a declaration-level invariant ("no public signature mentions comrak"), so
-//!    reading the declarations is a direct check of it rather than a proxy for
-//!    behaviour. It catches the leak the compile-time guard cannot: a public item
-//!    whose comrak type is inferrable and therefore never named at the call site.
+//! 1. [`the_whole_public_api_is_usable_without_a_parser`] is a compile-time proof.
+//!    Integration tests link against the crate's *public* interface only — comrak and
+//!    pulldown-cmark are private dependencies and are not in scope here — so if any
+//!    public item required one of their types to name, construct or consume, this file
+//!    would not compile.
+//! 2. [`every_parser_is_confined_to_its_own_module`] inspects the crate's own source.
+//!    This is a declaration-level invariant ("no public signature mentions a parser"),
+//!    so reading the declarations is a direct check of it rather than a proxy for
+//!    behaviour. It catches the leak the compile-time guard cannot: a public item whose
+//!    parser type is inferrable and therefore never named at the call site.
+//!
+//! Both run over every engine, so a third engine cannot land with a leak the pair of
+//! them would have caught in the first two.
 
 use std::path::Path;
 
 use axiomd_engine::{
     Alignment, Callout, ComrakEngine, EngineId, Event, Extension, Extensions, MarkdownEngine,
-    Parsed, Span, SpannedEvent, Tag, TagEnd,
+    Parsed, PulldownEngine, Span, SpannedEvent, Tag, TagEnd,
 };
 
 #[test]
-fn the_whole_public_api_is_usable_without_comrak() {
+fn the_whole_public_api_is_usable_without_a_parser() {
     // Options.
     let extensions = Extensions::COMMONMARK | Extensions::GFM | Extension::Math;
     assert!(extensions.contains(Extension::Math));
@@ -33,11 +37,18 @@ fn the_whole_public_api_is_usable_without_comrak() {
     assert!(extensions.iter().count() >= 5);
     assert_eq!(Extension::ALL.len(), 9);
 
-    // Identity.
+    // Identity, of every engine and of the registry that offers them.
     let engine = ComrakEngine::new();
     let id: EngineId = engine.id();
     assert_eq!(id, ComrakEngine::ID);
     assert_eq!(EngineId::new("comrak").as_str(), id.as_str());
+    assert_eq!(PulldownEngine::new().id(), PulldownEngine::ID);
+    let registered: &[&dyn MarkdownEngine] = axiomd_engine::engines();
+    assert!(registered.len() >= 2);
+    assert_eq!(
+        axiomd_engine::engine(PulldownEngine::ID.as_str()).map(|e| e.id()),
+        Some(PulldownEngine::ID),
+    );
 
     // Parsing, through the trait and through the concrete type.
     let engine: &dyn MarkdownEngine = &engine;
@@ -112,64 +123,104 @@ fn the_whole_public_api_is_usable_without_comrak() {
     assert_eq!(handmade.front_matter(), Some("---\n"));
 }
 
-/// The one module allowed to import from comrak.
-const COMRAK_HOME: &str = "comrak_engine.rs";
+/// Each parser crate, and the one module of this crate allowed to name it.
+///
+/// An engine added without an entry here is an engine whose parser may leak anywhere;
+/// `every_engine_has_a_confined_home` holds the list to the registry.
+const HOMES: [(&str, &str); 2] = [
+    ("comrak", "comrak_engine.rs"),
+    ("pulldown_cmark", "pulldown_engine.rs"),
+];
 
 #[test]
-fn comrak_is_confined_to_one_module() {
+fn every_parser_is_confined_to_its_own_module() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let files = walk(&src);
     assert!(
-        files.len() >= 3,
+        files.len() >= 5,
         "only {} source files found; the walk is broken",
         files.len()
     );
 
-    let mut imported: Vec<String> = Vec::new();
-    for path in &files {
-        let name = file_name(path);
-        let code = strip_comments(&std::fs::read_to_string(path).expect("reading crate source"));
-        let imports = comrak_imports(&code);
+    for (parser, home) in HOMES {
+        let mut imported: Vec<String> = Vec::new();
+        for path in &files {
+            let name = file_name(path);
+            let code =
+                strip_comments(&std::fs::read_to_string(path).expect("reading crate source"));
+            let imports = imports_from(&code, parser);
 
-        assert!(
-            imports.is_empty() || name == COMRAK_HOME,
-            "{name} imports from comrak; only {COMRAK_HOME} may: {imports:?}"
-        );
-        assert!(
-            !code.contains("comrak::") || name == COMRAK_HOME,
-            "{name} names a comrak path; only {COMRAK_HOME} may"
-        );
-        imported.extend(imports);
-    }
-
-    assert!(
-        !imported.is_empty(),
-        "no comrak imports found at all; the import scan is broken"
-    );
-
-    let home = files
-        .iter()
-        .find(|p| file_name(p) == COMRAK_HOME)
-        .unwrap_or_else(|| panic!("{COMRAK_HOME} not found"));
-    let code = strip_comments(&std::fs::read_to_string(home).expect("reading crate source"));
-    let mut declarations = 0usize;
-    for (number, declaration) in public_declarations(&code) {
-        declarations += 1;
-        for name in &imported {
             assert!(
-                !mentions(&declaration, name),
-                "{COMRAK_HOME}:{number} leaks the comrak type {name} through a public item: {declaration}"
+                imports.is_empty() || name == home,
+                "{name} imports from {parser}; only {home} may: {imports:?}"
+            );
+            assert!(
+                !code.contains(&format!("{parser}::")) || name == home,
+                "{name} names a {parser} path; only {home} may"
+            );
+            imported.extend(imports);
+        }
+
+        assert!(
+            !imported.is_empty(),
+            "no {parser} imports found at all; the import scan is broken"
+        );
+
+        let path = files
+            .iter()
+            .find(|p| file_name(p) == home)
+            .unwrap_or_else(|| panic!("{home} not found"));
+        let code = strip_comments(&std::fs::read_to_string(path).expect("reading crate source"));
+        let mut declarations = 0usize;
+        for (number, declaration) in public_declarations(&code) {
+            declarations += 1;
+            for name in &imported {
+                assert!(
+                    !mentions(&declaration, name),
+                    "{home}:{number} leaks the {parser} type {name} through a public item: \
+                     {declaration}"
+                );
+            }
+            assert!(
+                !declaration.contains(&format!("{parser}::")),
+                "{home}:{number} leaks a {parser} path through a public item: {declaration}"
             );
         }
         assert!(
-            !declaration.contains("comrak::"),
-            "{COMRAK_HOME}:{number} leaks a comrak path through a public item: {declaration}"
+            declarations >= 3,
+            "only {declarations} public declarations found in {home}; the scan is broken"
         );
     }
-    assert!(
-        declarations >= 3,
-        "only {declarations} public declarations found in {COMRAK_HOME}; the scan is broken"
+}
+
+/// Every registered engine's parser is on the confinement list above.
+///
+/// Without this the seal is only as complete as somebody remembering to extend a
+/// constant: a third engine could import its parser into any module in the crate and
+/// the scan above would never look at it.
+#[test]
+fn every_engine_has_a_confined_home() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let homes: Vec<String> = HOMES.iter().map(|(_, home)| (*home).to_owned()).collect();
+    let engine_modules: Vec<String> = walk(&src)
+        .iter()
+        .map(|path| file_name(path))
+        .filter(|name| name.ends_with("_engine.rs"))
+        .collect();
+
+    assert_eq!(
+        engine_modules.len(),
+        axiomd_engine::engines().len(),
+        "{} engine modules for {} registered engines: {engine_modules:?}",
+        engine_modules.len(),
+        axiomd_engine::engines().len(),
     );
+    for module in &engine_modules {
+        assert!(
+            homes.contains(module),
+            "{module} is an engine and no parser confinement covers it",
+        );
+    }
 }
 
 /// Every public declaration in a file, each joined into a single line so that a
@@ -204,11 +255,11 @@ fn file_name(path: &Path) -> String {
         .to_string()
 }
 
-/// The identifiers a file brings into scope from comrak, including `as` aliases.
-fn comrak_imports(code: &str) -> Vec<String> {
+/// The identifiers a file brings into scope from `parser`, including `as` aliases.
+fn imports_from(code: &str, parser: &str) -> Vec<String> {
     let mut names = Vec::new();
     let mut rest = code;
-    while let Some(at) = find_comrak_use(rest) {
+    while let Some(at) = find_use(rest, parser) {
         let statement = &rest[at..];
         let end = statement.find(';').expect("unterminated use statement");
         let statement = &statement[..end];
@@ -227,21 +278,22 @@ fn comrak_imports(code: &str) -> Vec<String> {
         // An alias shadows the name it renames.
         rest = &rest[at + end..];
     }
-    names.retain(|n| n != "comrak");
+    names.retain(|n| n != parser);
     names
 }
 
-/// The next `use comrak…` statement that imports from the comrak crate itself,
-/// rather than from a module whose name merely starts with `comrak`.
-fn find_comrak_use(code: &str) -> Option<usize> {
+/// The next `use <parser>…` statement that imports from the parser crate itself,
+/// rather than from a module whose name merely starts with it.
+fn find_use(code: &str, parser: &str) -> Option<usize> {
+    let needle = format!("use {parser}");
     let mut from = 0;
-    while let Some(at) = code[from..].find("use comrak") {
+    while let Some(at) = code[from..].find(&needle) {
         let at = from + at;
-        let after = code[at + "use comrak".len()..].chars().next();
+        let after = code[at + needle.len()..].chars().next();
         if !after.is_some_and(|c| c.is_alphanumeric() || c == '_') {
             return Some(at);
         }
-        from = at + "use comrak".len();
+        from = at + needle.len();
     }
     None
 }

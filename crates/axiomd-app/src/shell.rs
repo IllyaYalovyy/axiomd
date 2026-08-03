@@ -15,7 +15,7 @@
 //! Sameness is the file's identity on disk, so a relative path, an absolute path and
 //! a symlink all find the window that is already open.
 
-use std::cell::{OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -88,6 +88,15 @@ const WINDOW_SHORTCUTS: &[(&str, &[&str])] = &[
     (crate::window::EXPORT, &["<Shift><Control>e"]),
 ];
 
+/// The command line's name for the engine documents are read with — a testing flag,
+/// so that a suite can drive the real application on an engine other than the reader's
+/// preference without writing to their settings (issue #17).
+const ENGINE_OPTION: &str = "engine";
+
+/// What the process exits with when `--engine` names something this build has not got.
+/// Not zero, and not the failure a broken display is: the command line was wrong.
+const BAD_ENGINE: u8 = 2;
+
 /// Runs axiomd to completion and reports the process exit status.
 pub fn run() -> ExitCode {
     // Answered before touching GTK so that `axiomd --version` works over ssh,
@@ -121,6 +130,10 @@ pub(crate) struct Shell {
     /// The application's own subscription — the colour scheme, which belongs to the
     /// application rather than to any window. Lives as long as the shell.
     theme: OnceCell<Watch>,
+    /// The engine `--engine` asked this launch to read with, if it was given. Every
+    /// window this launch opens starts switched to it; nothing is written down, so the
+    /// reader's preference is untouched and the next launch is unaffected (issue #17).
+    engine: Cell<Option<axiomd_engine::EngineId>>,
 }
 
 impl Shell {
@@ -131,6 +144,7 @@ impl Shell {
             windows: RefCell::new(Vec::new()),
             settings: Settings::new(),
             theme: OnceCell::new(),
+            engine: Cell::new(None),
         }
     }
 
@@ -219,7 +233,13 @@ impl Shell {
     }
 
     fn new_window(self: &Rc<Self>, app: &adw::Application) -> Rc<DocumentWindow> {
-        let window = DocumentWindow::new(app, self.context(), &self.scheme, &self.settings);
+        let window = DocumentWindow::new(
+            app,
+            self.context(),
+            &self.scheme,
+            &self.settings,
+            self.engine.get(),
+        );
         self.windows.borrow_mut().push(window.clone());
 
         // Forgetting the window here is what frees it: with the shell's reference
@@ -265,6 +285,48 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
         // arguments; without this the desktop cannot launch it with a file at all.
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
+
+    // `--engine <name>`, declared so that GApplication parses it out of the command
+    // line before what is left becomes documents to open. Without a declared option an
+    // application with HANDLES_OPEN takes every argument for a file, and `--engine`
+    // would become a document that does not exist.
+    app.add_main_option(
+        ENGINE_OPTION,
+        glib::Char::from(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "Read documents with this markdown engine",
+        Some("ENGINE"),
+    );
+    // Answered here rather than at startup, because this runs before GTK is
+    // initialised: a wrong engine name is a command line that is wrong, and saying so
+    // must not need a display any more than `--version` does.
+    app.connect_handle_local_options({
+        let shell = shell.clone();
+        move |_, options| {
+            let Some(name) = options.lookup::<String>(ENGINE_OPTION).ok().flatten() else {
+                return std::ops::ControlFlow::Continue(());
+            };
+            match axiomd_engine::engine(&name) {
+                Some(engine) => {
+                    shell.engine.set(Some(engine.id()));
+                    std::ops::ControlFlow::Continue(())
+                }
+                None => {
+                    let known: Vec<&str> = axiomd_engine::engines()
+                        .iter()
+                        .map(|engine| engine.id().as_str())
+                        .collect();
+                    eprintln!(
+                        "axiomd: no {name} markdown engine in this build. \
+                         This one has: {}.",
+                        known.join(", "),
+                    );
+                    std::ops::ControlFlow::Break(glib::ExitCode::from(BAD_ENGINE))
+                }
+            }
+        }
+    });
 
     // Before any window exists, so a test is already listening when the first one
     // appears. Does nothing at all unless a test launched this process.
