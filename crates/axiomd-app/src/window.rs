@@ -21,7 +21,7 @@
 //! status page inside the window, never a dialog. Opening and reading are never
 //! interrupted by a question (`ux_decisions.md`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -42,6 +42,21 @@ pub(crate) struct DocumentWindow {
     pages: gtk::Stack,
     scheme: Rc<Scheme>,
     open: RefCell<Option<OpenDocument>>,
+    /// How many times this window's view has committed a load.
+    ///
+    /// The number a re-render must not move: showing a changed document by
+    /// navigating the view is the full-page reload that costs the user their place
+    /// and flashes the window (`design_decisions.md`). Counted here because only the
+    /// view knows, and read back through the test-control channel.
+    navigations: Cell<u32>,
+    /// How many pages this window has finished — rendered documents and the status
+    /// pages that explain why there is none alike.
+    ///
+    /// Rendering is asynchronous, so "the window has caught up with what it was
+    /// asked to show" is otherwise unobservable, and a test would have to guess with
+    /// a sleep. Shared with the render callback rather than reached through `self`,
+    /// which would make the window own a reference to itself.
+    renders: Rc<Cell<u32>>,
 }
 
 /// The document a window currently holds.
@@ -69,6 +84,7 @@ impl DocumentWindow {
         scheme: &Rc<Scheme>,
     ) -> Rc<Self> {
         let webview = build_webview(context);
+        let navigations = Cell::new(0);
         let status = adw::StatusPage::builder()
             .icon_name("text-x-generic-symbolic")
             .title("No document open")
@@ -97,7 +113,7 @@ impl DocumentWindow {
             .content(&layout)
             .build();
 
-        Rc::new(Self {
+        let document = Rc::new(Self {
             window,
             title,
             webview,
@@ -105,11 +121,46 @@ impl DocumentWindow {
             pages,
             scheme: scheme.clone(),
             open: RefCell::new(None),
-        })
+            navigations,
+            renders: Rc::new(Cell::new(0)),
+        });
+
+        let counted = Rc::downgrade(&document);
+        document.webview.connect_load_changed(move |_, event| {
+            if event == webkit6::LoadEvent::Committed
+                && let Some(document) = counted.upgrade()
+            {
+                document.navigations.set(document.navigations.get() + 1);
+            }
+        });
+        document
     }
 
     pub(crate) fn window(&self) -> &adw::ApplicationWindow {
         &self.window
+    }
+
+    pub(crate) fn webview(&self) -> &webkit6::WebView {
+        &self.webview
+    }
+
+    /// How many loads this window's view has committed since it was built.
+    pub(crate) fn navigations(&self) -> u32 {
+        self.navigations.get()
+    }
+
+    /// How many pages this window has finished showing since it was built.
+    pub(crate) fn renders(&self) -> u32 {
+        self.renders.get()
+    }
+
+    /// Which of the two things a window can show it is showing: the document, or the
+    /// status page that says why there is none.
+    pub(crate) fn showing(&self) -> &'static str {
+        match self.pages.visible_child_name().as_deref() {
+            Some(DOCUMENT_PAGE) => DOCUMENT_PAGE,
+            _ => STATUS_PAGE,
+        }
     }
 
     pub(crate) fn present(&self) {
@@ -143,21 +194,25 @@ impl DocumentWindow {
             let webview = self.webview.clone();
             let status = self.status.clone();
             let pages = self.pages.clone();
-            move |page| match page {
-                Page::Rendered(html) => {
-                    publication.show(html);
-                    if webview.uri().as_deref() == Some(publication.uri()) {
-                        webview.reload();
-                    } else {
-                        webview.load_uri(publication.uri());
+            let renders = self.renders.clone();
+            move |page| {
+                match page {
+                    Page::Rendered(html) => {
+                        publication.show(html);
+                        if webview.uri().as_deref() == Some(publication.uri()) {
+                            webview.reload();
+                        } else {
+                            webview.load_uri(publication.uri());
+                        }
+                        pages.set_visible_child_name(DOCUMENT_PAGE);
                     }
-                    pages.set_visible_child_name(DOCUMENT_PAGE);
+                    Page::Unavailable { title, detail } => {
+                        status.set_title(&title);
+                        status.set_description(Some(&detail));
+                        pages.set_visible_child_name(STATUS_PAGE);
+                    }
                 }
-                Page::Unavailable { title, detail } => {
-                    status.set_title(&title);
-                    status.set_description(Some(&detail));
-                    pages.set_visible_child_name(STATUS_PAGE);
-                }
+                renders.set(renders.get() + 1);
             }
         });
         renderer.render(file.clone());
@@ -171,6 +226,7 @@ impl DocumentWindow {
         self.status.set_title(title);
         self.status.set_description(Some(detail));
         self.pages.set_visible_child_name(STATUS_PAGE);
+        self.renders.set(self.renders.get() + 1);
     }
 
     fn retitle(&self, file: &Path) {

@@ -27,7 +27,14 @@ Use the lowest layer that catches the risk clearly:
   sanitization, link policy, zero-network guarantees
 - **e2e (headless UI) tests** - the real app under a headless display,
   driven and asserted through the webview DOM bridge (`evaluate_javascript`)
-  and GTK actions; user flows from `designs/MVP-USER-TASKS.md`
+  and GTK actions; user flows from `designs/MVP-USER-TASKS.md`.
+  The harness is the `axiomd-e2e` crate: `launch(document)` starts the
+  shipped binary on a headless weston of its own, `app.dom(js)` /
+  `app.dom_text(selector)` read the rendered document, `app.activate(action)`
+  fires the action a menu item fires, `app.screenshot()` captures pixels, and
+  `app.close()` returns the processes that outlived the run. Every wait is a
+  condition with a deadline — the harness contains no sleeps, and neither may
+  a test written on it.
 - **Screenshot goldens** - visual fidelity: a rendered fixture is approved by
   a human ONCE, then pinned as an image and diffed thereafter. Subjective
   "does it look right" becomes objective "did it change without approval".

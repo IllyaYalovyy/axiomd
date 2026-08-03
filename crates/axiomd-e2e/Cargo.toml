@@ -1,0 +1,13 @@
+[package]
+name = "axiomd-e2e"
+description = "End-to-end harness: drives the real axiomd under a headless display and asserts what the user sees."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# gdk only, for the two ends of a screenshot: encoding what the app captured and
+# decoding a pinned golden back to pixels. No display is needed for either.
+gtk.workspace = true
