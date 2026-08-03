@@ -83,11 +83,79 @@ impl Fixture {
     }
 }
 
+/// The settings store one or more launches share.
+///
+/// Preferences outlive the application that changed them, so a test about them needs
+/// somewhere for them to live that is neither the developer's own settings nor gone
+/// the moment the application is. This is that place: a store of one test's own, which
+/// a launch is pointed at with [`launch_with`] and which the next launch over the same
+/// store still finds.
+pub struct Preferences {
+    scratch: Scratch,
+}
+
+impl Preferences {
+    /// An empty store — every setting at the value a first run gets.
+    pub fn new(label: &str) -> Preferences {
+        Preferences {
+            scratch: Scratch::new(label),
+        }
+    }
+
+    /// What the store holds for `key` now, as it is written down, or `None` while the
+    /// reader has never changed that setting.
+    fn get(&self, key: &str) -> Option<String> {
+        let stored = std::fs::read_to_string(self.keyfile()).ok()?;
+        stored
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().to_owned())
+    }
+
+    /// Waits until the store holds `value` for `key`, and fails saying what it holds
+    /// instead.
+    ///
+    /// This is the far side of the preferences dialog: read from the file the
+    /// application wrote rather than asked of the application. Settings reach that
+    /// file through the main loop, so a test that read it once would be racing the
+    /// write it is about to assert.
+    pub fn wait_until(&self, key: &str, value: &str) {
+        let deadline = Instant::now() + SETTLES_WITHIN;
+        loop {
+            let stored = self.get(key);
+            if stored.as_deref() == Some(value) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "waited {SETTLES_WITHIN:?} for {key} to be {value} in the reader's \
+                 settings and it is {stored:?}",
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Where GLib's keyfile backend keeps this store, under the configuration
+    /// directory the launch is given.
+    fn keyfile(&self) -> PathBuf {
+        self.scratch.path().join("glib-2.0/settings/keyfile")
+    }
+}
+
 /// Starts axiomd showing `document`, the way opening a file from the desktop does.
 ///
 /// Returns once the document is on screen, so a test never has to wait for it.
 pub fn launch(document: &Path) -> App {
-    let app = App::start(Some(document));
+    let app = App::start(Some(document), None);
+    app.wait_for_a_rendered_document();
+    app
+}
+
+/// The same, for an application whose preferences are `preferences` — a store that
+/// outlives it, so a second launch over the same one is the reader coming back.
+pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
+    let app = App::start(Some(document), Some(preferences));
     app.wait_for_a_rendered_document();
     app
 }
@@ -96,7 +164,7 @@ pub fn launch(document: &Path) -> App {
 ///
 /// Returns once its window exists.
 pub fn launch_without_document() -> App {
-    let app = App::start(None);
+    let app = App::start(None, None);
     app.wait_until_windows(1);
     app
 }
@@ -117,10 +185,13 @@ pub struct App {
 }
 
 impl App {
-    fn start(document: Option<&Path>) -> App {
+    fn start(document: Option<&Path>, preferences: Option<&Preferences>) -> App {
         let scratch = Scratch::new("app");
         let display = Display::start(scratch.path());
-        let environment = Environment::pin(scratch.path());
+        let environment = Environment::pin(
+            scratch.path(),
+            preferences.map(|preferences| preferences.scratch.path()),
+        );
         let mut control = Control::listen(scratch.path());
         let socket = control.socket().to_path_buf();
         let log = scratch.path().join("axiomd.log");
@@ -319,6 +390,30 @@ impl App {
         self.property("showing") == "document"
     }
 
+    /// The title of the dialog the addressed window is showing, or an empty string
+    /// when it is showing none.
+    ///
+    /// Both halves matter: that `Ctrl+comma` puts the preferences dialog up, and that
+    /// opening and reading a document puts nothing up at all (`ux_decisions.md`).
+    pub fn visible_dialog(&self) -> String {
+        self.property("dialog")
+    }
+
+    /// What the preferences row titled `row` says — `true`/`false` for a switch, the
+    /// number for a number, the label showing for a choice.
+    pub fn preference(&self, row: &str) -> String {
+        self.command("preference", row)
+    }
+
+    /// Turns the preferences row titled `row` to `value`, as the reader turns it.
+    ///
+    /// The dialog has to be open, exactly as it does for them. What follows the turn
+    /// — the row's binding, the setting, the document restyling — is the
+    /// application's own doing and nothing the harness reaches into.
+    pub fn set_preference(&self, row: &str, value: &str) {
+        self.command("set-preference", &format!("{row}={value}"));
+    }
+
     /// What the addressed window's inline banner says, or an empty string when no
     /// banner is showing.
     ///
@@ -350,10 +445,27 @@ impl App {
 
     /// Captures the addressed window's rendered document as pixels.
     pub fn screenshot(&self) -> Screenshot {
+        self.wait_until_the_page_has_drawn_again();
         let path = self.scratch.path().join("screenshot.png");
         let _ = std::fs::remove_file(&path);
         self.command("screenshot", &path.display().to_string());
         Screenshot::read(&path).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Waits until the page has produced a frame since being asked.
+    ///
+    /// Every other assertion here is about the DOM, which exists as soon as the
+    /// document is patched in. Pixels do not: a capture taken between the two is a
+    /// picture of nothing, and it was seen intermittently under a loaded machine as
+    /// "the capture is a single colour". The signal is the document timeline, whose
+    /// current time is the last frame's — it stands still between frames and moves
+    /// when one is produced, so waiting for it to move is waiting for a render, and it
+    /// says nothing whatsoever about what was rendered. A test asserting the picture
+    /// is not blank still asserts it.
+    fn wait_until_the_page_has_drawn_again(&self) {
+        let now = "Number(document.timeline.currentTime)";
+        let drawn_at: f64 = self.dom(&format!("String({now})")).parse().unwrap_or(0.0);
+        self.wait_until(&format!("{now} > {drawn_at}"));
     }
 
     /// Shuts everything down and reports the processes that outlived it.

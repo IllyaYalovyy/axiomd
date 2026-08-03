@@ -208,6 +208,17 @@ impl Session {
                 Ok(value.to_str().to_string())
             }
             "window" => self.property(payload, shell),
+            // The two halves of driving the preferences dialog: reading a row, and
+            // turning it. Turning it sets the very property the reader's click sets,
+            // so what happens next — the binding, the setting, the document
+            // restyling — is the application's own path and nothing here.
+            "preference" => read_row(&self.target(shell)?, payload),
+            "set-preference" => {
+                let (title, value) = payload
+                    .split_once('=')
+                    .ok_or_else(|| format!("not a <row>=<value> setting: {payload:?}"))?;
+                set_row(&self.target(shell)?, title, value)
+            }
             "screenshot" => {
                 let webview = self.target(shell)?.webview().clone();
                 let picture = webview
@@ -247,6 +258,7 @@ impl Session {
             "renders" => Ok(window.renders().to_string()),
             "showing" => Ok(window.showing().to_owned()),
             "banner" => Ok(window.banner()),
+            "dialog" => Ok(window.visible_dialog()),
             other => Err(format!("no such window property: {other}")),
         }
     }
@@ -262,4 +274,98 @@ impl Session {
             .window_at(index)
             .ok_or_else(|| format!("window {index} has closed"))
     }
+}
+
+/// What a preferences row currently says, as the reader reads it: a switch as
+/// `true`/`false`, a number as itself, a choice as the label it is showing.
+fn read_row(window: &Rc<DocumentWindow>, title: &str) -> Answer {
+    let row = row(window, title)?;
+    if let Some(switch) = row.downcast_ref::<adw::SwitchRow>() {
+        return Ok(switch.is_active().to_string());
+    }
+    if let Some(number) = row.downcast_ref::<adw::SpinRow>() {
+        return Ok((number.value().round() as i64).to_string());
+    }
+    if let Some(choice) = row.downcast_ref::<adw::ComboRow>() {
+        return Ok(chosen_label(choice));
+    }
+    // A row that says something rather than doing something — the note standing where
+    // a section's rows will be. It is there, and it has nothing to say back.
+    Ok(String::new())
+}
+
+/// Turns one preferences row to `value`, as the reader turning it does.
+fn set_row(window: &Rc<DocumentWindow>, title: &str, value: &str) -> Answer {
+    let row = row(window, title)?;
+    if let Some(switch) = row.downcast_ref::<adw::SwitchRow>() {
+        let wanted = value
+            .parse::<bool>()
+            .map_err(|_| format!("{title} is a switch and {value:?} is not true or false"))?;
+        switch.set_active(wanted);
+        return Ok(String::new());
+    }
+    if let Some(number) = row.downcast_ref::<adw::SpinRow>() {
+        let wanted = value
+            .parse::<f64>()
+            .map_err(|_| format!("{title} is a number and {value:?} is not one"))?;
+        number.set_value(wanted);
+        return Ok(String::new());
+    }
+    if let Some(choice) = row.downcast_ref::<adw::ComboRow>() {
+        let options = labels(choice);
+        let wanted = options
+            .iter()
+            .position(|label| label == value)
+            .ok_or_else(|| format!("{title} does not offer {value:?}, only {options:?}"))?;
+        choice.set_selected(wanted as u32);
+        return Ok(String::new());
+    }
+    Err(format!("{title} is not a row a reader can change"))
+}
+
+/// The row the reader would point at: the one titled `title` in the dialog the window
+/// is showing, wherever in it that row lives.
+fn row(window: &Rc<DocumentWindow>, title: &str) -> Result<adw::PreferencesRow, String> {
+    let dialog = window
+        .window()
+        .visible_dialog()
+        .ok_or_else(|| format!("no dialog is open, so there is no {title} row"))?;
+    find_row(dialog.upcast_ref::<gtk::Widget>(), title)
+        .ok_or_else(|| format!("the dialog on screen has no row titled {title:?}"))
+}
+
+/// Searches `widget` and everything under it for a preferences row with that title.
+fn find_row(widget: &gtk::Widget, title: &str) -> Option<adw::PreferencesRow> {
+    if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>()
+        && row.title() == title
+    {
+        return Some(row.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        if let Some(found) = find_row(&candidate, title) {
+            return Some(found);
+        }
+        child = candidate.next_sibling();
+    }
+    None
+}
+
+/// The labels a choice row is offering, in the order it offers them.
+fn labels(choice: &adw::ComboRow) -> Vec<String> {
+    let Some(model) = choice.model().and_downcast::<gtk::StringList>() else {
+        return Vec::new();
+    };
+    (0..model.n_items())
+        .filter_map(|index| model.string(index))
+        .map(|label| label.to_string())
+        .collect()
+}
+
+/// The one it is showing now.
+fn chosen_label(choice: &adw::ComboRow) -> String {
+    labels(choice)
+        .into_iter()
+        .nth(choice.selected() as usize)
+        .unwrap_or_default()
 }

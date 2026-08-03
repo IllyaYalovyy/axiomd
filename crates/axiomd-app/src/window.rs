@@ -43,7 +43,7 @@
 //! banner. An image that will not load says so on the card that was pressed, which
 //! stays a button.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -56,6 +56,7 @@ use crate::document::{FileId, Page, Renderer};
 use crate::links::Follow;
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
+use crate::settings::{Settings, Watch};
 use crate::view::DocumentView;
 use crate::watch::FileWatch;
 
@@ -85,6 +86,10 @@ pub(crate) struct DocumentWindow {
     /// The remote images this window has asked for and not yet heard back about, so
     /// that pressing "load all" twice is one fetch per image rather than two.
     fetching: RefCell<Vec<String>>,
+    /// This window's subscription to the reader changing how they want to read. It
+    /// ends with the window, so a closed one is neither restyled nor kept alive by
+    /// being restyled (invariant 7).
+    layout: OnceCell<Watch>,
 }
 
 /// Where the reader has been in one window.
@@ -185,6 +190,7 @@ impl DocumentWindow {
         app: &adw::Application,
         context: &webkit6::WebContext,
         scheme: &Rc<Scheme>,
+        settings: &Rc<Settings>,
     ) -> Rc<Self> {
         let view = DocumentView::new(context);
         let status = adw::StatusPage::builder()
@@ -235,7 +241,20 @@ impl DocumentWindow {
             renders: Cell::new(0),
             history: RefCell::new(History::default()),
             fetching: RefCell::new(Vec::new()),
+            layout: OnceCell::new(),
         });
+
+        // From here on this window lays its documents out the reader's way — the one
+        // on screen and every one after it. It starts at once, so a reader whose
+        // measure is not the default never sees the default one first.
+        let relaying_out = Rc::downgrade(&document_window);
+        let _ = document_window
+            .layout
+            .set(settings.follow_reading_style(move |stylesheet| {
+                if let Some(window) = relaying_out.upgrade() {
+                    window.view.restyle(stylesheet);
+                }
+            }));
 
         // Everything the view refuses to do itself: another document, the browser,
         // the desktop, or the reader asking for a remote image.
@@ -272,6 +291,19 @@ impl DocumentWindow {
     /// How many loads this window's view has committed since it was built.
     pub(crate) fn navigations(&self) -> u32 {
         self.view.navigations()
+    }
+
+    /// The dialog this window is showing, by its title, or an empty string when it is
+    /// showing none.
+    ///
+    /// Opening and reading a document is never interrupted by a question
+    /// (`ux_decisions.md`), so this is empty for the whole of that path; the
+    /// preferences dialog the reader asked for is what puts something in it.
+    pub(crate) fn visible_dialog(&self) -> String {
+        self.window
+            .visible_dialog()
+            .map(|dialog| dialog.title().to_string())
+            .unwrap_or_default()
     }
 
     /// What the window is saying beside the document, or an empty string when it has
@@ -585,6 +617,7 @@ fn primary_menu_button() -> gtk::MenuButton {
     documents.append(Some("_Open…"), Some("app.open"));
 
     let application = gio::Menu::new();
+    application.append(Some("_Preferences"), Some("app.preferences"));
     application.append(Some("_Close Window"), Some("app.close-window"));
     application.append(Some("_Quit"), Some("app.quit"));
 

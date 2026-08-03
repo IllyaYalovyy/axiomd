@@ -24,7 +24,13 @@ GitHub issues mirrored into the local ktask queue.
   only network use is an explicit one-click remote-image load).
 
 Build prerequisites (Fedora): `gtk4-devel`, `libadwaita-devel`,
-`webkitgtk6.0-devel`.
+`webkitgtk6.0-devel`, `glib2-devel` (for `glib-compile-schemas`).
+
+Preferences are GSettings-backed: `data/io.github.etf.axiomd.gschema.xml`
+must be installed into the system's schema directory (and
+`glib-compile-schemas` run over it) when axiomd is packaged. A copy built
+but not installed — `cargo run`, the test suite — uses the schema its own
+build compiled, so nothing has to be installed to develop or test.
 
 ## Project Workflow
 

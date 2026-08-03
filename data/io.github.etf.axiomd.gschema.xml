@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.github.etf.axiomd" path="/io/github/etf/axiomd/">
+    <key name="theme" type="s">
+      <choices>
+        <choice value="system"/>
+        <choice value="light"/>
+        <choice value="dark"/>
+      </choices>
+      <default>"system"</default>
+      <summary>Colour scheme</summary>
+      <description>
+        Whether the app follows the desktop's colour scheme or overrides it.
+      </description>
+    </key>
+
+    <key name="reading-width-limited" type="b">
+      <default>true</default>
+      <summary>Limit the reading width</summary>
+      <description>
+        Whether a document's text is held to a comfortable measure rather than
+        filling the window.
+      </description>
+    </key>
+
+    <key name="reading-width" type="i">
+      <range min="20" max="200"/>
+      <default>46</default>
+      <summary>Reading width</summary>
+      <description>
+        The measure a document's text is held to, in rem — multiples of the
+        document's base font size.
+      </description>
+    </key>
+
+    <key name="autosave" type="b">
+      <default>true</default>
+      <summary>Save edits automatically</summary>
+      <description>
+        Whether edits are written back to the file without being asked for.
+      </description>
+    </key>
+
+    <key name="autosave-delay" type="i">
+      <range min="1" max="60"/>
+      <default>2</default>
+      <summary>Autosave delay</summary>
+      <description>
+        How long after the last edit an automatic save happens, in seconds.
+      </description>
+    </key>
+
+    <key name="spellcheck" type="b">
+      <default>true</default>
+      <summary>Check spelling while editing</summary>
+      <description>
+        Whether misspelled words are marked in the editor. Reading is never
+        affected.
+      </description>
+    </key>
+
+    <key name="engine" type="s">
+      <default>"comrak"</default>
+      <summary>Markdown engine</summary>
+      <description>
+        The parser new documents are rendered with, named by its engine id.
+      </description>
+    </key>
+
+    <key name="disabled-plugins" type="as">
+      <default>[]</default>
+      <summary>Switched-off plugins</summary>
+      <description>
+        The ids of the rendering plugins the reader has switched off. A plugin
+        is on unless it is named here, so a newly added one arrives enabled.
+      </description>
+    </key>
+  </schema>
+</schemalist>
