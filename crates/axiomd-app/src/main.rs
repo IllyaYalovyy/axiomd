@@ -5,6 +5,7 @@ mod document;
 mod editor;
 mod export;
 mod links;
+mod outline;
 mod remote;
 mod scheme;
 mod settings;

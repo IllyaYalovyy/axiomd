@@ -50,6 +50,8 @@ pub(crate) enum Key {
     ReadingWidthLimited,
     /// That measure, in rem.
     ReadingWidth,
+    /// Whether a document's headings are listed beside it.
+    Outline,
     /// Whether edits are written back without being asked for.
     Autosave,
     /// How long after the last edit that happens, in seconds.
@@ -84,10 +86,11 @@ impl Key {
         not(test),
         allow(dead_code, reason = "the completeness tests are its only reader")
     )]
-    const ALL: [Key; 8] = [
+    const ALL: [Key; 9] = [
         Key::Theme,
         Key::ReadingWidthLimited,
         Key::ReadingWidth,
+        Key::Outline,
         Key::Autosave,
         Key::AutosaveDelay,
         Key::Spellcheck,
@@ -101,6 +104,7 @@ impl Key {
             Key::Theme => "theme",
             Key::ReadingWidthLimited => "reading-width-limited",
             Key::ReadingWidth => "reading-width",
+            Key::Outline => "outline",
             Key::Autosave => "autosave",
             Key::AutosaveDelay => "autosave-delay",
             Key::Spellcheck => "spellcheck",
@@ -176,6 +180,21 @@ impl Settings {
         };
         apply();
         self.watch(&[Key::ReadingWidthLimited, Key::ReadingWidth], apply)
+    }
+
+    /// Tells `reveal` whether documents are read with their outline beside them — now,
+    /// and again every time the reader changes their mind.
+    ///
+    /// Live in the strictest sense (invariant 14): the sidebar appears or goes in every
+    /// open window as the switch is turned, and no document is re-read, re-rendered or
+    /// reloaded for it.
+    pub(crate) fn follow_outline(self: &Rc<Self>, reveal: impl Fn(bool) + 'static) -> Watch {
+        let apply = {
+            let settings = self.clone();
+            move || reveal(settings.store.boolean(Key::Outline.name()))
+        };
+        apply();
+        self.watch(&[Key::Outline], apply)
     }
 
     /// How long after the reader stops typing their work is written back, or `None`
@@ -319,6 +338,7 @@ mod tests {
 
         let schema = schema();
         for (key, default) in [
+            (Key::Outline, "true"),
             (Key::Autosave, "true"),
             (Key::AutosaveDelay, "2"),
             (Key::Spellcheck, "true"),

@@ -303,9 +303,12 @@ fn the_rendered_document_can_be_captured_as_pixels() {
     let captured = app.screenshot();
     let (width, height) = captured.size();
 
+    // The document has the window less the outline beside it (issue #7): a 900px
+    // window holds a sidebar of about a fifth of its width, and the rest is this.
     assert!(
-        width >= 800 && height >= 500,
-        "the captured surface is {width}x{height}; the window is 900x700",
+        width >= 600 && height >= 500,
+        "the captured surface is {width}x{height}; the window is 900x700 \
+         with the outline beside the document",
     );
     assert!(
         !captured.is_blank(),

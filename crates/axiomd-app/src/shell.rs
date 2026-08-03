@@ -52,6 +52,7 @@ const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
     (crate::window::BACK, "<Alt>Left"),
     (crate::window::FORWARD, "<Alt>Right"),
     (crate::window::MODE, "<Control>e"),
+    (crate::window::OUTLINE, "F9"),
     (crate::window::SAVE, "<Control>s"),
     // Ctrl+Shift+S, spelled the way GTK normalises it — `accels_for_action`
     // answers in this order, so writing it the other way round would make the table
@@ -413,6 +414,7 @@ mod tests {
             ("win.back", "<Alt>Left"),
             ("win.forward", "<Alt>Right"),
             ("win.mode", "<Control>e"),
+            ("win.outline", "F9"),
             ("win.save", "<Control>s"),
             ("win.save-as", "<Shift><Control>s"),
             ("win.undo", "<Control>z"),

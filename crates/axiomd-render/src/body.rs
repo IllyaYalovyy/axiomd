@@ -17,7 +17,7 @@ use axiomd_engine::{Alignment, CalloutKind, Event, Parsed, Span, SpannedEvent, T
 
 use crate::request::{Request, origin_of};
 use crate::sanitize::is_remote;
-use crate::{Anchor, Picture, highlight, slug};
+use crate::{Anchor, Heading, Picture, highlight, slug};
 
 /// Where the markup being written is going to be read.
 ///
@@ -34,12 +34,19 @@ pub(crate) enum Destination<'a> {
     File(&'a dyn Fn(&str) -> Option<Picture>),
 }
 
-/// Renders one parse into unsanitised body markup, its anchor map, and the remote
-/// images standing behind placeholders in it.
-pub(crate) fn render(
-    parsed: &Parsed<'_>,
-    to: &Destination<'_>,
-) -> (String, Vec<Anchor>, Vec<String>) {
+/// One document as this module produces it: the markup, and everything about that
+/// markup which is not markup.
+pub(crate) struct Body {
+    /// Unsanitised body markup.
+    pub(crate) markup: String,
+    pub(crate) anchors: Vec<Anchor>,
+    pub(crate) outline: Vec<Heading>,
+    /// The remote images standing behind placeholders in it.
+    pub(crate) remote_images: Vec<String>,
+}
+
+/// Renders one parse.
+pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>) -> Body {
     let mut writer = Writer {
         headings: slug::heading_ids(parsed),
         ..Writer::default()
@@ -47,12 +54,17 @@ pub(crate) fn render(
     for SpannedEvent { event, span } in parsed.events() {
         writer.event(event, span, to);
     }
-    let mut out = writer.out;
+    let mut markup = writer.out;
     // Only the app can answer it, so only the app's own window carries it.
     if !writer.remote_images.is_empty() && matches!(to, Destination::Screen) {
-        out.insert_str(0, &load_all_banner(writer.remote_images.len()));
+        markup.insert_str(0, &load_all_banner(writer.remote_images.len()));
     }
-    (out, writer.anchors, writer.remote_images)
+    Body {
+        markup,
+        anchors: writer.anchors,
+        outline: writer.outline,
+        remote_images: writer.remote_images,
+    }
 }
 
 /// The one affordance a document with remote images carries: inline, above the
@@ -123,6 +135,12 @@ struct Writer {
     /// that only arrives after its opening tag has to be written.
     headings: Vec<String>,
     headings_written: usize,
+    /// The headings a reader can be sent to, in document order.
+    outline: Vec<Heading>,
+    /// The one being written, while it is being written. `Some` only for a heading
+    /// that anchored itself, because an entry naming a block with no anchor would be
+    /// a row in the sidebar that goes nowhere.
+    heading: Option<Heading>,
     /// The source of every placeholder standing in for an image the reader has not
     /// asked for, in document order.
     remote_images: Vec<String>,
@@ -180,7 +198,12 @@ impl Writer {
                 ));
             }
             Event::SoftBreak => self.text("\n"),
-            Event::HardBreak => self.inline("<br>"),
+            Event::HardBreak => {
+                // Nothing reaches `text` for a hard break, so the words either side of
+                // it would run together in the outline without this.
+                self.spoken(" ");
+                self.inline("<br>");
+            }
             Event::ThematicBreak => {
                 let anchor = self.anchor(span);
                 self.block(&format!("<hr{anchor}>"));
@@ -201,6 +224,13 @@ impl Writer {
             }
             Tag::Heading { level } => {
                 let anchor = self.anchor(span);
+                if !anchor.is_empty() {
+                    self.heading = Some(Heading {
+                        level: *level,
+                        text: String::new(),
+                        line: span.line,
+                    });
+                }
                 let id = self.heading_id();
                 self.block(&format!("<h{level}{id}{anchor}>"));
                 self.stack.push(Frame::Other);
@@ -340,6 +370,10 @@ impl Writer {
                 }
             }
             TagEnd::Heading(level) => {
+                if let Some(mut heading) = self.heading.take() {
+                    heading.text = one_line(&heading.text);
+                    self.outline.push(heading);
+                }
                 self.stack.pop();
                 self.close(&format!("</h{level}>"));
             }
@@ -448,9 +482,23 @@ impl Writer {
 
     /// Writes text, or collects it when an image label is open.
     fn text(&mut self, text: &str) {
+        self.spoken(text);
         match self.alt.last_mut() {
             Some(image) => image.alt.push_str(text),
             None => escape_into(&mut self.out, text),
+        }
+    }
+
+    /// Adds `text` to the heading being written, if one is.
+    ///
+    /// A picture's label is not part of it: an outline entry says what the section is
+    /// called, and the alt text of an image inside the heading is not one of its
+    /// words — the same rule the heading's own anchor id follows (`slug`).
+    fn spoken(&mut self, text: &str) {
+        if let Some(heading) = self.heading.as_mut()
+            && self.alt.is_empty()
+        {
+            heading.text.push_str(text);
         }
     }
 
@@ -627,6 +675,12 @@ fn callout_title(kind: CalloutKind) -> &'static str {
         CalloutKind::Warning => "Warning",
         CalloutKind::Caution => "Caution",
     }
+}
+
+/// A heading's words as one line of them: a setext heading spans two source lines and
+/// a long one is often wrapped, and an outline entry is a single row either way.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
 /// The document-unique id a footnote reference links to.

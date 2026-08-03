@@ -68,6 +68,12 @@ fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
         .build();
     group.add(&limit);
     group.add(&width);
+    group.add(&toggle(
+        settings,
+        Key::Outline,
+        "Show the outline",
+        "List a document's headings beside it. F9 shows or hides it in one window.",
+    ));
 
     page("Appearance", "applications-graphics-symbolic", group)
 }

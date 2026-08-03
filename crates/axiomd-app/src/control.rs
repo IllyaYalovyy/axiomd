@@ -252,6 +252,25 @@ impl Session {
                 self.target(shell)?.export_to(Path::new(payload));
                 Ok(String::new())
             }
+            // Resizing the window, as dragging its edge or tiling it does. The width is
+            // what decides whether the outline sits beside a document or overlays it,
+            // and a breakpoint is only ever exercised by a window that really is that
+            // wide.
+            "resize" => {
+                let (width, height) = payload
+                    .split_once('x')
+                    .ok_or_else(|| format!("not a <width>x<height> size: {payload:?}"))?;
+                let (width, height) = (
+                    width
+                        .parse::<i32>()
+                        .map_err(|_| format!("not a width: {width:?}"))?,
+                    height
+                        .parse::<i32>()
+                        .map_err(|_| format!("not a height: {height:?}"))?,
+                );
+                self.target(shell)?.window().set_default_size(width, height);
+                Ok(String::new())
+            }
             "window" => self.property(payload, shell),
             // The two halves of driving the preferences dialog: reading a row, and
             // turning it. Turning it sets the very property the reader's click sets,
@@ -296,6 +315,12 @@ impl Session {
             return Ok(shell.window_count().to_string());
         }
         let window = self.target(shell)?;
+        // The outline sidebar, as the reader sees it: whether it is there, what it
+        // lists, which section is highlighted, and how often the page has said where
+        // the reader is.
+        if let Some(answer) = window.outline(name) {
+            return Ok(answer);
+        }
         match name {
             "title" => Ok(window.window().title().unwrap_or_default().to_string()),
             "uri" => Ok(window.webview().uri().unwrap_or_default().to_string()),
@@ -328,26 +353,29 @@ impl Session {
     }
 }
 
-/// Presses the button labelled `label`, wherever in the window it is — the inline
-/// notice beside a document, or a dialog the reader asked for, whether that dialog is
-/// inside the window or a window of its own in front of it.
+/// Presses the thing labelled `label`, wherever in the window it is — a button in the
+/// inline notice beside a document, a button in a dialog the reader asked for, or a
+/// section in the outline sidebar.
 fn press(window: &Rc<DocumentWindow>, label: &str) -> Answer {
     let found = window
         .pressable()
         .iter()
         .find_map(|surface| find_button(surface, label));
-    match found {
-        Some(button) => {
-            // The button's own signal, which is what a pointer press emits — rather
-            // than `gtk_widget_activate`, whose answer depends on whether the widget
-            // is focusable and which is not how a button gets pressed.
-            button.emit_clicked();
-            Ok(String::new())
-        }
-        None => Err(format!(
-            "the window is showing no button labelled {label:?}"
-        )),
+    if let Some(button) = found {
+        // The button's own signal, which is what a pointer press emits — rather
+        // than `gtk_widget_activate`, whose answer depends on whether the widget
+        // is focusable and which is not how a button gets pressed.
+        button.emit_clicked();
+        return Ok(String::new());
     }
+    // The sidebar's rows are not buttons: a section is picked by the list's own
+    // activation, which is what a single click on a row emits.
+    if window.pick_section(label) {
+        return Ok(String::new());
+    }
+    Err(format!(
+        "the window is showing nothing labelled {label:?} to press"
+    ))
 }
 
 /// Searches `widget` and everything under it for a button the reader could press by
