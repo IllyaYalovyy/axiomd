@@ -367,7 +367,13 @@ fn a_remote_svg_is_displayed_and_cannot_run_what_is_inside_it() {
     ));
 
     app.click("a.remote-image");
-    app.wait_until("document.querySelectorAll('img').length === 1");
+    // Until the picture has been decoded it has no size, and the element standing in
+    // the document is there well before that: waiting on the element alone made this
+    // test read a width of 0 under a loaded gate run. `complete` is true whether the
+    // decode succeeded or failed, so the size below is still what says it succeeded.
+    app.wait_until(
+        "document.querySelectorAll('img').length === 1 && document.querySelector('img').complete",
+    );
 
     assert_eq!(
         app.dom("document.querySelector('img').naturalWidth"),
