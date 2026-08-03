@@ -123,9 +123,13 @@ pub(crate) struct Settings {
 ///
 /// Held by whoever answers the setting — a window, the application — so that a closed
 /// window stops being called and stops being kept alive by the call (invariant 7).
+///
+/// Not every question the reader's way of reading depends on is a setting of axiomd's:
+/// high contrast belongs to the desktop and arrives from libadwaita's style manager.
+/// A subscription therefore holds handlers on whatever objects answer it, and ending it
+/// ends all of them.
 pub(crate) struct Watch {
-    store: gio::Settings,
-    handlers: Vec<glib::SignalHandlerId>,
+    handlers: Vec<(glib::Object, glib::SignalHandlerId)>,
 }
 
 impl Settings {
@@ -170,16 +174,40 @@ impl Settings {
     /// Hands `restyle` the stylesheet documents are to be laid out with — now, and
     /// again every time the reader changes how they want to read.
     ///
+    /// Two questions answered as one, because the caller has no use for the
+    /// difference: the measure the reader chose, which is a preference of axiomd's,
+    /// and whether the desktop is asking for high contrast, which is an accessibility
+    /// setting of the desktop's and never axiomd's to offer. Both arrive as one
+    /// stylesheet and both apply the same way — the page on screen recalculates its
+    /// style and nothing is parsed, rendered or loaded again (invariant 9).
+    ///
     /// Whoever holds the returned [`Watch`] is styling documents the reader's way; the
     /// moment they drop it they stop being told, and stop being kept alive by being
     /// told (invariant 7).
     pub(crate) fn follow_reading_style(self: &Rc<Self>, restyle: impl Fn(&str) + 'static) -> Watch {
-        let apply = {
+        let apply: Rc<dyn Fn()> = {
             let settings = self.clone();
-            move || restyle(&axiomd_render::reader_stylesheet(settings.reading_width()))
+            Rc::new(move || {
+                restyle(&axiomd_render::reader_stylesheet(
+                    settings.reading_width(),
+                    contrast(),
+                ))
+            })
         };
         apply();
-        self.watch(&[Key::ReadingWidthLimited, Key::ReadingWidth], apply)
+
+        let mut watch = self.watch(&[Key::ReadingWidthLimited, Key::ReadingWidth], {
+            let apply = apply.clone();
+            move || apply()
+        });
+        // The desktop's own, which no key of axiomd's holds: libadwaita reports it
+        // whether it learned it from the settings portal or from
+        // `org.gnome.desktop.a11y.interface`, and it reports a change to it while the
+        // reader is reading (probed on libadwaita 1.8.6).
+        let manager = adw::StyleManager::default();
+        let handler = manager.connect_high_contrast_notify(move |_| apply());
+        watch.also(&manager, handler);
+        watch
     }
 
     /// Tells `reveal` whether documents are read with their outline beside them — now,
@@ -236,14 +264,13 @@ impl Settings {
             .iter()
             .map(|key| {
                 let answer = answer.clone();
-                self.store
-                    .connect_changed(Some(key.name()), move |_, _| answer())
+                let handler = self
+                    .store
+                    .connect_changed(Some(key.name()), move |_, _| answer());
+                (self.store.clone().upcast::<glib::Object>(), handler)
             })
             .collect();
-        Watch {
-            store: self.store.clone(),
-            handlers,
-        }
+        Watch { handlers }
     }
 
     /// Opens the preferences dialog over `parent` — what `Ctrl+comma` does.
@@ -252,11 +279,31 @@ impl Settings {
     }
 }
 
+impl Watch {
+    /// Adds one more thing this subscription is listening to, so that it ends with the
+    /// rest of it.
+    fn also(&mut self, listening_to: &impl IsA<glib::Object>, handler: glib::SignalHandlerId) {
+        self.handlers.push((listening_to.clone().upcast(), handler));
+    }
+}
+
 impl Drop for Watch {
     fn drop(&mut self) {
-        for handler in self.handlers.drain(..) {
-            self.store.disconnect(handler);
+        for (listening_to, handler) in self.handlers.drain(..) {
+            listening_to.disconnect(handler);
         }
+    }
+}
+
+/// How much contrast the desktop is asking documents to be read at.
+///
+/// libadwaita's style manager is the source of truth for this as it is for light and
+/// dark (`ux_decisions.md`). It is not a preference of axiomd's and never becomes one:
+/// a reader who needs high contrast has already said so once, to their desktop.
+fn contrast() -> axiomd_render::Contrast {
+    match adw::StyleManager::default().is_high_contrast() {
+        true => axiomd_render::Contrast::High,
+        false => axiomd_render::Contrast::Normal,
     }
 }
 

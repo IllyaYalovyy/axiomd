@@ -84,6 +84,7 @@ use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
 use crate::view::DocumentView;
 use crate::watch::{FileWatch, QUIET};
+use crate::zoom::Zoom;
 
 /// Which of its two surfaces a window is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +152,9 @@ pub(crate) struct DocumentWindow {
     layout: OnceCell<Watch>,
     /// The same, for whether the outline sits beside documents.
     sidebar: OnceCell<Watch>,
+    /// How big this window shows its documents. One window's own and nothing that is
+    /// written down: it lasts as long as the window and no longer (UT-011).
+    zoom: Rc<Zoom>,
 }
 
 /// Where the reader has been in one window.
@@ -257,6 +261,9 @@ pub(crate) const REDO: &str = "win.redo";
 pub(crate) const PRINT: &str = "win.print";
 pub(crate) const EXPORT: &str = "win.export";
 
+/// The name the primary menu's model gives the slot the zoom row is put into.
+const ZOOM_SLOT: &str = "zoom";
+
 impl DocumentWindow {
     /// Builds a window holding a new untitled document, ready to be given a file.
     pub(crate) fn new(
@@ -283,15 +290,6 @@ impl DocumentWindow {
         surfaces.add_named(editor.widget(), Some(EDITOR_PAGE));
         surfaces.set_visible_child_name(STATUS_PAGE);
 
-        let title = adw::WindowTitle::new("axiomd", "");
-        let header = adw::HeaderBar::builder().title_widget(&title).build();
-        header.pack_start(&outline_button());
-        header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
-        header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
-        header.pack_start(&open_button());
-        header.pack_end(&primary_menu_button());
-        header.pack_end(&mode_button());
-
         // Beneath the header and above the document: what the app has to say about a
         // document the reader is still reading is said next to it, never over it.
         let notice = Notice::new();
@@ -305,6 +303,20 @@ impl DocumentWindow {
             .default_height(700)
             .content(&layout)
             .build();
+
+        // Before the header, because the header shows it: this window's zoom owns the
+        // three actions the menu row is bound to, and it is the window's own — closing
+        // it takes the zoom with it (invariant 7).
+        let zoom = Zoom::attach(&window, view.widget());
+
+        let title = adw::WindowTitle::new("axiomd", "");
+        let header = adw::HeaderBar::builder().title_widget(&title).build();
+        header.pack_start(&outline_button());
+        header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
+        header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
+        header.pack_start(&open_button());
+        header.pack_end(&primary_menu_button(&zoom));
+        header.pack_end(&mode_button());
 
         // The search bar goes directly under the header and above everything the app
         // has to say, because it is the reader's own doing rather than the app's. It
@@ -350,6 +362,7 @@ impl DocumentWindow {
             fetching: RefCell::new(Vec::new()),
             layout: OnceCell::new(),
             sidebar: OnceCell::new(),
+            zoom,
         });
 
         // From here on this window lays its documents out the reader's way — the one
@@ -612,6 +625,24 @@ impl DocumentWindow {
     /// Types `text` into the search bar, exactly as pressing the keys does.
     pub(crate) fn search_for(&self, text: &str) {
         self.find.type_query(text);
+    }
+
+    /// How big this window is showing its document, in the words the primary menu
+    /// shows the reader.
+    pub(crate) fn zoom(&self, of: &str) -> Option<String> {
+        self.zoom.shown(of)
+    }
+
+    /// A turn of the scroll wheel over the document, with `control` saying whether the
+    /// reader was holding Ctrl — landing where the view's own scroll controller lands.
+    pub(crate) fn scroll_over_document(&self, delta: f64, control: bool) {
+        self.zoom.scrolled(delta, control);
+    }
+
+    /// A pinch over the document, `scale` being how far it has spread since it began —
+    /// landing where the view's own zoom gesture lands.
+    pub(crate) fn pinch_over_document(&self, scale: f64) {
+        self.zoom.pinched(scale);
     }
 
     /// How many pages this window has finished showing since it was built.
@@ -1633,10 +1664,19 @@ fn mode_button() -> gtk::ToggleButton {
         .build()
 }
 
-fn primary_menu_button() -> gtk::MenuButton {
+fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
     let documents = gio::Menu::new();
     documents.append(Some("_New Window"), Some("app.new"));
     documents.append(Some("_Open…"), Some("app.open"));
+
+    // How big the document is, shown the way every GNOME application shows it: a row
+    // of its own rather than menu items, because the reader steps it several times in
+    // a row and a menu that closed after each step would be unusable. A menu model
+    // carries it as a named slot the popover fills with a real widget.
+    let scale = gio::Menu::new();
+    let slot = gio::MenuItem::new(None, None);
+    slot.set_attribute_value("custom", Some(&ZOOM_SLOT.to_variant()));
+    scale.append_item(&slot);
 
     let reading = gio::Menu::new();
     reading.append(Some("_Find…"), Some(crate::find::FIND));
@@ -1657,16 +1697,24 @@ fn primary_menu_button() -> gtk::MenuButton {
 
     let menu = gio::Menu::new();
     menu.append_section(None, &documents);
+    menu.append_section(None, &scale);
     menu.append_section(None, &reading);
     menu.append_section(None, &editing);
     menu.append_section(None, &leaving);
     menu.append_section(None, &application);
 
-    gtk::MenuButton::builder()
+    let button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .tooltip_text("Main menu")
         .menu_model(&menu)
-        .build()
+        .build();
+    // Setting the model builds the popover, so the slot can be filled straight away
+    // (probed on GTK 4.20.4: the popover is a `GtkPopoverMenu` and `add_child` answers
+    // true). Without this the row would be a gap in the menu.
+    if let Some(popover) = button.popover().and_downcast::<gtk::PopoverMenu>() {
+        popover.add_child(zoom.indicator(), ZOOM_SLOT);
+    }
+    button
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ mod testing;
 mod view;
 mod watch;
 mod window;
+mod zoom;
 
 use std::process::ExitCode;
 

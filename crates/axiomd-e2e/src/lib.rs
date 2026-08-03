@@ -126,9 +126,19 @@ pub struct Search {
 /// the moment the application is. This is that place: a store of one test's own, which
 /// a launch is pointed at with [`launch_with`] and which the next launch over the same
 /// store still finds.
+///
+/// It is also where the *desktop's* own settings live for a launch, because GSettings
+/// keeps both in the one store: [`Preferences::set_high_contrast`] is how a test says
+/// what kind of desktop the application is running on.
 pub struct Preferences {
     scratch: Scratch,
 }
+
+/// The group GSettings keeps the desktop's accessibility settings under. libadwaita
+/// reads high contrast from here when there is no settings portal to ask, which is
+/// every launch in this harness (probed on libadwaita 1.8.6: the style manager reports
+/// it at startup and reports a change to it while the application is running).
+const A11Y_GROUP: &str = "org/gnome/desktop/a11y/interface";
 
 impl Preferences {
     /// An empty store — every setting at the value a first run gets.
@@ -153,6 +163,38 @@ impl Preferences {
         std::fs::write(&keyfile, format!("[io/github/etf/axiomd]\n{key}={value}\n"))
             .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
         preferences
+    }
+
+    /// Puts the desktop this store belongs to into high contrast, or takes it out —
+    /// before a launch, or while one is reading.
+    ///
+    /// The reader never chooses this in axiomd: it is the desktop's accessibility
+    /// setting, and this is a test standing in for the reader having set it there.
+    /// Everything already in the store is kept, so a launch that has written its own
+    /// preferences does not lose them to this.
+    pub fn set_high_contrast(&self, high_contrast: bool) {
+        let keyfile = self.keyfile();
+        if let Some(parent) = keyfile.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|error| panic!("create {parent:?}: {error}"));
+        }
+        let existing = std::fs::read_to_string(&keyfile).unwrap_or_default();
+        let mut kept = String::new();
+        let mut inside = false;
+        for line in existing.lines() {
+            if line.starts_with('[') {
+                inside = line.trim() == format!("[{A11Y_GROUP}]");
+            }
+            if !inside {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+        std::fs::write(
+            &keyfile,
+            format!("{kept}[{A11Y_GROUP}]\nhigh-contrast={high_contrast}\n"),
+        )
+        .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
     }
 
     /// What the store holds for `key` now, as it is written down, or `None` while the
@@ -721,6 +763,49 @@ impl App {
         self.settle("the banner to go away", || {
             Ok(self.try_command("window", "banner")?.is_empty())
         });
+    }
+
+    /// How big the addressed window is showing its document, in the words the primary
+    /// menu shows the reader — `"100%"`.
+    pub fn zoom(&self) -> String {
+        self.property("zoom")
+    }
+
+    /// Waits until the menu says the document is at `wanted`, and fails saying what it
+    /// says instead.
+    ///
+    /// Zoom reaches the page through the main loop, so a test that read it once would
+    /// be racing the step it is about to assert.
+    pub fn wait_until_zoom(&self, wanted: &str) {
+        self.settle(&format!("the zoom to reach {wanted}"), || {
+            Ok(self.try_command("window", "zoom")? == wanted)
+        });
+    }
+
+    /// A turn of the scroll wheel over the document, with `Ctrl` held.
+    ///
+    /// A negative `delta` is a turn towards the top of the document, which is the
+    /// direction that has meant "bigger" since a wheel had a notch.
+    ///
+    /// A headless compositor has no pointer and GTK 4 offers no way to inject one, so
+    /// this lands in the call the view's own scroll controller makes, with the values
+    /// it passes — the same shape as [`App::press`], which emits a button's own
+    /// `clicked` rather than moving a pointer onto it (`docs/TESTING.md`).
+    pub fn ctrl_scroll(&self, delta: f64) {
+        self.command("scroll", &format!("ctrl {delta}"));
+    }
+
+    /// The same turn of the wheel without `Ctrl` — the reader reading rather than
+    /// resizing.
+    pub fn scroll(&self, delta: f64) {
+        self.command("scroll", &format!("plain {delta}"));
+    }
+
+    /// A pinch over the document, `scale` being how far it has spread since the
+    /// gesture began. Lands where the view's own zoom gesture lands, for the same
+    /// reason [`App::ctrl_scroll`] does.
+    pub fn pinch(&self, scale: f64) {
+        self.command("pinch", &scale.to_string());
     }
 
     /// Closes the addressed window, as its close button does.
