@@ -243,6 +243,15 @@ impl Session {
                 self.target(shell)?.save_to(Path::new(payload));
                 Ok(String::new())
             }
+            // The far side of the export chooser, for the same reason: the path the
+            // reader picked, landing in the very call the chooser's callback makes.
+            // Everything after it — which format the name means, the worker, the
+            // print job to a file, what the window says while it happens — is the
+            // application's own path.
+            "export-to" => {
+                self.target(shell)?.export_to(Path::new(payload));
+                Ok(String::new())
+            }
             "window" => self.property(payload, shell),
             // The two halves of driving the preferences dialog: reading a row, and
             // turning it. Turning it sets the very property the reader's click sets,
@@ -320,9 +329,14 @@ impl Session {
 }
 
 /// Presses the button labelled `label`, wherever in the window it is — the inline
-/// notice beside a document, or a dialog the reader asked for.
+/// notice beside a document, or a dialog the reader asked for, whether that dialog is
+/// inside the window or a window of its own in front of it.
 fn press(window: &Rc<DocumentWindow>, label: &str) -> Answer {
-    match find_button(window.window().upcast_ref::<gtk::Widget>(), label) {
+    let found = window
+        .pressable()
+        .iter()
+        .find_map(|surface| find_button(surface, label));
+    match found {
         Some(button) => {
             // The button's own signal, which is what a pointer press emits — rather
             // than `gtk_widget_activate`, whose answer depends on whether the widget

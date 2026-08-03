@@ -3,7 +3,8 @@
 //! Highlighting emits classes only — never an inline colour — so that a theme
 //! change restyles the document without touching the parser or the DOM. Both
 //! palettes ship in the stylesheet: the light one at the top level, the dark one in
-//! a `prefers-color-scheme` block that overrides it.
+//! a `prefers-color-scheme` block that overrides it — on screen only, so that code
+//! is as light on paper and in an exported file as the rest of the document.
 //!
 //! The syntax set is several megabytes of dumped Sublime grammars, so it is loaded
 //! on first use rather than at startup, and only a fenced block naming a language
@@ -42,18 +43,23 @@ pub(crate) fn highlight(language: &str, code: &str) -> Option<String> {
     Some(generator.finalize())
 }
 
-/// The CSS both palettes need, light first and dark inside the media query that
-/// overrides it.
+/// The CSS both palettes need, light first and dark inside the screen-only media
+/// query that overrides it.
 pub(crate) fn palettes() -> String {
-    let themes = two_face::theme::extra();
-    let mut css = css_for_theme_with_class_style(themes.get(LIGHT), CLASS_STYLE)
-        .expect("the light palette is a bundled theme");
-    let dark = css_for_theme_with_class_style(themes.get(DARK), CLASS_STYLE)
+    let mut css = light_palette();
+    let dark = css_for_theme_with_class_style(two_face::theme::extra().get(DARK), CLASS_STYLE)
         .expect("the dark palette is a bundled theme");
-    css.push_str("\n@media (prefers-color-scheme: dark) {\n");
+    css.push_str("\n@media screen and (prefers-color-scheme: dark) {\n");
     css.push_str(&dark);
     css.push_str("}\n");
     css
+}
+
+/// The light palette alone — the whole of what a printed or exported document needs,
+/// since neither of those follows anybody's colour scheme.
+pub(crate) fn light_palette() -> String {
+    css_for_theme_with_class_style(two_face::theme::extra().get(LIGHT), CLASS_STYLE)
+        .expect("the light palette is a bundled theme")
 }
 
 fn syntaxes() -> &'static SyntaxSet {

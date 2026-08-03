@@ -17,20 +17,39 @@ use axiomd_engine::{Alignment, CalloutKind, Event, Parsed, Span, SpannedEvent, T
 
 use crate::request::{Request, origin_of};
 use crate::sanitize::is_remote;
-use crate::{Anchor, highlight, slug};
+use crate::{Anchor, Picture, highlight, slug};
+
+/// Where the markup being written is going to be read.
+///
+/// The difference is not decoration. A document on screen is backed by a running
+/// application: its pictures arrive through the app's own scheme, and a remote image
+/// is a button the app answers for. A document in a file has none of that — it is
+/// read in a browser that has never heard of axiomd — so its pictures travel inside
+/// it and nothing in it is offered as a button.
+pub(crate) enum Destination<'a> {
+    /// The window the reader is in.
+    Screen,
+    /// A file that leaves axiomd behind, carrying whatever `embed` answers with for
+    /// a reference the document makes — or `None`, for one that cannot be carried.
+    File(&'a dyn Fn(&str) -> Option<Picture>),
+}
 
 /// Renders one parse into unsanitised body markup, its anchor map, and the remote
 /// images standing behind placeholders in it.
-pub(crate) fn render(parsed: &Parsed<'_>) -> (String, Vec<Anchor>, Vec<String>) {
+pub(crate) fn render(
+    parsed: &Parsed<'_>,
+    to: &Destination<'_>,
+) -> (String, Vec<Anchor>, Vec<String>) {
     let mut writer = Writer {
         headings: slug::heading_ids(parsed),
         ..Writer::default()
     };
     for SpannedEvent { event, span } in parsed.events() {
-        writer.event(event, span);
+        writer.event(event, span, to);
     }
     let mut out = writer.out;
-    if !writer.remote_images.is_empty() {
+    // Only the app can answer it, so only the app's own window carries it.
+    if !writer.remote_images.is_empty() && matches!(to, Destination::Screen) {
         out.insert_str(0, &load_all_banner(writer.remote_images.len()));
     }
     (out, writer.anchors, writer.remote_images)
@@ -110,10 +129,10 @@ struct Writer {
 }
 
 impl Writer {
-    fn event(&mut self, event: &Event<'_>, span: &Span) {
+    fn event(&mut self, event: &Event<'_>, span: &Span, to: &Destination<'_>) {
         match event {
             Event::Start(tag) => self.start(tag, span),
-            Event::End(end) => self.end(end),
+            Event::End(end) => self.end(end, to),
             Event::Text(text) => match &self.code {
                 Some(language) => {
                     let code = highlight_or_escape(language.as_deref(), text);
@@ -313,7 +332,7 @@ impl Writer {
         }
     }
 
-    fn end(&mut self, end: &TagEnd) {
+    fn end(&mut self, end: &TagEnd, to: &Destination<'_>) {
         match end {
             TagEnd::Paragraph => {
                 if matches!(self.stack.pop(), Some(Frame::Paragraph { wrapped: true })) {
@@ -368,7 +387,7 @@ impl Writer {
             TagEnd::Strong => self.inline("</strong>"),
             TagEnd::Strikethrough => self.inline("</del>"),
             TagEnd::Link | TagEnd::WikiLink => self.inline("</a>"),
-            TagEnd::Image => self.image(),
+            TagEnd::Image => self.image(to),
         }
     }
 
@@ -379,7 +398,12 @@ impl Writer {
     /// it, and nothing a document says may cause a request (`design_decisions.md`).
     /// It becomes the placeholder card instead — the D4 ruling, where the card *is*
     /// the one-click load button rather than something that opens a question.
-    fn image(&mut self) {
+    ///
+    /// A local one is the document's own picture. On screen it is served from the
+    /// document's origin; in a file it has to travel inside the file, and a picture
+    /// that cannot be carried says so where it would have been rather than leaving a
+    /// reference nobody can resolve.
+    fn image(&mut self, to: &Destination<'_>) {
         let Some(image) = self.alt.pop() else {
             return;
         };
@@ -389,15 +413,22 @@ impl Writer {
         }
         if is_remote(&image.url) {
             self.remote_images.push(image.url.clone());
-            self.out.push_str(&remote_placeholder(&image));
+            self.out.push_str(&remote_placeholder(&image, to));
             return;
         }
-        self.out.push_str(&format!(
-            "<img src=\"{}\" alt=\"{}\"{}>",
-            escape_attribute(&image.url),
-            escape_attribute(&image.alt),
-            title_attribute(&image.title)
-        ));
+        let source = match to {
+            Destination::Screen => Some(image.url.clone()),
+            Destination::File(embed) => embed(&image.url).map(|picture| data_uri(&picture)),
+        };
+        match source {
+            Some(source) => self.out.push_str(&format!(
+                "<img src=\"{}\" alt=\"{}\"{}>",
+                escape_attribute(&source),
+                escape_attribute(&image.alt),
+                title_attribute(&image.title)
+            )),
+            None => self.out.push_str(&missing_picture(&image)),
+        }
     }
 
     /// The id of the next heading, as an attribute. Empty when the heading had
@@ -459,28 +490,96 @@ impl Writer {
 }
 
 /// The card a remote image renders as: what the reader would be loading, where it
-/// would come from, and — because the card is itself the link — one click to load it.
+/// would come from, and — on screen, because the card is itself the link — one click
+/// to load it.
 ///
 /// It keeps `data-remote-src` so that the app can find this exact placeholder again
 /// when the image arrives, and after a live reload has rebuilt the block around it.
-fn remote_placeholder(image: &Image) -> String {
+///
+/// In a file there is nothing behind the click: the app that would answer it is not
+/// there, and a button that cannot do anything is worse than no button. So the card
+/// keeps everything it says and stops being one.
+fn remote_placeholder(image: &Image, to: &Destination<'_>) -> String {
     let label = if image.alt.trim().is_empty() {
         "Remote image"
     } else {
         &image.alt
     };
+    let (open, close, action) = match to {
+        Destination::Screen => (
+            format!(
+                "<a class=\"remote-image\" href=\"{href}\" data-remote-src=\"{source}\"{title}>",
+                href = escape_attribute(&Request::LoadImage(image.url.clone()).uri()),
+                source = escape_attribute(&image.url),
+                title = title_attribute(&image.title),
+            ),
+            "</a>",
+            "<span class=\"remote-image-action\">Load image</span>".to_owned(),
+        ),
+        Destination::File(_) => (
+            format!(
+                "<span class=\"remote-image\"{title}>",
+                title = title_attribute(&image.title)
+            ),
+            "</span>",
+            String::new(),
+        ),
+    };
     format!(
-        "<a class=\"remote-image\" href=\"{href}\" data-remote-src=\"{source}\"{title}>\
+        "{open}\
          <span class=\"remote-image-label\">{label}</span>\
          <span class=\"remote-image-origin\">{origin}</span>\
-         <span class=\"remote-image-action\">Load image</span>\
-         </a>",
-        href = escape_attribute(&Request::LoadImage(image.url.clone()).uri()),
-        source = escape_attribute(&image.url),
-        title = title_attribute(&image.title),
+         {action}{close}",
         label = escape_text(label),
         origin = escape_text(origin_of(&image.url)),
     )
+}
+
+/// What stands where a picture would have been in a file that could not carry it:
+/// the same card, saying what is missing and where it lived.
+fn missing_picture(image: &Image) -> String {
+    let label = if image.alt.trim().is_empty() {
+        "Image"
+    } else {
+        &image.alt
+    };
+    format!(
+        "<span class=\"remote-image\">\
+         <span class=\"remote-image-label\">{label}</span>\
+         <span class=\"remote-image-origin\">{source}</span>\
+         </span>",
+        label = escape_text(label),
+        source = escape_text(&image.url),
+    )
+}
+
+/// A picture as the bytes of the document that carries it.
+fn data_uri(picture: &Picture) -> String {
+    format!(
+        "data:{};base64,{}",
+        picture.content_type,
+        base64(&picture.bytes)
+    )
+}
+
+/// Base64 as RFC 4648 §4 defines it: standard alphabet, padded, no line breaks —
+/// which is the only spelling a `data:` URI accepts.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let bits = group.iter().enumerate().fold(0u32, |bits, (at, byte)| {
+            bits | (u32::from(*byte) << (16 - 8 * at))
+        });
+        for at in 0..=group.len() {
+            encoded.push(ALPHABET[(bits >> (18 - 6 * at) & 0b11_1111) as usize] as char);
+        }
+        for _ in group.len()..3 {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 fn highlight_or_escape(language: Option<&str>, code: &str) -> String {
@@ -543,7 +642,7 @@ fn footnote_id(label: &str) -> String {
     id
 }
 
-fn escape_text(text: &str) -> String {
+pub(crate) fn escape_text(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     escape_into(&mut escaped, text);
     escaped
@@ -562,5 +661,42 @@ fn escape_into(out: &mut String, text: &str) {
             '"' => out.push_str("&quot;"),
             _ => out.push(c),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The test vectors of RFC 4648 §10, which is the specification a `data:` URI
+    /// points at. A picture encoded a byte wrong is a picture that does not open,
+    /// and only in the exported file — where nobody would see it until later.
+    #[test]
+    fn pictures_are_encoded_the_way_rfc_4648_says() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        // Every bit pattern, so a wrong shift or a short alphabet cannot pass: the
+        // three bytes below cover all 64 code points across their four groups.
+        assert_eq!(base64(&[0x00, 0x10, 0x83]), "ABCD");
+        assert_eq!(base64(&[0xfb, 0xff, 0xbf]), "+/+/");
+        assert_eq!(base64(&(0u8..=255).collect::<Vec<u8>>()).len(), 344);
+    }
+
+    /// A picture in a file is the bytes plus what they are, and nothing else: a data
+    /// URI with a line break or a space in it is a broken picture.
+    #[test]
+    fn a_carried_picture_is_one_unbroken_uri() {
+        let uri = data_uri(&Picture {
+            bytes: b"foobar".to_vec(),
+            content_type: "image/png".to_owned(),
+        });
+
+        assert_eq!(uri, "data:image/png;base64,Zm9vYmFy");
+        assert!(!uri.contains(char::is_whitespace), "{uri}");
     }
 }

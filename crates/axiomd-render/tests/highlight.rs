@@ -31,12 +31,13 @@ fn a_highlighted_fence_carries_classes_and_no_colour() {
 }
 
 /// Both palettes ship, and they differ — a dark reader gets dark code, and the
-/// switch is a media query rather than a re-render.
+/// switch is a media query rather than a re-render. The query is `screen`-only, so
+/// that the same switch cannot follow the code block onto paper.
 #[test]
 fn the_stylesheet_carries_a_light_and_a_dark_palette() {
     let stylesheet = axiomd_render::stylesheet();
     let dark_at = stylesheet
-        .rfind("@media (prefers-color-scheme: dark)")
+        .rfind("@media screen and (prefers-color-scheme: dark)")
         .expect("the stylesheet has a dark block");
     let (light, dark) = stylesheet.split_at(dark_at);
 

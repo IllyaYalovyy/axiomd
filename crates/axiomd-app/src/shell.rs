@@ -59,6 +59,8 @@ const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
     (crate::window::SAVE_AS, "<Shift><Control>s"),
     (crate::window::UNDO, "<Control>z"),
     (crate::window::REDO, "<Control>y"),
+    (crate::window::PRINT, "<Control>p"),
+    (crate::window::EXPORT, "<Shift><Control>e"),
 ];
 
 /// Runs axiomd to completion and reports the process exit status.
@@ -415,6 +417,8 @@ mod tests {
             ("win.save-as", "<Shift><Control>s"),
             ("win.undo", "<Control>z"),
             ("win.redo", "<Control>y"),
+            ("win.print", "<Control>p"),
+            ("win.export", "<Shift><Control>e"),
         ] {
             assert_eq!(
                 app.accels_for_action(action),

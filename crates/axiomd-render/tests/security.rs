@@ -123,15 +123,42 @@ fn a_document_cannot_introduce_an_input_that_is_not_a_checkbox() {
 
 /// The bundled stylesheet is bundled: rendering a document must not pull a font, an
 /// image or another sheet off the network.
+///
+/// Every way CSS can name something to go and get: another sheet, or any value the
+/// browser resolves as a URL. A `url()` of any kind fails here — even a relative one,
+/// which would be an asset beside the sheet rather than inside it — so the rule is
+/// "the stylesheet asks for nothing", not "the stylesheet asks for nothing remote".
+///
+/// A scheme written inside an attribute selector is not one of those:
+/// `a[href^="https://"]` is a test the browser runs against the document's own links,
+/// and matching one fetches nothing. Those brackets — the only place in this sheet a
+/// scheme may appear — are stood aside before the search, rather than the search
+/// being loosened.
 #[test]
 fn the_stylesheet_fetches_nothing() {
-    let stylesheet = axiomd_render::stylesheet();
-    for forbidden in ["@import", "url(http", "url(\"http", "url(//", "://"] {
+    let stylesheet = without_attribute_selectors(axiomd_render::stylesheet());
+    for forbidden in ["@import", "url(", "://"] {
         assert!(
             !stylesheet.contains(forbidden),
             "the stylesheet references {forbidden}"
         );
     }
+}
+
+/// `css` with every `[…]` taken out.
+fn without_attribute_selectors(css: &str) -> String {
+    let mut kept = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(at) = rest.find('[') {
+        kept.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match rest.find(']') {
+            Some(end) => rest = &rest[end + 1..],
+            None => break,
+        }
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// The first `on…=` attribute in `html`, if any.

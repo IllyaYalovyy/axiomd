@@ -8,7 +8,7 @@
 //! use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
 //!
 //! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
-//! let rendered = axiomd_render::render(&parsed);
+//! let rendered = axiomd_render::render(&parsed, "notes");
 //! assert!(rendered.html().contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
 //! // The blocks alone, for patching them into a document that is already on screen.
 //! assert!(rendered.body().starts_with("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
@@ -31,13 +31,19 @@
 //! * **Linkable.** Every heading carries the anchor id GitHub would give it, so
 //!   `guide.md#getting-started` written anywhere lands on the same section here.
 //! * **Themed by CSS alone.** Colours — including the code palettes — live in
-//!   [`stylesheet`], in a light block and a `prefers-color-scheme: dark` block, so
-//!   switching theme restyles a rendered document without re-parsing it.
+//!   [`stylesheet`], in a light block and a screen-only `prefers-color-scheme: dark`
+//!   block, so switching theme restyles a rendered document without re-parsing it,
+//!   and neither paper nor an exported file ever goes dark.
+//! * **Portable.** The same parse becomes a page that needs the app
+//!   ([`render`]) or one that needs nothing at all ([`standalone`]): styling inlined,
+//!   pictures carried inside it, and not one reference that would be fetched when
+//!   somebody opens it.
 
 #![deny(missing_docs)]
 
 mod body;
 mod highlight;
+mod meta;
 mod request;
 mod sanitize;
 mod slug;
@@ -57,6 +63,14 @@ pub const STYLESHEET_URI: &str = "axiomd://assets/axiomd.css";
 /// frames, no form submission, and images and styles only from the app's own scheme.
 const CONTENT_SECURITY_POLICY: &str =
     "default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'";
+
+/// The same policy for a document that has left axiomd: everything it needs is inside
+/// it, so the only picture it may show is one it carries and the only styling it may
+/// use is the one written into it. A browser enforces this, which makes "an exported
+/// document fetches nothing" true of the file rather than only of the code that wrote
+/// it.
+const EXPORTED_SECURITY_POLICY: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; \
+     form-action 'none'";
 
 /// A render happens on a worker thread and its result is handed to the main loop,
 /// so the document must be able to cross a thread boundary.
@@ -111,6 +125,19 @@ impl Rendered {
     }
 }
 
+/// One picture, as a document that carries its own pictures needs it.
+///
+/// What [`standalone`] is answered with for each picture a document names: the file's
+/// bytes and what they are. Nothing else about the file travels — not its path, not
+/// its name — because nothing else survives being written into the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picture {
+    /// The bytes of the picture itself.
+    pub bytes: Vec<u8>,
+    /// What those bytes are, as a content type: `image/png` and the like.
+    pub content_type: String,
+}
+
 /// Where one rendered block came from in the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anchor {
@@ -120,9 +147,14 @@ pub struct Anchor {
     pub source: Range<usize>,
 }
 
-/// Renders a parsed document.
-pub fn render(parsed: &Parsed<'_>) -> Rendered {
-    let (body, anchors, remote_images) = body::render(parsed);
+/// Renders a parsed document for the window.
+///
+/// `name` is what the reader calls the file, and is used only when the document
+/// gives no title of its own — in frontmatter or in its first heading. The title
+/// matters beyond the window: printing this page names the job with it, and a PDF
+/// made from it carries it as metadata.
+pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
+    let (body, anchors, remote_images) = body::render(parsed, &body::Destination::Screen);
     let body = sanitize::clean(&body);
     let mut html = format!(
         "<!DOCTYPE html>\n\
@@ -131,10 +163,12 @@ pub fn render(parsed: &Parsed<'_>) -> Rendered {
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CONTENT_SECURITY_POLICY}\">\n\
+         <title>{title}</title>\n\
          <link rel=\"stylesheet\" href=\"{STYLESHEET_URI}\">\n\
          </head>\n\
          <body>\n\
-         <article class=\"markdown\">\n"
+         <article class=\"markdown\">\n",
+        title = body::escape_text(&meta::title(parsed, name)),
     );
     let start = html.len();
     html.push_str(&body);
@@ -146,6 +180,60 @@ pub fn render(parsed: &Parsed<'_>) -> Rendered {
         anchors,
         remote_images,
     }
+}
+
+/// The same document as one file that needs nothing else — no app, no network, no
+/// folder of assets beside it.
+///
+/// The styling is inlined, every picture the document names is carried inside it, and
+/// nothing that only axiomd could answer survives: a remote image is a card that says
+/// what is missing rather than a button nobody can press. It is light whoever opens
+/// it (owner ruling, 2026-08-02).
+///
+/// `embed` is asked for each picture the document names relative to itself, and
+/// answers with a [`Picture`] — or `None`, for one that cannot be carried and is
+/// shown as missing instead. It is the only way anything gets into the file, which is
+/// what makes "this document fetches nothing" a property of the pipeline rather than
+/// a promise about the caller.
+pub fn standalone(
+    parsed: &Parsed<'_>,
+    name: &str,
+    embed: &dyn Fn(&str) -> Option<Picture>,
+) -> String {
+    let (body, _, _) = body::render(parsed, &body::Destination::File(embed));
+    let body = sanitize::clean_for_a_file(&body);
+    format!(
+        "<!DOCTYPE html>\n\
+         <html>\n\
+         <head>\n\
+         <meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"{EXPORTED_SECURITY_POLICY}\">\n\
+         <title>{title}</title>\n\
+         <style>\n{stylesheet}</style>\n\
+         </head>\n\
+         <body>\n\
+         <article class=\"markdown\">\n\
+         {body}</article>\n\
+         </body>\n\
+         </html>\n",
+        title = body::escape_text(&meta::title(parsed, name)),
+        stylesheet = exported_stylesheet(),
+    )
+}
+
+/// The stylesheet an exported document carries: the light document, the light code
+/// palette, and a declaration that light is what it is — so a browser in dark mode
+/// renders the page the reader exported rather than a dark one they never saw.
+fn exported_stylesheet() -> &'static str {
+    static STYLESHEET: OnceLock<String> = OnceLock::new();
+    STYLESHEET.get_or_init(|| {
+        format!(
+            "{}\n{}\n:root {{ color-scheme: light; }}\n",
+            include_str!("../assets/axiomd.css"),
+            highlight::light_palette(),
+        )
+    })
 }
 
 /// The stylesheet that puts the reader's own layout choices over [`stylesheet`].
@@ -176,8 +264,9 @@ pub fn stylesheet() -> &'static str {
     static STYLESHEET: OnceLock<String> = OnceLock::new();
     STYLESHEET.get_or_init(|| {
         format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             include_str!("../assets/axiomd.css"),
+            include_str!("../assets/dark.css"),
             highlight::palettes()
         )
     })

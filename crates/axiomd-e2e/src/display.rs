@@ -180,6 +180,14 @@ impl Environment {
         // GTK reads these once at startup. Animations off so a screenshot is never
         // taken mid-transition; the font, hinting and subpixel settings pinned
         // because they are what the developer's desktop would otherwise decide.
+        //
+        // The print backends are pinned for a blunter reason: a suite that prints
+        // must not be able to reach the machine's printers. With only the file
+        // backend, "Print to File" is the whole of what exists here — a test cannot
+        // put paper through the developer's printer however wrong it goes, and
+        // nothing asks CUPS anything. Probed on GTK 4.20.4: with this set, printer
+        // enumeration answers with `Print to File` alone and printing to a file
+        // still works.
         std::fs::write(
             config.join("gtk-4.0/settings.ini"),
             "[Settings]\n\
@@ -189,7 +197,8 @@ impl Environment {
              gtk-xft-hinting=1\n\
              gtk-xft-hintstyle=hintslight\n\
              gtk-xft-rgba=none\n\
-             gtk-application-prefer-dark-theme=0\n",
+             gtk-application-prefer-dark-theme=0\n\
+             gtk-print-backends=file\n",
         )
         .expect("write the pinned GTK settings");
 
@@ -223,6 +232,7 @@ impl Environment {
             make_private_dir(directory);
         }
         pin_the_default_handler(scratch, &config, &data);
+        pin_the_documents_directory(scratch, &config);
 
         Environment {
             values: [
@@ -342,6 +352,35 @@ fn pin_the_default_handler(scratch: &Path, config: &Path, data: &Path) {
         ),
     )
     .expect("write the default-application list");
+}
+
+/// Points the desktop's well-known folders at this launch's own scratch.
+///
+/// The print dialog's file backend offers to write into the documents folder, so
+/// without this a test that presses Print in it would drop a PDF in the developer's
+/// real `~/Documents` — silently, every time the gate runs. GLib reads the folders
+/// from `user-dirs.dirs` under `XDG_CONFIG_HOME`, which is already this launch's own,
+/// so naming them here keeps everything a printing test produces inside the scratch
+/// that goes away with it.
+fn pin_the_documents_directory(scratch: &Path, config: &Path) {
+    let documents = documents_dir(scratch);
+    make_private_dir(&documents);
+    std::fs::write(
+        config.join("user-dirs.dirs"),
+        format!(
+            "XDG_DESKTOP_DIR=\"{documents}\"\n\
+             XDG_DOCUMENTS_DIR=\"{documents}\"\n\
+             XDG_DOWNLOAD_DIR=\"{documents}\"\n",
+            documents = documents.display(),
+        ),
+    )
+    .expect("write the pinned user directories");
+}
+
+/// Where this launch's desktop keeps documents — and so where its print dialog
+/// offers to write a file.
+pub(crate) fn documents_dir(scratch: &Path) -> PathBuf {
+    scratch.join("documents")
 }
 
 fn make_private_dir(path: &Path) {
