@@ -104,6 +104,16 @@ impl Display {
         ]
     }
 
+    /// The same compositor, named the one way an application in a sandbox can reach
+    /// it: `WAYLAND_DISPLAY` as an absolute path.
+    ///
+    /// A sandbox has a runtime directory of its own, so the socket cannot be found by
+    /// name inside one. libwayland uses an absolute `WAYLAND_DISPLAY` verbatim instead
+    /// of looking in `XDG_RUNTIME_DIR` for it, which is what makes this work at all.
+    pub(crate) fn wayland_in_a_sandbox(&self) -> [(&str, PathBuf); 1] {
+        [("WAYLAND_DISPLAY", self.runtime_dir.join(&self.socket))]
+    }
+
     /// Blocks until a client can connect, so no test ever races the compositor.
     fn wait_until_accepting(&mut self) {
         let path = self.runtime_dir.join(&self.socket);
@@ -287,14 +297,40 @@ impl Environment {
         command: &mut Command,
         extra: impl IntoIterator<Item = (String, PathBuf)>,
     ) {
-        for (name, value) in self.values.iter().cloned().chain(extra) {
+        for (name, value) in self.pinned(extra) {
             command.env(name, value);
         }
         command.env_remove("DISPLAY");
-        // axiomd is single-instance: with a session bus to reach, a second copy hands
-        // its document to the developer's already-running axiomd and exits, and the
-        // test would drive nothing. Without a bus there is no first copy.
-        command.env("DBUS_SESSION_BUS_ADDRESS", "disabled:");
+    }
+
+    /// The same world as `--env=` arguments, for an application that cannot simply
+    /// inherit it: `flatpak run` builds the sandbox's environment itself, so every
+    /// pinned value has to be handed to it explicitly, and the one value that has to
+    /// be *taken away* has to be named (`--unset-env`).
+    pub(crate) fn sandbox_arguments(
+        &self,
+        extra: impl IntoIterator<Item = (String, PathBuf)>,
+    ) -> Vec<String> {
+        let mut arguments = vec!["--unset-env=DISPLAY".to_owned()];
+        for (name, value) in self.pinned(extra) {
+            arguments.push(format!("--env={name}={}", value.display()));
+        }
+        arguments
+    }
+
+    fn pinned(&self, extra: impl IntoIterator<Item = (String, PathBuf)>) -> Vec<(String, PathBuf)> {
+        self.values
+            .iter()
+            .cloned()
+            .chain(extra)
+            // axiomd is single-instance: with a session bus to reach, a second copy
+            // hands its document to the developer's already-running axiomd and exits,
+            // and the test would drive nothing. Without a bus there is no first copy.
+            .chain([(
+                "DBUS_SESSION_BUS_ADDRESS".to_owned(),
+                PathBuf::from("disabled:"),
+            )])
+            .collect()
     }
 }
 

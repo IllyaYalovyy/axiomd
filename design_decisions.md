@@ -71,6 +71,21 @@ carry network permission, but any request outside a click handler is a
 bug with a failing test. External links open in the browser on explicit
 activation only.
 
+## What can the packaged sandbox reach?
+
+**Exactly what `build-aux/flatpak/permissions.pinned` says, and no host
+filesystem at all** (issue #14, 2026-08-03). Not `host`, not `home`, not one
+`xdg-` directory: a document arrives through the document portal, which grants
+that one file. Network is granted solely so D4's placeholder button can load
+an image; the probe in `crates/axiomd-app/tests/packaging.rs` counts requests
+from the far end to prove nothing else uses it. The pinned file is checked
+against both the manifest and the installed application, so widening the
+sandbox — in the manifest or by a local `flatpak override` — fails the gate.
+
+The known cost is recorded as RFC-001 Q3 and is an open owner decision: under
+pure portals a document cannot reach the images *beside* it, so relative
+images do not load in the packaged application.
+
 ## How is scroll sync / outline tracking mapped?
 
 By source spans (line ↔ rendered block anchors), never by proportional

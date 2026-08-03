@@ -32,6 +32,56 @@ must be installed into the system's schema directory (and
 but not installed — `cargo run`, the test suite — uses the schema its own
 build compiled, so nothing has to be installed to develop or test.
 
+## Installing
+
+axiomd is built by cargo and installed by one script — there is no meson
+layer (RFC-001 Q1). `cargo install` alone is not enough: it places the
+binary and none of the files the desktop reads, including the compiled
+settings schema, without which the first preference read aborts.
+
+```bash
+cargo build --release
+sudo scripts/install.sh                 # --prefix /usr/local by default
+```
+
+`scripts/install.sh --help` lists the options (`--prefix`, `--destdir`,
+`--binary`) a packager needs.
+
+### Flatpak
+
+The packaged form. It needs `flatpak-builder` and, once,
+
+```bash
+flatpak install --user flathub org.gnome.Platform//49 org.gnome.Sdk//49 \
+    org.freedesktop.Sdk.Extension.rust-stable
+```
+
+then:
+
+```bash
+cd build-aux/flatpak
+flatpak-builder --user --install --force-clean build io.github.etf.axiomd.json
+flatpak run io.github.etf.axiomd
+```
+
+The build has no network. Every crate comes from
+`build-aux/flatpak/cargo-sources.json`, generated from `Cargo.lock` and
+committed beside the manifest; regenerate it whenever a dependency moves
+(the gate fails if it is stale):
+
+```bash
+build-aux/flatpak/cargo-sources.py Cargo.lock -o build-aux/flatpak/cargo-sources.json
+```
+
+What the sandbox may reach is pinned in
+`build-aux/flatpak/permissions.pinned` — no host filesystem at all, and
+network solely so that pressing a remote image's placeholder can load it.
+Both the manifest and the installed application are held to that file by
+`crates/axiomd-app/tests/packaging.rs`; `scripts/quality.d/40-flatpak.sh`
+builds the package, installs it, and probes it in its own sandbox.
+
+Flathub submission is explicitly out of scope for now (owner, 2026-08-02).
+
 ## Project Workflow
 
 This repository was created from `ai-proj-template` and follows the
@@ -62,7 +112,9 @@ without an explicit decision to change direction.
 ├── agent/
 │   ├── skills/                  # Tracked source of agent skills
 │   └── ktask/                   # Tracked source of ktask prompt/context
-├── data/                        # Desktop entry and other installed data
+├── build-aux/flatpak/           # Flatpak manifest, offline cargo mirror,
+│                                #   pinned sandbox permissions
+├── data/                        # Desktop entry, icons, metainfo, gschema
 ├── designs/
 │   ├── RFC-001-mvp-architecture.md
 │   ├── MVP-USER-TASKS.md        # User workflows as test plans
@@ -70,6 +122,7 @@ without an explicit decision to change direction.
 ├── docs/                        # Process, testing, review, commit rules
 ├── scripts/
 │   ├── quality.sh               # The quality gate (one command)
+│   ├── install.sh               # Installs a built axiomd into a prefix
 │   ├── install-agent-files.sh   # agent/ → gitignored .claude/ + .ktask/
 │   └── install-git-hooks.sh     # Pre-commit AI-file guard
 └── .github/                     # Issue templates

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!--
+    The symbolic form of the icon: the same Markdown mark, one colour, on the
+    16x16 grid symbolic icons are drawn on.
+
+    Filled paths rather than strokes, because that is what GTK recolours: it
+    renders a symbolic icon with its own fill forced onto the `path`, `rect` and
+    `circle` elements, and leaves `stroke` alone - a stroked symbolic icon stays
+    the colour it was written in and disappears on a dark background.
+    This note is inside `<svg>` and not above it on purpose: gdk-pixbuf recognises
+    an SVG by looking at the start of the file, and a comment ahead of the root
+    element makes it "not an image" - which is every icon of this application
+    missing, and `appstreamcli compose` failing the flatpak build outright. Probed
+    on librsvg 2.61.4 / gdk-pixbuf 2.44.4; asserted by
+    `crates/axiomd-app/tests/packaging.rs`.
+  -->
+  <path d="M1 12 L1 4.5 L2.8 4.5 L5 7.6 L7.2 4.5 L9 4.5 L9 12 L7.3 12 L7.3 7.3 L5 10.5 L2.7 7.3 L2.7 12 Z" fill="currentColor"/>
+  <path d="M12.2 4.5 L13.9 4.5 L13.9 9 L15.4 9 L13.05 12.4 L10.7 9 L12.2 9 Z" fill="currentColor"/>
+</svg>
