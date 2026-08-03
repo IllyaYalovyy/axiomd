@@ -9,9 +9,9 @@
 //!
 //! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
 //! let rendered = axiomd_render::render(&parsed);
-//! assert!(rendered.html().contains("<h1 data-line=\"1\">Title</h1>"));
+//! assert!(rendered.html().contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
 //! // The blocks alone, for patching them into a document that is already on screen.
-//! assert!(rendered.body().starts_with("<h1 data-line=\"1\">Title</h1>"));
+//! assert!(rendered.body().starts_with("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
 //! // One anchor per top-level block, each carrying the source it came from.
 //! assert_eq!(rendered.anchors().len(), 2);
 //! assert_eq!(rendered.anchors()[1].line, 3);
@@ -25,8 +25,11 @@
 //! * **Inert.** The body is sanitized with ammonia after templating and the document
 //!   declares a strict CSP: no script, no plugin, no frame, and images only from the
 //!   app's own `axiomd:` scheme. A malicious document renders as text.
-//! * **Offline.** Nothing the pipeline emits can cause a fetch. Remote image sources
-//!   are moved to `data-remote-src`, which loads only when the user asks it to.
+//! * **Offline.** Nothing the pipeline emits can cause a fetch. A remote image is a
+//!   placeholder card that *is* its own load button, and the only thing it can do is
+//!   ask the app — through a [`Request`] the reader clicked — to go and get it.
+//! * **Linkable.** Every heading carries the anchor id GitHub would give it, so
+//!   `guide.md#getting-started` written anywhere lands on the same section here.
 //! * **Themed by CSS alone.** Colours — including the code palettes — live in
 //!   [`stylesheet`], in a light block and a `prefers-color-scheme: dark` block, so
 //!   switching theme restyles a rendered document without re-parsing it.
@@ -35,12 +38,16 @@
 
 mod body;
 mod highlight;
+mod request;
 mod sanitize;
+mod slug;
 
 use std::ops::Range;
 use std::sync::OnceLock;
 
 use axiomd_engine::Parsed;
+
+pub use request::Request;
 
 /// Where the rendered document loads [`stylesheet`] from. The app serves this URI
 /// from its own scheme handler; nothing else in the document is fetchable.
@@ -66,6 +73,7 @@ pub struct Rendered {
     /// a document is held once, however many ways it is asked for.
     body: Range<usize>,
     anchors: Vec<Anchor>,
+    remote_images: Vec<String>,
 }
 
 impl Rendered {
@@ -91,6 +99,16 @@ impl Rendered {
     pub fn anchors(&self) -> &[Anchor] {
         &self.anchors
     }
+
+    /// The source of every remote image in the document, in document order, each
+    /// standing behind a placeholder card the reader has not pressed.
+    ///
+    /// This is what "load all" is a list of. It comes from the parse rather than
+    /// from the page on screen, so it is the same list however the document has been
+    /// patched since.
+    pub fn remote_images(&self) -> &[String] {
+        &self.remote_images
+    }
 }
 
 /// Where one rendered block came from in the source.
@@ -104,7 +122,7 @@ pub struct Anchor {
 
 /// Renders a parsed document.
 pub fn render(parsed: &Parsed<'_>) -> Rendered {
-    let (body, anchors) = body::render(parsed);
+    let (body, anchors, remote_images) = body::render(parsed);
     let body = sanitize::clean(&body);
     let mut html = format!(
         "<!DOCTYPE html>\n\
@@ -126,6 +144,7 @@ pub fn render(parsed: &Parsed<'_>) -> Rendered {
         html,
         body,
         anchors,
+        remote_images,
     }
 }
 

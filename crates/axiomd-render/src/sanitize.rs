@@ -10,12 +10,17 @@
 //! Two rules beyond ammonia's defaults matter here:
 //!
 //! * the pipeline's own vocabulary survives — `class` for the stylesheet and the
-//!   syntect palettes, `data-line` for the source anchors, `id` for footnote
-//!   targets, and the disabled task-list checkbox;
+//!   syntect palettes, `data-line` for the source anchors, `id` for heading and
+//!   footnote targets, `data-remote-src` for the load placeholders, the `axiomd:`
+//!   scheme those placeholders link to, and the disabled task-list checkbox;
 //! * no image may name a remote source. Markdown images are turned into load
 //!   placeholders upstream; this is the backstop that catches an `<img src>` written
 //!   as raw HTML, so that "zero implicit network" holds for any document, not just
 //!   well-behaved ones.
+//!
+//! Letting `axiomd:` through as a link scheme is not a grant: it is a scheme only
+//! the app answers for, every request on it is decided by the app's own navigation
+//! policy, and a document forging one gets exactly what an ordinary link gets.
 
 use std::borrow::Cow;
 
@@ -48,7 +53,8 @@ fn builder() -> Builder<'static> {
         .add_generic_attributes(["class", "data-line", "id"])
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled"])
-        .add_tag_attributes("img", ["data-remote-src"])
+        .add_tag_attributes("a", ["data-remote-src"])
+        .add_url_schemes(["axiomd"])
         // `<div align="center">` is how a README centres its badges; the HTML
         // standard still maps the attribute to `text-align`, and it is presentation
         // only, so keeping it costs nothing and matches what GitHub shows.

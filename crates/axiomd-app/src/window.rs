@@ -20,23 +20,41 @@
 //! remembered the identity of a replaced file would no longer recognise its own
 //! document.
 //!
+//! # Following a link
+//!
+//! A link to another Markdown file in the reader's own folder is read in this same
+//! window, and the window remembers where they have been: back and forward are the
+//! header-bar buttons, `Alt+Left` and `Alt+Right`, and the in-memory stack below
+//! (UT-007). Everything else a link can be leaves the app entirely — the browser gets
+//! an external address, the desktop gets a file axiomd does not render — and only
+//! ever because the reader clicked it.
+//!
+//! The other thing a click can be is the reader pressing a remote image's placeholder
+//! card. That is the one time axiomd fetches anything (D4, `design_decisions.md`):
+//! the bytes come back through [`crate::remote`], are published on this document's own
+//! origin, and appear in the page where the placeholder was.
+//!
 //! # What the user sees while something is wrong
 //!
 //! Never a dialog (`ux_decisions.md`). A file that cannot be opened at all is a
 //! status page inside the window. A file that goes wrong *while it is being read* —
 //! deleted, replaced with something unreadable — does not take the document off the
 //! screen: the reader keeps the last version they had and is told beside it, in a
-//! banner.
+//! banner. An image that will not load says so on the card that was pressed, which
+//! stays a button.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
+use axiomd_render::Request;
 use gtk::gio;
 use gtk::glib;
 
 use crate::document::{FileId, Page, Renderer};
+use crate::links::Follow;
+use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::view::DocumentView;
 use crate::watch::FileWatch;
@@ -62,6 +80,67 @@ pub(crate) struct DocumentWindow {
     /// asked to show" is otherwise unobservable, and a test would have to guess with
     /// a sleep.
     renders: Cell<u32>,
+    /// Where the reader has been in this window, and where they are in it.
+    history: RefCell<History>,
+    /// The remote images this window has asked for and not yet heard back about, so
+    /// that pressing "load all" twice is one fetch per image rather than two.
+    fetching: RefCell<Vec<String>>,
+}
+
+/// Where the reader has been in one window.
+///
+/// Only documents this window opened in place are here: following a link, and going
+/// back and forward over it. It is per window, in memory, and goes away with the
+/// window (invariant 7); nothing about it is persisted (issue #6, out of scope).
+#[derive(Default)]
+struct History {
+    entries: Vec<Visit>,
+    /// Which entry the window is showing. Meaningless when `entries` is empty.
+    at: usize,
+}
+
+/// One place the reader has been: a document, and the section of it they arrived at.
+#[derive(Clone)]
+struct Visit {
+    file: PathBuf,
+    fragment: String,
+}
+
+impl History {
+    /// Starts again at `visit` — the window has been given a document rather than
+    /// having followed a link to one.
+    fn restart(&mut self, visit: Visit) {
+        self.entries = vec![visit];
+        self.at = 0;
+    }
+
+    /// Records a link followed from where the reader is, which is what makes forward
+    /// mean something and what discards a branch they have left.
+    fn follow(&mut self, visit: Visit) {
+        self.entries.truncate(self.at + 1);
+        self.entries.push(visit);
+        self.at = self.entries.len() - 1;
+    }
+
+    /// Moves back or forward, answering with where that is — or `None` when there is
+    /// nowhere that way.
+    fn step(&mut self, forward: bool) -> Option<Visit> {
+        let next = if forward {
+            self.at.checked_add(1).filter(|at| *at < self.entries.len())
+        } else {
+            self.at.checked_sub(1)
+        }?;
+        self.at = next;
+        self.entries.get(next).cloned()
+    }
+
+    fn can_step(&self, forward: bool) -> bool {
+        if forward {
+            self.at + 1 < self.entries.len()
+        } else {
+            !self.entries.is_empty() && self.at > 0
+        }
+    }
 }
 
 /// The document a window currently holds.
@@ -69,6 +148,8 @@ struct OpenDocument {
     /// The path the window is following. Not the file it was opened on: an editor
     /// that saves by renaming replaces that file, and the reader means the path.
     file: PathBuf,
+    /// The section of it the reader arrived at, if they followed a link to one.
+    fragment: String,
     /// The identity on disk of whatever the path last resolved to. Windows are
     /// deduplicated on this, and it is retaken with every render because a save can
     /// change it.
@@ -89,6 +170,14 @@ struct OpenDocument {
 /// Names for the two things a window can be showing.
 const DOCUMENT_PAGE: &str = "document";
 const STATUS_PAGE: &str = "status";
+
+/// The two window actions the header-bar buttons and `Alt+Left`/`Alt+Right` share.
+/// Named twice because a widget addresses an action by its full name and a window
+/// registers it by its bare one.
+pub(crate) const BACK: &str = "win.back";
+pub(crate) const FORWARD: &str = "win.forward";
+const BACK_ACTION: &str = "back";
+const FORWARD_ACTION: &str = "forward";
 
 impl DocumentWindow {
     /// Builds an empty window, ready for a document.
@@ -112,6 +201,8 @@ impl DocumentWindow {
 
         let title = adw::WindowTitle::new("axiomd", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
+        header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
+        header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
         header.pack_start(&open_button());
         header.pack_end(&primary_menu_button());
 
@@ -131,7 +222,7 @@ impl DocumentWindow {
             .content(&layout)
             .build();
 
-        Rc::new(Self {
+        let document_window = Rc::new(Self {
             window,
             title,
             banner,
@@ -142,7 +233,32 @@ impl DocumentWindow {
             open: RefCell::new(None),
             epoch: Cell::new(0),
             renders: Cell::new(0),
-        })
+            history: RefCell::new(History::default()),
+            fetching: RefCell::new(Vec::new()),
+        });
+
+        // Everything the view refuses to do itself: another document, the browser,
+        // the desktop, or the reader asking for a remote image.
+        let followed = Rc::downgrade(&document_window);
+        document_window.view.connect_follow(move |elsewhere| {
+            if let Some(window) = followed.upgrade() {
+                window.act_on(elsewhere);
+            }
+        });
+
+        for (name, forward) in [(BACK_ACTION, false), (FORWARD_ACTION, true)] {
+            let action = gio::SimpleAction::new(name, None);
+            action.set_enabled(false);
+            let stepping = Rc::downgrade(&document_window);
+            action.connect_activate(move |_, _| {
+                if let Some(window) = stepping.upgrade() {
+                    window.step(forward);
+                }
+            });
+            document_window.window.add_action(&action);
+        }
+
+        document_window
     }
 
     pub(crate) fn window(&self) -> &adw::ApplicationWindow {
@@ -193,12 +309,44 @@ impl DocumentWindow {
 
     /// Shows `file` in this window, replacing whatever it held.
     ///
+    /// This is the window being *given* a document — opened from the desktop, chosen
+    /// in the file chooser — so the reader's way back is to wherever they came from
+    /// outside axiomd, and the window's own history starts here.
+    ///
     /// Returns immediately: the document is read and rendered on a worker and
     /// appears when it is ready. A file that cannot be shown becomes a status page
     /// inside the window, never a dialog. From here on the window follows the file:
     /// a save elsewhere reaches the reader within the debounce, in the page they are
     /// already looking at.
     pub(crate) fn show(self: &Rc<Self>, file: &Path) {
+        self.history.borrow_mut().restart(Visit {
+            file: file.to_path_buf(),
+            fragment: String::new(),
+        });
+        self.display(file, "");
+    }
+
+    /// Follows a link to another document, in this window, remembering where the
+    /// reader was so that back means something.
+    fn visit(self: &Rc<Self>, file: &Path, fragment: &str) {
+        self.history.borrow_mut().follow(Visit {
+            file: file.to_path_buf(),
+            fragment: fragment.to_owned(),
+        });
+        self.display(file, fragment);
+    }
+
+    /// Back or forward, as the header-bar buttons and `Alt+Left`/`Alt+Right` do.
+    fn step(self: &Rc<Self>, forward: bool) {
+        let stepped = self.history.borrow_mut().step(forward);
+        if let Some(visit) = stepped {
+            self.display(&visit.file, &visit.fragment);
+        }
+    }
+
+    /// Puts a document on screen, wherever in the window's history it came from.
+    fn display(self: &Rc<Self>, file: &Path, fragment: &str) {
+        self.retrace();
         let file = file.to_path_buf();
         let Some(id) = FileId::of(&file) else {
             self.show_unavailable(
@@ -212,6 +360,7 @@ impl DocumentWindow {
         let epoch = self.epoch.get() + 1;
         self.epoch.set(epoch);
         self.banner.set_revealed(false);
+        self.fetching.borrow_mut().clear();
 
         let open = OpenDocument {
             id: Cell::new(Some(id)),
@@ -233,6 +382,7 @@ impl DocumentWindow {
                 }
             }),
             file: file.clone(),
+            fragment: fragment.to_owned(),
         };
 
         // Whatever this window held is let go of before the new document starts, so
@@ -242,6 +392,89 @@ impl DocumentWindow {
 
         self.retitle(&file);
         self.reread();
+    }
+
+    /// Keeps the two buttons saying what they can do. A button that looks available
+    /// and does nothing is worse than one that is plainly not.
+    fn retrace(&self) {
+        for (name, forward) in [(BACK_ACTION, false), (FORWARD_ACTION, true)] {
+            if let Some(action) = self.window.lookup_action(name)
+                && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
+            {
+                action.set_enabled(self.history.borrow().can_step(forward));
+            }
+        }
+    }
+
+    /// Does whatever the reader's click turned out to mean.
+    fn act_on(self: &Rc<Self>, elsewhere: Follow) {
+        match elsewhere {
+            Follow::Stay | Follow::Refuse => {}
+            Follow::Document { file, fragment } => {
+                self.visit(&file, fragment.as_deref().unwrap_or_default());
+            }
+            Follow::Attachment { file } => {
+                let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&file)));
+                launcher.launch(Some(&self.window), gio::Cancellable::NONE, move |opened| {
+                    if let Err(error) = opened {
+                        eprintln!("axiomd: {} could not be opened: {error}", file.display());
+                    }
+                });
+            }
+            Follow::External { uri } => {
+                let launcher = gtk::UriLauncher::new(&uri);
+                launcher.launch(Some(&self.window), gio::Cancellable::NONE, move |opened| {
+                    if let Err(error) = opened {
+                        eprintln!("axiomd: {uri} could not be opened: {error}");
+                    }
+                });
+            }
+            Follow::Ask(Request::LoadImage(source)) => self.fetch_image(source),
+            Follow::Ask(Request::LoadAllImages) => {
+                for source in self.view.unloaded_images() {
+                    self.fetch_image(source);
+                }
+            }
+        }
+    }
+
+    /// The one thing axiomd fetches, and only because the reader pressed the card
+    /// that says it will (D4).
+    fn fetch_image(self: &Rc<Self>, source: String) {
+        if self.view.has_image(&source) || self.fetching.borrow().contains(&source) {
+            return;
+        }
+        let Some(session) = self.view.network_session() else {
+            self.view
+                .image_failed(&source, "This image cannot be requested.".to_owned());
+            return;
+        };
+        self.fetching.borrow_mut().push(source.clone());
+
+        let epoch = self.epoch.get();
+        let window = Rc::downgrade(self);
+        remote::load(&session, &remote::requestable(&source), move |arrived| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            window.fetching.borrow_mut().retain(|url| *url != source);
+            // The reader has moved on to another document; this one is nobody's.
+            if window.epoch.get() != epoch {
+                return;
+            }
+            match arrived {
+                Ok(image) => {
+                    let uri = window.open.borrow().as_ref().map(|open| {
+                        open.publication
+                            .attach_image(image.body, image.content_type)
+                    });
+                    if let Some(uri) = uri {
+                        window.view.image_arrived(&source, uri);
+                    }
+                }
+                Err(complaint) => window.view.image_failed(&source, complaint),
+            }
+        });
     }
 
     /// Reads the open document again — because the file behind it changed, and the
@@ -264,7 +497,7 @@ impl DocumentWindow {
         match page {
             Page::Rendered(document) => {
                 if let Some(open) = self.open.borrow().as_ref() {
-                    self.view.show(&open.publication, &document);
+                    self.view.show(&open.publication, &document, &open.fragment);
                     // A save may have been a replacement, which gives the path a new
                     // identity on disk. The window follows it, or it stops
                     // recognising its own document and opens a second window on it.
@@ -328,6 +561,16 @@ fn folder_of(file: &Path) -> String {
     }
 }
 
+/// One of the two history buttons. It is bound to a window action, so GTK makes it
+/// insensitive exactly when there is nowhere that way to go.
+fn step_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name(icon)
+        .tooltip_text(tooltip)
+        .action_name(action)
+        .build()
+}
+
 fn open_button() -> gtk::Button {
     gtk::Button::builder()
         .icon_name("document-open-symbolic")
@@ -354,4 +597,93 @@ fn primary_menu_button() -> gtk::MenuButton {
         .tooltip_text("Main menu")
         .menu_model(&menu)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn visit(name: &str) -> Visit {
+        Visit {
+            file: PathBuf::from(name),
+            fragment: String::new(),
+        }
+    }
+
+    fn names(history: &History) -> Vec<String> {
+        history
+            .entries
+            .iter()
+            .map(|visit| visit.file.display().to_string())
+            .collect()
+    }
+
+    /// What the two header-bar buttons can do is exactly this, so a button that
+    /// looks available when there is nowhere to go starts here.
+    #[test]
+    fn where_the_reader_can_go_is_where_they_have_been() {
+        let mut history = History::default();
+        assert!(!history.can_step(false), "back from nowhere");
+        assert!(!history.can_step(true), "forward from nowhere");
+
+        history.restart(visit("guide.md"));
+        assert!(!history.can_step(false), "back from the first document");
+        assert!(!history.can_step(true));
+
+        history.follow(visit("notes.md"));
+        assert!(history.can_step(false));
+        assert!(!history.can_step(true), "forward from the newest document");
+
+        assert_eq!(
+            history.step(false).map(|visit| visit.file),
+            Some("guide.md".into())
+        );
+        assert!(!history.can_step(false));
+        assert!(history.can_step(true));
+
+        assert_eq!(
+            history.step(true).map(|visit| visit.file),
+            Some("notes.md".into())
+        );
+        assert!(
+            history.step(true).is_none(),
+            "there was a way forward from the newest document",
+        );
+    }
+
+    /// Following a link from where the reader went back to discards the way forward,
+    /// as every back-and-forward has worked since Mosaic.
+    #[test]
+    fn following_a_link_from_the_middle_leaves_the_branch_behind() {
+        let mut history = History::default();
+        history.restart(visit("a.md"));
+        history.follow(visit("b.md"));
+        history.follow(visit("c.md"));
+        history.step(false);
+        history.step(false);
+
+        history.follow(visit("d.md"));
+
+        assert_eq!(names(&history), ["a.md", "d.md"]);
+        assert!(history.can_step(false));
+        assert!(
+            !history.can_step(true),
+            "a branch the reader left came back"
+        );
+    }
+
+    /// Being given a document is not following a link to one: the window is showing
+    /// something new, and there is nowhere behind it inside axiomd.
+    #[test]
+    fn opening_a_document_starts_the_window_over() {
+        let mut history = History::default();
+        history.restart(visit("a.md"));
+        history.follow(visit("b.md"));
+
+        history.restart(visit("c.md"));
+
+        assert_eq!(names(&history), ["c.md"]);
+        assert!(!history.can_step(false));
+        assert!(!history.can_step(true));
+    }
 }

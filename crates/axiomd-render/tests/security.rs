@@ -49,7 +49,7 @@ fn a_crafted_malicious_document_renders_inert() {
     // survive, so the checks above are not passing on an empty page.
     assert!(body.contains("<code>&lt;script&gt;</code>"));
     assert!(body.contains(r#"<a href="https://example.com/ok""#));
-    assert!(body.contains("<h1 data-line=\"1\">Malicious</h1>"));
+    assert!(body.contains("<h1 id=\"malicious\" data-line=\"1\">Malicious</h1>"));
 }
 
 /// Displaying a document fetches nothing. A remote source keeps its URL — the reader
@@ -73,8 +73,14 @@ fn no_image_source_survives_that_would_fetch_from_the_network() {
         );
     }
     assert!(
-        body.contains(r#"<img class="remote-image" data-remote-src="https://example.com/a.png" alt="markdown">"#),
+        body.contains(
+            r#"<a class="remote-image" href="axiomd://request/image?src=https%3A%2F%2Fexample.com%2Fa.png" data-remote-src="https://example.com/a.png""#
+        ),
         "a remote markdown image keeps its URL for the one-click load affordance:\n{body}"
+    );
+    assert!(
+        !body.contains("<img class=\"remote-image\""),
+        "a remote source became an image element, which the view would fetch:\n{body}"
     );
     assert!(
         body.contains(r#"<img src="assets/d.png" alt="local">"#),

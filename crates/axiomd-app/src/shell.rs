@@ -43,6 +43,13 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("app.quit", "<Control>q"),
 ];
 
+/// The same, for the actions that belong to a window rather than to the application:
+/// where the reader has been in that window (`window.rs`).
+const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
+    (crate::window::BACK, "<Alt>Left"),
+    (crate::window::FORWARD, "<Alt>Right"),
+];
+
 /// Runs axiomd to completion and reports the process exit status.
 pub fn run() -> ExitCode {
     // Answered before touching GTK so that `axiomd --version` works over ssh,
@@ -237,7 +244,7 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     });
     add_action(&app, "quit", |app| app.quit());
 
-    for (action, accelerator) in SHORTCUTS {
+    for (action, accelerator) in SHORTCUTS.iter().chain(WINDOW_SHORTCUTS) {
         app.set_accels_for_action(action, &[accelerator]);
     }
 
@@ -343,6 +350,22 @@ mod tests {
             assert!(
                 app.lookup_action(name).is_some(),
                 "{action} has no action behind it",
+            );
+        }
+    }
+
+    /// Back and forward belong to a window rather than to the application, so this
+    /// only checks the keys reach the names; that the names reach something a window
+    /// does is asserted against the running app by the link suite, which presses them.
+    #[test]
+    fn where_the_reader_has_been_is_on_the_keys_a_desktop_uses_for_it() {
+        let app = application();
+
+        for (action, accelerator) in [("win.back", "<Alt>Left"), ("win.forward", "<Alt>Right")] {
+            assert_eq!(
+                app.accels_for_action(action),
+                vec![glib::GString::from(accelerator)],
+                "{action} is not on {accelerator}",
             );
         }
     }

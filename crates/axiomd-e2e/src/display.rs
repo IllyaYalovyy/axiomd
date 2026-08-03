@@ -214,6 +214,7 @@ impl Environment {
         for directory in [&data, &cache, &state] {
             make_private_dir(directory);
         }
+        pin_the_default_handler(scratch, &config, &data);
 
         Environment {
             values: [
@@ -253,6 +254,76 @@ impl Environment {
         // test would drive nothing. Without a bus there is no first copy.
         command.env("DBUS_SESSION_BUS_ADDRESS", "disabled:");
     }
+}
+
+/// The file every address and document axiomd hands to the desktop is written into.
+pub(crate) fn handed_over_log(scratch: &Path) -> PathBuf {
+    scratch.join("handed-over.log")
+}
+
+/// Makes this launch's desktop answer for the things axiomd hands it.
+///
+/// Two reasons, and the second is the important one:
+///
+/// * a test can assert what actually reached the desktop, which is as far as
+///   "opens in the browser" can be automated (`docs/TESTING.md`, category 2 — the
+///   dispatch beyond this point is the platform's contract, not axiomd's);
+/// * without it, a test that clicks an external link opens the *developer's real
+///   browser*, every time the gate runs. `XDG_DATA_DIRS` still names the system's
+///   applications, so there is a default handler for `https` on any desktop machine,
+///   and a suite that starts one is a suite nobody will run.
+///
+/// The handler is this launch's own: it lives in the pinned `XDG_CONFIG_HOME` and
+/// `XDG_DATA_HOME`, so nothing about the developer's session is read or changed.
+fn pin_the_default_handler(scratch: &Path, config: &Path, data: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A script rather than a command line: a desktop entry's `Exec` is parsed with
+    // rules of its own, and a shell one-liner inside it is a quoting puzzle with a
+    // silent failure at the end of it.
+    let handler = scratch.join("handler.sh");
+    std::fs::write(
+        &handler,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> {}\n",
+            handed_over_log(scratch).display(),
+        ),
+    )
+    .expect("write the desktop handler");
+    std::fs::set_permissions(&handler, std::fs::Permissions::from_mode(0o700))
+        .expect("make the desktop handler runnable");
+
+    let types = [
+        "x-scheme-handler/http",
+        "x-scheme-handler/https",
+        "x-scheme-handler/mailto",
+        "application/pdf",
+        "application/octet-stream",
+        "text/plain",
+    ];
+    make_private_dir(&data.join("applications"));
+    std::fs::write(
+        data.join("applications/axiomd-e2e-handler.desktop"),
+        format!(
+            "[Desktop Entry]\nType=Application\nName=axiomd e2e handler\n\
+             Exec={} %u\nNoDisplay=true\nTerminal=false\nMimeType={};\n",
+            handler.display(),
+            types.join(";"),
+        ),
+    )
+    .expect("write the desktop entry");
+    std::fs::write(
+        config.join("mimeapps.list"),
+        format!(
+            "[Default Applications]\n{}\n",
+            types
+                .iter()
+                .map(|kind| format!("{kind}=axiomd-e2e-handler.desktop"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    )
+    .expect("write the default-application list");
 }
 
 fn make_private_dir(path: &Path) {
