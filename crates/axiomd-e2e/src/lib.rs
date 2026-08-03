@@ -83,6 +83,22 @@ impl Fixture {
     }
 }
 
+/// The outline sidebar as one moment of reading leaves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outline {
+    /// Whether the sidebar is beside the document at all.
+    pub shown: bool,
+    /// The sections listed, in document order, each as its heading level and its
+    /// words — `h2 Getting started`.
+    pub headings: Vec<String>,
+    /// The words of the section highlighted as the one the reader is in, or an empty
+    /// string when none is.
+    pub section: String,
+    /// What the sidebar says in place of a list — a document with no headings — or an
+    /// empty string while it is listing them.
+    pub notice: String,
+}
+
 /// The settings store one or more launches share.
 ///
 /// Preferences outlive the application that changed them, so a test about them needs
@@ -542,6 +558,52 @@ impl App {
         });
     }
 
+    /// The outline sidebar of the addressed window, as the reader sees it.
+    ///
+    /// One question rather than four, because the four are only ever meaningful
+    /// together: a section highlighted in a sidebar nobody can see is not a highlight,
+    /// and a notice standing where a list of headings would be is the same panel
+    /// saying something else.
+    pub fn outline(&self) -> Outline {
+        Outline {
+            shown: self.property("outline-shown") == "true",
+            headings: self
+                .property("outline")
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            section: self.property("outline-section"),
+            notice: self.property("outline-notice"),
+        }
+    }
+
+    /// Waits until the outline highlights `wanted`, and fails saying what it
+    /// highlights instead.
+    ///
+    /// Where the reader is travels from the page to the sidebar over the message
+    /// bridge, on the frame in which it changed, so a test that read it once would be
+    /// racing the frame it is about to assert.
+    pub fn wait_until_section(&self, wanted: &str) {
+        self.settle(&format!("the outline to highlight {wanted:?}"), || {
+            Ok(self.try_command("window", "outline-section")? == wanted)
+        });
+    }
+
+    /// How many times the page has told the addressed window which section the reader
+    /// is in.
+    ///
+    /// The bridge promises at most one of these per frame however far the reader
+    /// scrolls in it — a jump across a whole document is one message and not one per
+    /// section it passed — and this is the only place that promise is visible.
+    pub fn section_reports(&self) -> u32 {
+        self.property("section-reports").parse().expect("a count")
+    }
+
+    /// Resizes the addressed window, as dragging its edge or tiling it does.
+    pub fn resize(&self, width: i32, height: i32) {
+        self.command("resize", &format!("{width}x{height}"));
+    }
+
     /// What the addressed window's inline banner says, or an empty string when no
     /// banner is showing.
     ///
@@ -642,6 +704,14 @@ impl App {
         });
         if self.showing_document() {
             self.wait_until("document.querySelector('article.markdown') !== null");
+            // And until its styling has arrived with it. A stylesheet is render
+            // blocking, so a complete document is a laid-out one — where a document
+            // whose blocks are merely *in* the DOM is a page half the height the
+            // reader will see, and anything measured or scrolled to on it lands
+            // somewhere they never were. Seen as a one-in-ten failure of the outline
+            // suite under a loaded machine, where the `axiomd://` stylesheet arrives
+            // a few milliseconds behind the document it styles.
+            self.wait_until("document.readyState === 'complete'");
         }
     }
 

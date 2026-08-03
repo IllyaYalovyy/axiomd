@@ -33,6 +33,15 @@
       </description>
     </key>
 
+    <key name="outline" type="b">
+      <default>true</default>
+      <summary>Show the outline sidebar</summary>
+      <description>
+        Whether a document's headings are listed beside it. F9 shows or hides
+        the outline in one window without changing this.
+      </description>
+    </key>
+
     <key name="autosave" type="b">
       <default>true</default>
       <summary>Save edits automatically</summary>

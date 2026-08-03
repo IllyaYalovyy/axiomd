@@ -62,6 +62,15 @@ const REMOTE: &str = include_str!("remote.js");
 /// is looking at, and putting a source line back at the top of the page.
 const PLACE: &str = include_str!("place.js");
 
+/// The page saying which section the reader is in, once per frame in which that can
+/// have changed.
+const TRACK: &str = include_str!("track.js");
+
+/// The message handler the page reports the reader's section to. Registered in
+/// [`WORLD`] and nowhere else, so a document — which cannot run a script in the first
+/// place — has nothing to post to even if it could.
+const SECTION_MESSAGE: &str = "axiomdSection";
+
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
     webview: webkit6::WebView,
@@ -94,6 +103,16 @@ pub(crate) struct DocumentView {
     place: Cell<Option<u32>>,
     /// What the window does about a link the view will not follow itself.
     followed: RefCell<Option<Followed>>,
+    /// What the window does with the reader's section when the page reports it.
+    sectioned: RefCell<Option<Sectioned>>,
+    /// How many times the page has reported which section the reader is in.
+    ///
+    /// The bridge's whole promise is that scrolling costs at most one message per
+    /// frame — a jump across a whole document is one message, not one per section it
+    /// passed — and this is the only thing that promise is visible in. Counted here
+    /// because only the view knows, and read back through the test-control channel as
+    /// the navigation count is.
+    reports: Cell<u32>,
     /// The remote images of the document on screen: every one the reader has asked
     /// for, and every one that did not arrive. Cleared when the view is sent to
     /// another document, because it describes this page and no other.
@@ -102,6 +121,9 @@ pub(crate) struct DocumentView {
 
 /// The window's answer to a link the view refused, held so that a click can reach it.
 type Followed = Rc<dyn Fn(Follow)>;
+
+/// The window's answer to the page saying which section the reader is in.
+type Sectioned = Rc<dyn Fn(u32)>;
 
 /// The remote images of one page, as the reader has left them.
 #[derive(Default)]
@@ -117,8 +139,12 @@ struct RemoteImages {
 
 impl DocumentView {
     pub(crate) fn new(context: &webkit6::WebContext) -> Rc<Self> {
+        // This window's own, so the reader's styling of one document cannot reach
+        // another window's and the bridge below carries this window's place and no
+        // other (invariant 7). It dies with the view.
+        let content = webkit6::UserContentManager::new();
         let view = Rc::new(Self {
-            webview: build_webview(context),
+            webview: build_webview(context, &content),
             loaded: RefCell::new(None),
             ready: Cell::new(false),
             pending: RefCell::new(None),
@@ -126,7 +152,27 @@ impl DocumentView {
             root: RefCell::new(None),
             place: Cell::new(None),
             followed: RefCell::new(None),
+            sectioned: RefCell::new(None),
+            reports: Cell::new(0),
             images: RefCell::new(RemoteImages::default()),
+        });
+
+        // The one thing the page is allowed to say to the app, and it can only say it
+        // from the app's own JavaScript world.
+        content.register_script_message_handler(SECTION_MESSAGE, Some(WORLD));
+        let reporting = Rc::downgrade(&view);
+        content.connect_script_message_received(Some(SECTION_MESSAGE), move |_, reported| {
+            let Some(view) = reporting.upgrade() else {
+                return;
+            };
+            view.reports.set(view.reports.get() + 1);
+            // Zero is a real answer: the reader is above the document's first heading,
+            // which is not a section.
+            let line = u32::try_from(reported.to_int32()).unwrap_or(0);
+            let handler = view.sectioned.borrow().clone();
+            if let Some(handler) = handler {
+                handler(line);
+            }
         });
 
         let watched = Rc::downgrade(&view);
@@ -210,6 +256,49 @@ impl DocumentView {
     /// How many loads this view has committed since it was built.
     pub(crate) fn navigations(&self) -> u32 {
         self.navigations.get()
+    }
+
+    /// Calls `handler` with the source line of the heading whose section the reader is
+    /// in, whenever the page reports it: after every render, and whenever scrolling
+    /// carries them into another one. Zero means they are above the first heading.
+    pub(crate) fn connect_sectioned(&self, handler: impl Fn(u32) + 'static) {
+        *self.sectioned.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// How many times the page has reported the reader's section since this view was
+    /// built.
+    pub(crate) fn section_reports(&self) -> u32 {
+        self.reports.get()
+    }
+
+    /// Glides the page to the block that source `line` belongs to — what picking a
+    /// section in the outline does.
+    ///
+    /// Smooth, unlike every other way the page is placed: the reader asked to be moved,
+    /// so they are shown the move. It is the same "block a line belongs to" rule
+    /// everything else uses, stated once in `place.js`.
+    pub(crate) fn scroll_to_line(&self, line: u32) {
+        if !self.ready.get() {
+            // The page is still arriving — the document's blocks are in the DOM but
+            // its load has not finished, which is a window a reader can click in and
+            // did. Their choice travels with the page instead of being dropped; there
+            // is nothing to glide away from yet, so it simply lands there.
+            self.place.set(Some(line));
+            return;
+        }
+        let webview = self.webview.clone();
+        glib::spawn_future_local(async move {
+            if let Err(error) = webview
+                .evaluate_javascript_future(
+                    &format!("({PLACE}).scrollTo({line}, true)"),
+                    Some(WORLD),
+                    None,
+                )
+                .await
+            {
+                eprintln!("axiomd: the document could not be scrolled: {error}");
+            }
+        });
     }
 
     /// Restyles whatever this view is showing, and everything it shows afterwards,
@@ -373,7 +462,8 @@ impl DocumentView {
         let place = self
             .place
             .take()
-            .map(|line| format!("({PLACE}).scrollTo({line})"));
+            .map(|line| format!("({PLACE}).scrollTo({line}, false)"));
+        let track = format!("({TRACK})({PLACE}, \"{SECTION_MESSAGE}\")");
         let webview = self.webview.clone();
         glib::spawn_future_local(async move {
             // Returns at once and finishes on the main loop: patching a large document
@@ -399,6 +489,16 @@ impl DocumentView {
                     .await
             {
                 eprintln!("axiomd: the reader's place could not be restored: {error}");
+            }
+            // And then watch the blocks the page has just been given, and say which
+            // section that left the reader in — so the outline of a document that
+            // changed under them highlights where they are now rather than where the
+            // document they were reading would have put them.
+            if let Err(error) = webview
+                .evaluate_javascript_future(&track, Some(WORLD), None)
+                .await
+            {
+                eprintln!("axiomd: the reader's section could not be followed: {error}");
             }
         });
     }
@@ -441,13 +541,14 @@ fn as_js_string(text: &str) -> String {
 
 /// Builds the webview a document is displayed in, with everything a reading surface
 /// does not need switched off.
-fn build_webview(context: &webkit6::WebContext) -> webkit6::WebView {
+fn build_webview(
+    context: &webkit6::WebContext,
+    content: &webkit6::UserContentManager,
+) -> webkit6::WebView {
     let webview = webkit6::WebView::builder()
         .web_context(context)
         .settings(&document_settings())
-        // This window's own, so the reader's styling of one document cannot reach
-        // another window's (invariant 7) and dies with this one.
-        .user_content_manager(&webkit6::UserContentManager::new())
+        .user_content_manager(content)
         .vexpand(true)
         .hexpand(true)
         .build();

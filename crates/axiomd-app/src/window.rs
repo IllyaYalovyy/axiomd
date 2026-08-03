@@ -77,6 +77,7 @@ use gtk::glib;
 use crate::document::{FileId, Renderer};
 use crate::editor::Editor;
 use crate::links::Follow;
+use crate::outline::Outline;
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
@@ -108,6 +109,7 @@ pub(crate) struct DocumentWindow {
     notice: Notice,
     view: Rc<DocumentView>,
     editor: Rc<Editor>,
+    outline: Rc<Outline>,
     status: adw::StatusPage,
     surfaces: gtk::Stack,
     scheme: Rc<Scheme>,
@@ -145,6 +147,8 @@ pub(crate) struct DocumentWindow {
     /// ends with the window, so a closed one is neither restyled nor kept alive by
     /// being restyled (invariant 7).
     layout: OnceCell<Watch>,
+    /// The same, for whether the outline sits beside documents.
+    sidebar: OnceCell<Watch>,
 }
 
 /// Where the reader has been in one window.
@@ -243,6 +247,7 @@ const EDITOR_PAGE: &str = "editor";
 pub(crate) const BACK: &str = "win.back";
 pub(crate) const FORWARD: &str = "win.forward";
 pub(crate) const MODE: &str = "win.mode";
+pub(crate) const OUTLINE: &str = "win.outline";
 pub(crate) const SAVE: &str = "win.save";
 pub(crate) const SAVE_AS: &str = "win.save-as";
 pub(crate) const UNDO: &str = "win.undo";
@@ -278,6 +283,7 @@ impl DocumentWindow {
 
         let title = adw::WindowTitle::new("axiomd", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
+        header.pack_start(&outline_button());
         header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
         header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
         header.pack_start(&open_button());
@@ -288,7 +294,7 @@ impl DocumentWindow {
         // document the reader is still reading is said next to it, never over it.
         let notice = Notice::new();
 
-        let layout = adw::ToolbarView::builder().content(&surfaces).build();
+        let layout = adw::ToolbarView::new();
         layout.add_top_bar(&header);
         layout.add_top_bar(notice.widget());
 
@@ -300,12 +306,19 @@ impl DocumentWindow {
             .content(&layout)
             .build();
 
+        // The outline goes between the header and the document: it owns the split the
+        // two surfaces sit in, the `F9` action, and the breakpoint that gets it out of
+        // a narrow window's way.
+        let outline = Outline::new(&window, &surfaces, OUTLINE);
+        layout.set_content(Some(outline.widget()));
+
         let document_window = Rc::new(Self {
             window,
             title,
             notice,
             view,
             editor,
+            outline,
             status,
             surfaces,
             scheme: scheme.clone(),
@@ -321,6 +334,7 @@ impl DocumentWindow {
             history: RefCell::new(History::default()),
             fetching: RefCell::new(Vec::new()),
             layout: OnceCell::new(),
+            sidebar: OnceCell::new(),
         });
 
         // From here on this window lays its documents out the reader's way — the one
@@ -334,6 +348,47 @@ impl DocumentWindow {
                     window.view.restyle(stylesheet);
                 }
             }));
+
+        // And the same for whether documents are read with their outline beside them.
+        // It starts at once, so a reader who has switched the sidebar off never sees
+        // it appear and go.
+        let revealing = Rc::downgrade(&document_window);
+        let _ = document_window
+            .sidebar
+            .set(settings.follow_outline(move |shown| {
+                if let Some(window) = revealing.upgrade() {
+                    window.outline.reveal(shown);
+                }
+            }));
+
+        // Picking a section takes the reader to it in whichever surface they are on:
+        // the page glides to that block, or the caret lands on that line.
+        let navigating = Rc::downgrade(&document_window);
+        document_window.outline.connect_chosen(move |line| {
+            if let Some(window) = navigating.upgrade() {
+                window.go_to_line(line);
+            }
+        });
+
+        // Which section the page says the reader is in (`track.js`).
+        let reading = Rc::downgrade(&document_window);
+        document_window.view.connect_sectioned(move |line| {
+            if let Some(window) = reading.upgrade()
+                && window.mode.get() == Mode::Read
+            {
+                window.outline.follow(line);
+            }
+        });
+
+        // And where the caret says they are, for the surface the page is not.
+        let editing = Rc::downgrade(&document_window);
+        document_window.editor.connect_moved(move |line| {
+            if let Some(window) = editing.upgrade()
+                && window.mode.get() == Mode::Edit
+            {
+                window.outline.follow(line);
+            }
+        });
 
         // Everything the view refuses to do itself: another document, the browser,
         // the desktop, or the reader asking for a remote image.
@@ -499,6 +554,22 @@ impl DocumentWindow {
         self.notice.message()
     }
 
+    /// The outline sidebar as the reader sees it: whether it is there, what it lists,
+    /// and which section is highlighted.
+    pub(crate) fn outline(&self, of: &str) -> Option<String> {
+        match of {
+            "outline" => Some(self.outline.listed().join("\n")),
+            "outline-notice" => Some(self.outline.notice()),
+            "outline-section" => Some(self.outline.current()),
+            "outline-shown" => Some(self.outline.is_revealed().to_string()),
+            // How many times the page has said which section the reader is in. The
+            // bridge promises at most one of these per frame however far the reader
+            // scrolls, and this is where that promise is visible.
+            "section-reports" => Some(self.view.section_reports().to_string()),
+            _ => None,
+        }
+    }
+
     /// How many pages this window has finished showing since it was built.
     pub(crate) fn renders(&self) -> u32 {
         self.renders.get()
@@ -522,6 +593,12 @@ impl DocumentWindow {
     /// The source line the caret is on.
     pub(crate) fn caret_line(&self) -> u32 {
         self.editor.caret_line()
+    }
+
+    /// Picks the section called `section` in the outline, as clicking its row does.
+    /// Answers whether the sidebar is listing one.
+    pub(crate) fn pick_section(&self, section: &str) -> bool {
+        self.outline.pick(section)
     }
 
     /// What the reader has in front of them in edit mode.
@@ -839,6 +916,25 @@ impl DocumentWindow {
         {
             action.set_state(&(mode == Mode::Edit).to_variant());
         }
+    }
+
+    /// Takes the reader to source `line`, in whichever surface they are looking at —
+    /// what picking a section in the outline does (UT-005).
+    ///
+    /// One line of source, two places it can be, and the same anchor map either way
+    /// (invariant 3): in read mode the page glides to the block that line belongs to,
+    /// in edit mode the caret goes to the line itself.
+    fn go_to_line(self: &Rc<Self>, line: u32) {
+        match self.mode.get() {
+            Mode::Read => self.view.scroll_to_line(line),
+            Mode::Edit => {
+                self.editor.place_caret(line);
+                self.editor.take_the_keyboard();
+            }
+        }
+        // At once, rather than waiting for the page to report back: the reader pressed
+        // the row and the row is where they are.
+        self.outline.follow(line);
     }
 
     /// Does whatever the reader's click turned out to mean.
@@ -1255,6 +1351,9 @@ impl DocumentWindow {
         if epoch != self.epoch.get() {
             return;
         }
+        // Beside the document before it is on screen: the outline is the page's own
+        // heading map (invariant 3), never a second reading of the file.
+        self.outline.show(page.outline());
         if let Some(open) = self.open.borrow().as_ref() {
             self.view.show(&open.publication, &page, &open.fragment);
             // A save may have been a replacement, which gives the path a new identity
@@ -1286,6 +1385,8 @@ impl DocumentWindow {
             self.status.set_title(title);
             self.status.set_description(Some(detail));
             self.surfaces.set_visible_child_name(STATUS_PAGE);
+            // There is no document, so there are no sections in it.
+            self.outline.show(&[]);
         }
         self.renders.set(self.renders.get() + 1);
     }
@@ -1461,6 +1562,17 @@ fn open_button() -> gtk::Button {
         .build()
 }
 
+/// The switch for the outline sidebar. A toggle, because it says whether the sidebar
+/// is there as well as putting it there — including when a window too narrow to hold
+/// it is what took it away.
+fn outline_button() -> gtk::ToggleButton {
+    gtk::ToggleButton::builder()
+        .icon_name("view-list-symbolic")
+        .tooltip_text("Show the outline (F9)")
+        .action_name(OUTLINE)
+        .build()
+}
+
 /// The switch between reading and editing. A toggle rather than a button, because it
 /// says which of the two the window is in as well as changing it.
 fn mode_button() -> gtk::ToggleButton {
@@ -1604,7 +1716,7 @@ mod tests {
     /// that registered the full name would have every accelerator silently do nothing.
     #[test]
     fn every_window_action_is_registered_under_the_name_its_shortcut_uses() {
-        for action in [BACK, FORWARD, MODE, SAVE, SAVE_AS, UNDO, REDO] {
+        for action in [BACK, FORWARD, MODE, OUTLINE, SAVE, SAVE_AS, UNDO, REDO] {
             assert!(
                 action.starts_with("win."),
                 "{action} is not a window action",

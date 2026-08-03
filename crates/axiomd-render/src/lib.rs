@@ -87,6 +87,7 @@ pub struct Rendered {
     /// a document is held once, however many ways it is asked for.
     body: Range<usize>,
     anchors: Vec<Anchor>,
+    outline: Vec<Heading>,
     remote_images: Vec<String>,
 }
 
@@ -114,6 +115,19 @@ impl Rendered {
         &self.anchors
     }
 
+    /// The document's headings, in document order — what the outline sidebar shows.
+    ///
+    /// It is the part of [`anchors`] that happens to be a heading rather than a second
+    /// reading of the document, so every entry's `line` is a line [`anchors`] has and
+    /// the block carrying that `data-line` is the section it names. A heading nested
+    /// inside a container is not here: it has no anchor, so there is nowhere to send a
+    /// reader who clicks it.
+    ///
+    /// [`anchors`]: Rendered::anchors
+    pub fn outline(&self) -> &[Heading] {
+        &self.outline
+    }
+
     /// The source of every remote image in the document, in document order, each
     /// standing behind a placeholder card the reader has not pressed.
     ///
@@ -138,6 +152,18 @@ pub struct Picture {
     pub content_type: String,
 }
 
+/// One heading of the document, as the outline names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heading {
+    /// 1 to 6, as the document wrote it — what the entry is nested under.
+    pub level: u8,
+    /// The heading's words, with its markup read out and collapsed to one line.
+    pub text: String,
+    /// The source line of the heading's block, and the `data-line` of the element it
+    /// was rendered as. This is what clicking the entry scrolls to.
+    pub line: u32,
+}
+
 /// Where one rendered block came from in the source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anchor {
@@ -154,8 +180,8 @@ pub struct Anchor {
 /// matters beyond the window: printing this page names the job with it, and a PDF
 /// made from it carries it as metadata.
 pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
-    let (body, anchors, remote_images) = body::render(parsed, &body::Destination::Screen);
-    let body = sanitize::clean(&body);
+    let rendered = body::render(parsed, &body::Destination::Screen);
+    let body = sanitize::clean(&rendered.markup);
     let mut html = format!(
         "<!DOCTYPE html>\n\
          <html>\n\
@@ -177,8 +203,9 @@ pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
     Rendered {
         html,
         body,
-        anchors,
-        remote_images,
+        anchors: rendered.anchors,
+        outline: rendered.outline,
+        remote_images: rendered.remote_images,
     }
 }
 
@@ -200,8 +227,8 @@ pub fn standalone(
     name: &str,
     embed: &dyn Fn(&str) -> Option<Picture>,
 ) -> String {
-    let (body, _, _) = body::render(parsed, &body::Destination::File(embed));
-    let body = sanitize::clean_for_a_file(&body);
+    let body = body::render(parsed, &body::Destination::File(embed));
+    let body = sanitize::clean_for_a_file(&body.markup);
     format!(
         "<!DOCTYPE html>\n\
          <html>\n\

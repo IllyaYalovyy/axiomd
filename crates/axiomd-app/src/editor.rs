@@ -33,11 +33,15 @@ pub(crate) struct Editor {
     view: gtk::TextView,
     buffer: gtk::TextBuffer,
     changed: RefCell<Option<Rc<dyn Fn()>>>,
+    moved: RefCell<Option<Moved>>,
     /// Set while the *application* is putting text in the buffer — opening a document,
     /// following the file, taking the version on disk. Those are not the reader typing
     /// and must not mark the document modified or start an autosave.
     filling: Rc<Cell<bool>>,
 }
+
+/// What the window does when the caret lands on another line.
+type Moved = Rc<dyn Fn(u32)>;
 
 impl Editor {
     pub(crate) fn new() -> Rc<Self> {
@@ -65,7 +69,22 @@ impl Editor {
             view,
             buffer,
             changed: RefCell::new(None),
+            moved: RefCell::new(None),
             filling: Rc::new(Cell::new(false)),
+        });
+
+        // The editing end of "which section is the reader in": the caret moving is
+        // the editor's answer to the page's scroll (issue #7). It costs an integer
+        // comparison per keystroke and per click, and nothing else.
+        let moved = Rc::downgrade(&editor);
+        editor.buffer.connect_cursor_position_notify(move |_| {
+            let Some(editor) = moved.upgrade() else {
+                return;
+            };
+            let handler = editor.moved.borrow().clone();
+            if let Some(handler) = handler {
+                handler(editor.caret_line());
+            }
         });
 
         let typed = Rc::downgrade(&editor);
@@ -93,6 +112,12 @@ impl Editor {
     /// application does.
     pub(crate) fn connect_changed(&self, handler: impl Fn() + 'static) {
         *self.changed.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    /// Calls `handler` with the line the caret has moved to — however it moved: a
+    /// click, an arrow key, typing, or the application putting it somewhere.
+    pub(crate) fn connect_moved(&self, handler: impl Fn(u32) + 'static) {
+        *self.moved.borrow_mut() = Some(Rc::new(handler));
     }
 
     /// What the reader has written. Costs a copy of the document, so it is asked for
