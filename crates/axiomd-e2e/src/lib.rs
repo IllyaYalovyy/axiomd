@@ -174,6 +174,15 @@ impl App {
         self.wait_for_a_finished_page();
     }
 
+    /// Shows `document` in the addressed window, as choosing it in the file chooser
+    /// the window opened does — replacing whatever that window held.
+    ///
+    /// Returns once the window has finished with it.
+    pub fn open_here(&self, document: &Path) {
+        self.command("open-here", &document.display().to_string());
+        self.wait_for_a_finished_page();
+    }
+
     /// Directs later commands at the window at `index`, counting from the first one
     /// opened. Without this every command addresses the newest window.
     pub fn select_window(&self, index: usize) {
@@ -247,10 +256,43 @@ impl App {
         self.property("navigations").parse().expect("a load count")
     }
 
+    /// How many pages the addressed window has finished — rendered documents and the
+    /// status pages that explain why there is none alike.
+    ///
+    /// What a debounce is measured with: a burst of saves that produced one more page
+    /// than the launch did is a burst that was coalesced.
+    pub fn render_count(&self) -> u32 {
+        self.property("renders").parse().expect("a page count")
+    }
+
     /// Whether the addressed window is showing a document or the status page that
     /// explains why it is not.
     pub fn showing_document(&self) -> bool {
         self.property("showing") == "document"
+    }
+
+    /// What the addressed window's inline banner says, or an empty string when no
+    /// banner is showing.
+    ///
+    /// The whole of the app's answer to a document that went wrong while it was being
+    /// read: it is said beside the document, never in a dialog.
+    pub fn banner(&self) -> String {
+        self.property("banner")
+    }
+
+    /// Waits until the banner is showing and mentions `wanted`, then returns it.
+    pub fn wait_for_banner(&self, wanted: &str) -> String {
+        self.settle(&format!("a banner mentioning {wanted:?}"), || {
+            Ok(self.try_command("window", "banner")?.contains(wanted))
+        });
+        self.banner()
+    }
+
+    /// Waits until no banner is showing.
+    pub fn wait_until_no_banner(&self) {
+        self.settle("the banner to go away", || {
+            Ok(self.try_command("window", "banner")?.is_empty())
+        });
     }
 
     /// Closes the addressed window, as its close button does.

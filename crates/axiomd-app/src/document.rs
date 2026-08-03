@@ -21,14 +21,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
+use axiomd_render::Rendered;
 use gtk::gio;
 use gtk::glib;
 
 /// What a window has to show for a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Page {
-    /// The rendered document, ready for the webview.
-    Rendered(String),
+    /// The rendered document: the whole page for a view that has not shown this
+    /// document yet, and its blocks alone for one that has.
+    Rendered(Rendered),
     /// The document cannot be shown, and this is what the window says instead. Both
     /// strings are user-facing; opening never asks the user a question, so this is
     /// the whole of the report.
@@ -143,9 +145,7 @@ fn compose(path: &Path, superseded: &dyn Fn() -> bool) -> Option<Page> {
     if superseded() {
         return None;
     }
-    Some(Page::Rendered(
-        axiomd_render::render(&parsed).html().to_owned(),
-    ))
+    Some(Page::Rendered(axiomd_render::render(&parsed)))
 }
 
 #[cfg(test)]
@@ -225,7 +225,7 @@ mod tests {
 
     fn html_of(page: &Page) -> &str {
         match page {
-            Page::Rendered(html) => html,
+            Page::Rendered(document) => document.html(),
             other => panic!("expected a rendered page, got {other:?}"),
         }
     }

@@ -10,6 +10,8 @@
 //! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
 //! let rendered = axiomd_render::render(&parsed);
 //! assert!(rendered.html().contains("<h1 data-line=\"1\">Title</h1>"));
+//! // The blocks alone, for patching them into a document that is already on screen.
+//! assert!(rendered.body().starts_with("<h1 data-line=\"1\">Title</h1>"));
 //! // One anchor per top-level block, each carrying the source it came from.
 //! assert_eq!(rendered.anchors().len(), 2);
 //! assert_eq!(rendered.anchors()[1].line, 3);
@@ -60,6 +62,9 @@ const _: () = {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
     html: String,
+    /// Where [`Rendered::body`] lies inside `html`, rather than a second copy of it:
+    /// a document is held once, however many ways it is asked for.
+    body: Range<usize>,
     anchors: Vec<Anchor>,
 }
 
@@ -67,6 +72,17 @@ impl Rendered {
     /// The complete HTML document.
     pub fn html(&self) -> &str {
         &self.html
+    }
+
+    /// The document's blocks alone — what lies inside the `<article>` of [`html`].
+    ///
+    /// This is what a view already showing an earlier render of the same document
+    /// patches in: replacing the blocks that changed costs the reader neither their
+    /// place nor a page load, where re-navigating to [`html`] costs both.
+    ///
+    /// [`html`]: Rendered::html
+    pub fn body(&self) -> &str {
+        &self.html[self.body.clone()]
     }
 
     /// One entry per top-level block, in document order, with strictly increasing
@@ -90,7 +106,7 @@ pub struct Anchor {
 pub fn render(parsed: &Parsed<'_>) -> Rendered {
     let (body, anchors) = body::render(parsed);
     let body = sanitize::clean(&body);
-    let html = format!(
+    let mut html = format!(
         "<!DOCTYPE html>\n\
          <html>\n\
          <head>\n\
@@ -100,12 +116,17 @@ pub fn render(parsed: &Parsed<'_>) -> Rendered {
          <link rel=\"stylesheet\" href=\"{STYLESHEET_URI}\">\n\
          </head>\n\
          <body>\n\
-         <article class=\"markdown\">\n\
-         {body}</article>\n\
-         </body>\n\
-         </html>\n"
+         <article class=\"markdown\">\n"
     );
-    Rendered { html, anchors }
+    let start = html.len();
+    html.push_str(&body);
+    let body = start..html.len();
+    html.push_str("</article>\n</body>\n</html>\n");
+    Rendered {
+        html,
+        body,
+        anchors,
+    }
 }
 
 /// The default stylesheet, light and dark palettes included.
