@@ -46,10 +46,19 @@ const SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 /// The same, for the actions that belong to a window rather than to the application:
-/// where the reader has been in that window (`window.rs`).
+/// where the reader has been in that window, which of the two ways of looking at the
+/// document they are in, and what happens to their work (`window.rs`).
 const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
     (crate::window::BACK, "<Alt>Left"),
     (crate::window::FORWARD, "<Alt>Right"),
+    (crate::window::MODE, "<Control>e"),
+    (crate::window::SAVE, "<Control>s"),
+    // Ctrl+Shift+S, spelled the way GTK normalises it — `accels_for_action`
+    // answers in this order, so writing it the other way round would make the table
+    // and the running application disagree.
+    (crate::window::SAVE_AS, "<Shift><Control>s"),
+    (crate::window::UNDO, "<Control>z"),
+    (crate::window::REDO, "<Control>y"),
 ];
 
 /// Runs axiomd to completion and reports the process exit status.
@@ -127,9 +136,12 @@ impl Shell {
         window.present();
     }
 
-    /// Opens a window with no document in it.
-    fn show_empty(self: &Rc<Self>, app: &adw::Application) {
-        self.new_window(app).present();
+    /// Opens a window on a new untitled document, in edit mode — a bare launch, and
+    /// `Ctrl+N` (`ux_decisions.md`).
+    fn show_untitled(self: &Rc<Self>, app: &adw::Application) {
+        let window = self.new_window(app);
+        window.show_untitled();
+        window.present();
     }
 
     /// Opens a window that explains why `location` could not be read.
@@ -232,7 +244,7 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
 
     app.connect_activate({
         let shell = shell.clone();
-        move |app| shell.show_empty(app)
+        move |app| shell.show_untitled(app)
     });
 
     app.connect_open({
@@ -252,7 +264,7 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
 
     add_action(&app, "new", {
         let shell = shell.clone();
-        move |app| shell.show_empty(app)
+        move |app| shell.show_untitled(app)
     });
     add_action(&app, "open", {
         let shell = shell.clone();
@@ -387,14 +399,23 @@ mod tests {
         }
     }
 
-    /// Back and forward belong to a window rather than to the application, so this
-    /// only checks the keys reach the names; that the names reach something a window
-    /// does is asserted against the running app by the link suite, which presses them.
+    /// The window's own actions, which belong to a window rather than to the
+    /// application, so this only checks the keys reach the names; that the names reach
+    /// something a window does is asserted against the running app by the link and
+    /// editing suites, which press them.
     #[test]
-    fn where_the_reader_has_been_is_on_the_keys_a_desktop_uses_for_it() {
+    fn the_window_shortcuts_are_on_the_keys_a_desktop_uses_for_them() {
         let app = application();
 
-        for (action, accelerator) in [("win.back", "<Alt>Left"), ("win.forward", "<Alt>Right")] {
+        for (action, accelerator) in [
+            ("win.back", "<Alt>Left"),
+            ("win.forward", "<Alt>Right"),
+            ("win.mode", "<Control>e"),
+            ("win.save", "<Control>s"),
+            ("win.save-as", "<Shift><Control>s"),
+            ("win.undo", "<Control>z"),
+            ("win.redo", "<Control>y"),
+        ] {
             assert_eq!(
                 app.accels_for_action(action),
                 vec![glib::GString::from(accelerator)],

@@ -76,7 +76,9 @@ pub(crate) struct Scheme {
 /// One document as the webview sees it: where its relative references resolve, the
 /// page currently rendered for it, and the remote images its reader has asked for.
 struct Document {
-    root: PathBuf,
+    /// `None` for a document that has never been saved: it is nowhere, so nothing
+    /// relative to it resolves anywhere and every file request it makes is refused.
+    root: Option<PathBuf>,
     html: Option<String>,
     /// The images fetched for this document, in the order they were asked for. They
     /// live here, and only here, so closing the window frees them with everything
@@ -140,12 +142,15 @@ impl Scheme {
     ///
     /// The document starts blank: it shows nothing until [`Publication::show`] hands
     /// it a rendered page. Relative references resolve against `file`'s directory
-    /// and nothing above it.
-    pub(crate) fn publish(&self, file: &Path) -> Publication {
+    /// and nothing above it — and an untitled document, which has no directory,
+    /// reaches nothing at all.
+    pub(crate) fn publish(&self, file: Option<&Path>) -> Publication {
         let id = self.next.get();
         self.next.set(id + 1);
-        let root = file.parent().unwrap_or(Path::new("."));
-        let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let root = file.map(|file| {
+            let root = file.parent().unwrap_or(Path::new("."));
+            root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+        });
         self.documents.borrow_mut().insert(
             id,
             Document {
@@ -205,13 +210,13 @@ impl Publication {
         )
     }
 
-    /// The directory this document's relative references resolve under.
-    pub(crate) fn root(&self) -> PathBuf {
+    /// The directory this document's relative references resolve under, or `None`
+    /// for an untitled document, which has none.
+    pub(crate) fn root(&self) -> Option<PathBuf> {
         self.documents
             .borrow()
             .get(&self.id)
-            .map(|document| document.root.clone())
-            .unwrap_or_default()
+            .and_then(|document| document.root.clone())
     }
 }
 
@@ -273,7 +278,11 @@ fn serve(documents: &RefCell<HashMap<u64, Document>>, uri: &str) -> Served {
             None => Served::Missing,
         };
     }
-    file_under(&document.root, &path)
+    match &document.root {
+        Some(root) => file_under(root, &path),
+        // An untitled document is nowhere on disk, so there is nothing under it.
+        None => Served::Refused,
+    }
 }
 
 /// The number a host carries after `prefix`, when it is that kind of host at all.
@@ -374,7 +383,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-page");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
         publication.show("<!DOCTYPE html><h1>Notes</h1>".to_owned());
 
         let (body, content_type) = served_bytes(serve(&scheme.documents, publication.uri()));
@@ -391,7 +400,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-blank");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
 
         assert_eq!(serve(&scheme.documents, publication.uri()), Served::Missing);
     }
@@ -402,7 +411,7 @@ mod tests {
         let file = scratch.write("notes.md", "![](images/logo.png)\n");
         scratch.write("images/logo.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
 
         let request = format!("{}images/logo.png", publication.uri());
         let (body, content_type) = served_bytes(serve(&scheme.documents, &request));
@@ -419,7 +428,7 @@ mod tests {
         let file = scratch.write("inner/notes.md", "# Notes\n");
         scratch.write("secret.txt", "credentials");
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
 
         for escape in [
             "../secret.txt",
@@ -464,7 +473,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, scratch.path().join("inner/leak.txt"))
             .expect("create symlink");
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
 
         let request = format!("{}leak.txt", publication.uri());
 
@@ -525,8 +534,8 @@ mod tests {
         let second_file = second_dir.write("b.md", "# B\n");
         first_dir.write("only-in-first.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let first = scheme.publish(&first_file);
-        let second = scheme.publish(&second_file);
+        let first = scheme.publish(Some(&first_file));
+        let second = scheme.publish(Some(&second_file));
         first.show("<h1>A</h1>".to_owned());
         second.show("<h1>B</h1>".to_owned());
 
@@ -555,7 +564,7 @@ mod tests {
         let file = scratch.write("notes.md", "# Notes\n");
         scratch.write("logo.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
         publication.show("<h1>Notes</h1>".to_owned());
         let page = publication.uri().to_owned();
         let image = format!("{page}logo.png");
@@ -576,7 +585,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-loaded");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(&file);
+        let publication = scheme.publish(Some(&file));
 
         let first = publication.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
         let second = publication.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());
@@ -604,8 +613,8 @@ mod tests {
         let first_dir = ScratchDir::new("scheme-img-first");
         let second_dir = ScratchDir::new("scheme-img-second");
         let scheme = Scheme::new();
-        let first = scheme.publish(&first_dir.write("a.md", "# A\n"));
-        let second = scheme.publish(&second_dir.write("b.md", "# B\n"));
+        let first = scheme.publish(Some(&first_dir.write("a.md", "# A\n")));
+        let second = scheme.publish(Some(&second_dir.write("b.md", "# B\n")));
 
         let mine = first.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
         let theirs = second.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());

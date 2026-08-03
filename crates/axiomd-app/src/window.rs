@@ -1,24 +1,49 @@
-//! One document, one window.
+//! One document, one window, two ways of looking at it.
 //!
 //! The window owns everything that belongs to its document and nothing that belongs
-//! to another: its own view, its own renderer, its own watch on the file, and its own
-//! place on the `axiomd://` scheme. Closing it drops all of them, so nothing survives
-//! a closed window — no shared state, no reachable page, no watch that can wake it,
-//! no worker result with anywhere to go.
+//! to another: its buffer, its two surfaces, its renderer, its watch on the file, and
+//! its own place on the `axiomd://` scheme. Closing it drops all of them, so nothing
+//! survives a closed window — no shared state, no reachable page, no watch that can
+//! wake it, no worker result with anywhere to go.
+//!
+//! # The buffer is the document
+//!
+//! While a window owns a file, [`axiomd_doc::Document`] is the source of truth and the
+//! file is only where the text came from and where it goes back to (invariant 11).
+//! Rendering reads the buffer, so an edit is on screen before — and whether or not —
+//! it is ever saved.
+//!
+//! # Two modes, and the door left open for more
+//!
+//! Read and edit ([`Mode`]), on `Ctrl+E` and the header-bar button; no split view in
+//! the MVP (`ux_decisions.md`). What keeps that door open is that neither surface
+//! assumes it is the only one: both exist for the whole life of the window and both
+//! are kept current — the renderer runs while the reader is typing, which is what
+//! makes switching back instant and is exactly what a split view would need. The stack
+//! below is only today's answer to "which of them is on screen".
+//!
+//! Switching preserves the reader's place in both directions, through the anchor map
+//! and never through proportional scroll (invariant 5): read to edit puts the caret on
+//! the source line of the topmost block still on screen, edit to read brings the block
+//! the caret is in back to the top. The rule for "the block a line is in" is stated
+//! once, in [`place.js`](../src/place.js), and it is the same rule live reload uses.
+//!
+//! # Typing costs a keystroke
+//!
+//! A key press reaches the buffer and stops there. The document is marked edited —
+//! constant cost — and two timers are restarted: the render debounce and, when the
+//! reader has asked for it, the autosave delay. Neither the parse nor the write is
+//! ever on the path between the key and the character appearing, so how long this
+//! document takes to render has nothing to do with how it feels to type in it.
 //!
 //! # Following the file
 //!
-//! While a window holds a document it watches the file behind it. A save reaches the
-//! reader within the debounce and lands in the page they are already looking at,
-//! keeping their place (UT-004): the window re-reads and re-renders, and
-//! [`DocumentView`] patches the result in rather than navigating.
-//!
-//! Editors save in ways that are not a write: most write a new file and rename it
-//! over the old one, which deletes the file the window opened. The window follows the
-//! path rather than the file, so the replacement is just the next version — and the
-//! document's identity on disk is retaken with every render, because a window that
-//! remembered the identity of a replaced file would no longer recognise its own
-//! document.
+//! While a window holds a document it watches the file behind it, and what a change
+//! means is [`axiomd_doc::Document::reconcile`]'s to say. A clean buffer follows the
+//! file silently, in the page the reader is already looking at and keeping their place
+//! (UT-004). A modified one never loses a word in either direction: the reader is told
+//! beside the document and chooses. The window's own saves — including automatic ones
+//! — are recognised as its own and reach none of this.
 //!
 //! # Following a link
 //!
@@ -29,47 +54,68 @@
 //! an external address, the desktop gets a file axiomd does not render — and only
 //! ever because the reader clicked it.
 //!
-//! The other thing a click can be is the reader pressing a remote image's placeholder
-//! card. That is the one time axiomd fetches anything (D4, `design_decisions.md`):
-//! the bytes come back through [`crate::remote`], are published on this document's own
-//! origin, and appear in the page where the placeholder was.
-//!
 //! # What the user sees while something is wrong
 //!
-//! Never a dialog (`ux_decisions.md`). A file that cannot be opened at all is a
-//! status page inside the window. A file that goes wrong *while it is being read* —
-//! deleted, replaced with something unreadable — does not take the document off the
-//! screen: the reader keeps the last version they had and is told beside it, in a
-//! banner. An image that will not load says so on the card that was pressed, which
-//! stays a button.
+//! Never a dialog on the open or view path (`ux_decisions.md`). A file that cannot be
+//! opened at all is a status page inside the window. A file that goes wrong *while it
+//! is being read* — deleted, replaced with something unreadable, changed under unsaved
+//! work — does not take the document off the screen: the reader keeps the version they
+//! had and is told beside it, in an inline notice whose buttons are the whole of the
+//! choice. The two dialogs this window does raise are both answers to something the
+//! reader just asked for: Save As, and being asked about unsaved work on the way out.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use axiomd_render::Request;
+use axiomd_doc::{Document, External, Trouble};
+use axiomd_render::{Rendered, Request};
 use gtk::gio;
 use gtk::glib;
 
-use crate::document::{FileId, Page, Renderer};
+use crate::document::{FileId, Renderer};
+use crate::editor::Editor;
 use crate::links::Follow;
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
 use crate::view::DocumentView;
-use crate::watch::FileWatch;
+use crate::watch::{FileWatch, QUIET};
 
-/// A window showing one document, or none yet.
+/// Which of its two surfaces a window is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// The rendered document. Where opening a file lands (`ux_decisions.md`).
+    Read,
+    /// The source. Where a bare launch and `Ctrl+N` land.
+    Edit,
+}
+
+impl Mode {
+    fn other(self) -> Mode {
+        match self {
+            Mode::Read => Mode::Edit,
+            Mode::Edit => Mode::Read,
+        }
+    }
+}
+
+/// A window showing one document.
 pub(crate) struct DocumentWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
-    banner: adw::Banner,
+    notice: Notice,
     view: Rc<DocumentView>,
+    editor: Rc<Editor>,
     status: adw::StatusPage,
-    pages: gtk::Stack,
+    surfaces: gtk::Stack,
     scheme: Rc<Scheme>,
+    settings: Rc<Settings>,
+    /// The text this window owns, and everything true about it that is not the text.
+    document: RefCell<Document>,
     open: RefCell<Option<OpenDocument>>,
+    mode: Cell<Mode>,
     /// Which document this window is on. A render that finishes after the window has
     /// been given another file belongs to a document nobody is looking at any more,
     /// and is dropped rather than shown.
@@ -81,6 +127,15 @@ pub(crate) struct DocumentWindow {
     /// asked to show" is otherwise unobservable, and a test would have to guess with
     /// a sleep.
     renders: Cell<u32>,
+    /// Which debounced re-render is the current one. Every keystroke supersedes the
+    /// one before it, so a burst of typing is one render at the end rather than one
+    /// render per key.
+    rerender: Cell<u64>,
+    /// The same, for the automatic save.
+    autosave: Cell<u64>,
+    /// Set once the reader has answered the question about unsaved work, so that the
+    /// close they asked for goes through the second time rather than asking again.
+    leaving: Cell<bool>,
     /// Where the reader has been in this window, and where they are in it.
     history: RefCell<History>,
     /// The remote images this window has asked for and not yet heard back about, so
@@ -148,44 +203,53 @@ impl History {
     }
 }
 
-/// The document a window currently holds.
+/// Everything a window sets up for the document it currently holds, and lets go of
+/// when it is given another one.
 struct OpenDocument {
-    /// The path the window is following. Not the file it was opened on: an editor
-    /// that saves by renaming replaces that file, and the reader means the path.
-    file: PathBuf,
+    /// The path the window is following, or `None` for a document that has never been
+    /// saved. Not the file it was opened on: an editor that saves by renaming replaces
+    /// that file, and the reader means the path.
+    file: Option<PathBuf>,
     /// The section of it the reader arrived at, if they followed a link to one.
     fragment: String,
     /// The identity on disk of whatever the path last resolved to. Windows are
     /// deduplicated on this, and it is retaken with every render because a save can
     /// change it.
     id: Cell<Option<FileId>>,
+    /// Whether the window has the document's text yet. Until it does, a change to the
+    /// file is a first reading rather than a change under one.
+    loaded: Cell<bool>,
     /// This document's place on the `axiomd://` origin. Dropping it withdraws the
     /// document, so a closed window leaves nothing a webview could still ask for.
     publication: Publication,
     renderer: Renderer,
     /// Never read — held so that the file is watched exactly as long as the window
-    /// shows it.
+    /// shows it. `None` for a document with no file to watch.
     #[expect(
         dead_code,
         reason = "ownership, not data: it ties the watch to the window"
     )]
-    watch: FileWatch,
+    watch: Option<FileWatch>,
 }
 
-/// Names for the two things a window can be showing.
-const DOCUMENT_PAGE: &str = "document";
+/// Names for the three things a window can be showing.
 const STATUS_PAGE: &str = "status";
+const DOCUMENT_PAGE: &str = "document";
+const EDITOR_PAGE: &str = "editor";
 
-/// The two window actions the header-bar buttons and `Alt+Left`/`Alt+Right` share.
-/// Named twice because a widget addresses an action by its full name and a window
-/// registers it by its bare one.
+/// The window actions the header bar and the keyboard share. Named twice because a
+/// widget addresses an action by its full name and a window registers it by its bare
+/// one.
 pub(crate) const BACK: &str = "win.back";
 pub(crate) const FORWARD: &str = "win.forward";
-const BACK_ACTION: &str = "back";
-const FORWARD_ACTION: &str = "forward";
+pub(crate) const MODE: &str = "win.mode";
+pub(crate) const SAVE: &str = "win.save";
+pub(crate) const SAVE_AS: &str = "win.save-as";
+pub(crate) const UNDO: &str = "win.undo";
+pub(crate) const REDO: &str = "win.redo";
 
 impl DocumentWindow {
-    /// Builds an empty window, ready for a document.
+    /// Builds a window holding a new untitled document, ready to be given a file.
     pub(crate) fn new(
         app: &adw::Application,
         context: &webkit6::WebContext,
@@ -193,6 +257,7 @@ impl DocumentWindow {
         settings: &Rc<Settings>,
     ) -> Rc<Self> {
         let view = DocumentView::new(context);
+        let editor = Editor::new();
         let status = adw::StatusPage::builder()
             .icon_name("text-x-generic-symbolic")
             .title("No document open")
@@ -200,10 +265,14 @@ impl DocumentWindow {
             .child(&open_button())
             .build();
 
-        let pages = gtk::Stack::new();
-        pages.add_named(&status, Some(STATUS_PAGE));
-        pages.add_named(view.widget(), Some(DOCUMENT_PAGE));
-        pages.set_visible_child_name(STATUS_PAGE);
+        // All three exist for the whole life of the window and all three stay current;
+        // the stack only decides which one the reader is looking at (see the module
+        // documentation on keeping the split-view door open).
+        let surfaces = gtk::Stack::new();
+        surfaces.add_named(&status, Some(STATUS_PAGE));
+        surfaces.add_named(view.widget(), Some(DOCUMENT_PAGE));
+        surfaces.add_named(editor.widget(), Some(EDITOR_PAGE));
+        surfaces.set_visible_child_name(STATUS_PAGE);
 
         let title = adw::WindowTitle::new("axiomd", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
@@ -211,14 +280,15 @@ impl DocumentWindow {
         header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
         header.pack_start(&open_button());
         header.pack_end(&primary_menu_button());
+        header.pack_end(&mode_button());
 
         // Beneath the header and above the document: what the app has to say about a
         // document the reader is still reading is said next to it, never over it.
-        let banner = adw::Banner::builder().revealed(false).build();
+        let notice = Notice::new();
 
-        let layout = adw::ToolbarView::builder().content(&pages).build();
+        let layout = adw::ToolbarView::builder().content(&surfaces).build();
         layout.add_top_bar(&header);
-        layout.add_top_bar(&banner);
+        layout.add_top_bar(notice.widget());
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -231,14 +301,21 @@ impl DocumentWindow {
         let document_window = Rc::new(Self {
             window,
             title,
-            banner,
+            notice,
             view,
+            editor,
             status,
-            pages,
+            surfaces,
             scheme: scheme.clone(),
+            settings: settings.clone(),
+            document: RefCell::new(Document::untitled()),
             open: RefCell::new(None),
+            mode: Cell::new(Mode::Read),
             epoch: Cell::new(0),
             renders: Cell::new(0),
+            rerender: Cell::new(0),
+            autosave: Cell::new(0),
+            leaving: Cell::new(false),
             history: RefCell::new(History::default()),
             fetching: RefCell::new(Vec::new()),
             layout: OnceCell::new(),
@@ -265,19 +342,95 @@ impl DocumentWindow {
             }
         });
 
-        for (name, forward) in [(BACK_ACTION, false), (FORWARD_ACTION, true)] {
-            let action = gio::SimpleAction::new(name, None);
+        // The whole of what a keystroke costs.
+        let typed = Rc::downgrade(&document_window);
+        document_window.editor.connect_changed(move || {
+            if let Some(window) = typed.upgrade() {
+                window.document.borrow_mut().edited();
+                window.retitle();
+                window.schedule_render();
+                window.schedule_autosave();
+            }
+        });
+
+        document_window.install_actions();
+
+        // Autosave on leaving the window as well as on falling quiet: a reader who
+        // switches to another application has stopped typing whatever the timer says.
+        let unfocused = Rc::downgrade(&document_window);
+        document_window
+            .window
+            .connect_is_active_notify(move |window| {
+                if !window.is_active()
+                    && let Some(document_window) = unfocused.upgrade()
+                {
+                    document_window.autosave_now();
+                }
+            });
+
+        document_window
+    }
+
+    fn install_actions(self: &Rc<Self>) {
+        for (name, forward) in [(BACK, false), (FORWARD, true)] {
+            let action = gio::SimpleAction::new(bare(name), None);
             action.set_enabled(false);
-            let stepping = Rc::downgrade(&document_window);
+            let stepping = Rc::downgrade(self);
             action.connect_activate(move |_, _| {
                 if let Some(window) = stepping.upgrade() {
                     window.step(forward);
                 }
             });
-            document_window.window.add_action(&action);
+            self.window.add_action(&action);
         }
 
-        document_window
+        // Stateful, because the header-bar button is a toggle showing which mode the
+        // window is in — and read-to-edit finishes a turn of the loop later, so the
+        // button follows the window rather than the other way round.
+        let mode = gio::SimpleAction::new_stateful(bare(MODE), None, &false.to_variant());
+        let switching = Rc::downgrade(self);
+        mode.connect_activate(move |_, _| {
+            if let Some(window) = switching.upgrade() {
+                window.set_mode(window.mode.get().other());
+            }
+        });
+        self.window.add_action(&mode);
+
+        for (name, act) in [
+            (SAVE, Deed::Save),
+            (SAVE_AS, Deed::SaveAs),
+            (UNDO, Deed::Undo),
+            (REDO, Deed::Redo),
+        ] {
+            let action = gio::SimpleAction::new(bare(name), None);
+            let doing = Rc::downgrade(self);
+            action.connect_activate(move |_, _| {
+                if let Some(window) = doing.upgrade() {
+                    match act {
+                        Deed::Save => window.save(),
+                        Deed::SaveAs => window.save_as(),
+                        Deed::Undo => window.editor.undo(),
+                        Deed::Redo => window.editor.redo(),
+                    }
+                }
+            });
+            self.window.add_action(&action);
+        }
+
+        // Unsaved work is the one thing that may stop a close, and only by asking the
+        // reader — who asked to close — a question they answer once.
+        let closing = Rc::downgrade(self);
+        self.window.connect_close_request(move |_| {
+            let Some(window) = closing.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            window.pull_text();
+            if window.leaving.get() || !window.document.borrow().is_modified() {
+                return glib::Propagation::Proceed;
+            }
+            window.ask_about_unsaved_work();
+            glib::Propagation::Stop
+        });
     }
 
     pub(crate) fn window(&self) -> &adw::ApplicationWindow {
@@ -297,8 +450,9 @@ impl DocumentWindow {
     /// showing none.
     ///
     /// Opening and reading a document is never interrupted by a question
-    /// (`ux_decisions.md`), so this is empty for the whole of that path; the
-    /// preferences dialog the reader asked for is what puts something in it.
+    /// (`ux_decisions.md`), so this is empty for the whole of that path; the two that
+    /// do put something in it — preferences, and unsaved work on the way out — are
+    /// both answers to something the reader just asked for.
     pub(crate) fn visible_dialog(&self) -> String {
         self.window
             .visible_dialog()
@@ -309,11 +463,7 @@ impl DocumentWindow {
     /// What the window is saying beside the document, or an empty string when it has
     /// nothing to say.
     pub(crate) fn banner(&self) -> String {
-        if self.banner.is_revealed() {
-            self.banner.title().to_string()
-        } else {
-            String::new()
-        }
+        self.notice.message()
     }
 
     /// How many pages this window has finished showing since it was built.
@@ -321,13 +471,39 @@ impl DocumentWindow {
         self.renders.get()
     }
 
-    /// Which of the two things a window can show it is showing: the document, or the
-    /// status page that says why there is none.
+    /// Which of the three things a window can show it is showing.
     pub(crate) fn showing(&self) -> &'static str {
-        match self.pages.visible_child_name().as_deref() {
+        match self.surfaces.visible_child_name().as_deref() {
             Some(DOCUMENT_PAGE) => DOCUMENT_PAGE,
+            Some(EDITOR_PAGE) => EDITOR_PAGE,
             _ => STATUS_PAGE,
         }
+    }
+
+    /// Whether the buffer holds work that is not on disk.
+    pub(crate) fn is_modified(&self) -> bool {
+        self.pull_text();
+        self.document.borrow().is_modified()
+    }
+
+    /// The source line the caret is on.
+    pub(crate) fn caret_line(&self) -> u32 {
+        self.editor.caret_line()
+    }
+
+    /// What the reader has in front of them in edit mode.
+    pub(crate) fn editor_text(&self) -> String {
+        self.editor.text()
+    }
+
+    /// Types `text` where the caret is, exactly as pressing the keys does.
+    pub(crate) fn type_text(&self, text: &str) {
+        self.editor.type_text(text);
+    }
+
+    /// Puts the caret on `line`, as clicking into that line does.
+    pub(crate) fn place_caret(self: &Rc<Self>, line: u32) {
+        self.editor.place_caret(line);
     }
 
     pub(crate) fn present(&self) {
@@ -345,17 +521,28 @@ impl DocumentWindow {
     /// in the file chooser — so the reader's way back is to wherever they came from
     /// outside axiomd, and the window's own history starts here.
     ///
-    /// Returns immediately: the document is read and rendered on a worker and
-    /// appears when it is ready. A file that cannot be shown becomes a status page
-    /// inside the window, never a dialog. From here on the window follows the file:
-    /// a save elsewhere reaches the reader within the debounce, in the page they are
-    /// already looking at.
+    /// Returns immediately: the document is read and rendered on a worker and appears
+    /// when it is ready, in read mode (`ux_decisions.md`). A file that cannot be shown
+    /// becomes a status page inside the window, never a dialog.
     pub(crate) fn show(self: &Rc<Self>, file: &Path) {
         self.history.borrow_mut().restart(Visit {
             file: file.to_path_buf(),
             fragment: String::new(),
         });
         self.display(file, "");
+    }
+
+    /// Puts a new untitled document in this window, in edit mode — a bare launch, or
+    /// `Ctrl+N` (`ux_decisions.md`). The reader's first `Ctrl+S` will ask where it goes.
+    pub(crate) fn show_untitled(self: &Rc<Self>) {
+        *self.history.borrow_mut() = History::default();
+        self.retrace();
+        *self.document.borrow_mut() = Document::untitled();
+        self.editor.fill("");
+        self.take_over(None, "");
+        self.enter(Mode::Edit);
+        self.retitle();
+        self.rerender_now();
     }
 
     /// Follows a link to another document, in this window, remembering where the
@@ -380,23 +567,33 @@ impl DocumentWindow {
     fn display(self: &Rc<Self>, file: &Path, fragment: &str) {
         self.retrace();
         let file = file.to_path_buf();
-        let Some(id) = FileId::of(&file) else {
+        if FileId::of(&file).is_none() {
             self.show_unavailable(
                 &format!("Could not open {}", file_name(&file)),
                 "There is no such file.",
             );
-            self.retitle(&file);
+            self.retitle_as(&file_name(&file), &folder_of(&file));
             return;
-        };
+        }
 
+        self.take_over(Some(&file), fragment);
+        self.enter(Mode::Read);
+        self.retitle_as(&file_name(&file), &folder_of(&file));
+        self.read_the_file();
+    }
+
+    /// Gives this window a place on the scheme, a renderer and a watch for `file`, and
+    /// lets go of whatever it had for the last one.
+    fn take_over(self: &Rc<Self>, file: Option<&Path>, fragment: &str) {
         let epoch = self.epoch.get() + 1;
         self.epoch.set(epoch);
-        self.banner.set_revealed(false);
+        self.notice.hide();
         self.fetching.borrow_mut().clear();
 
         let open = OpenDocument {
-            id: Cell::new(Some(id)),
-            publication: self.scheme.publish(&file),
+            id: Cell::new(file.and_then(FileId::of)),
+            loaded: Cell::new(file.is_none()),
+            publication: self.scheme.publish(file),
             renderer: Renderer::new({
                 let window = Rc::downgrade(self);
                 move |page| {
@@ -405,15 +602,17 @@ impl DocumentWindow {
                     }
                 }
             }),
-            watch: FileWatch::new(&file, {
-                let window = Rc::downgrade(self);
-                move || {
-                    if let Some(window) = window.upgrade() {
-                        window.reread();
+            watch: file.map(|file| {
+                FileWatch::new(file, {
+                    let window = Rc::downgrade(self);
+                    move || {
+                        if let Some(window) = window.upgrade() {
+                            window.read_the_file();
+                        }
                     }
-                }
+                })
             }),
-            file: file.clone(),
+            file: file.map(Path::to_path_buf),
             fragment: fragment.to_owned(),
         };
 
@@ -421,20 +620,191 @@ impl DocumentWindow {
         // its page, its watch and its place on the scheme are already gone.
         let replaced = self.open.replace(Some(open));
         drop(replaced);
-
-        self.retitle(&file);
-        self.reread();
     }
 
-    /// Keeps the two buttons saying what they can do. A button that looks available
-    /// and does nothing is worse than one that is plainly not.
+    /// Reads the file behind this window on a worker, and hands the result to
+    /// [`DocumentWindow::arrived`] on the main loop.
+    ///
+    /// The read is where a huge document costs something, so it never happens on the
+    /// main thread — which is also what keeps the file monitor's callback from doing
+    /// synchronous I/O (invariant 4).
+    fn read_the_file(self: &Rc<Self>) {
+        let Some(file) = self
+            .open
+            .borrow()
+            .as_ref()
+            .and_then(|open| open.file.clone())
+        else {
+            return;
+        };
+        let epoch = self.epoch.get();
+        let window = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let read = gio::spawn_blocking(move || Document::read(&file)).await;
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            // The reader has moved on to another document; this one is nobody's.
+            if window.epoch.get() != epoch {
+                return;
+            }
+            if let Ok(read) = read {
+                window.arrived(read);
+            }
+        });
+    }
+
+    /// What the file turned out to say, and what that means for the reader.
+    fn arrived(self: &Rc<Self>, file: Result<Document, Trouble>) {
+        let first = !self
+            .open
+            .borrow()
+            .as_ref()
+            .is_some_and(|open| open.loaded.get());
+        if first {
+            match file {
+                Ok(document) => {
+                    self.editor.fill(document.text());
+                    *self.document.borrow_mut() = document;
+                    if let Some(open) = self.open.borrow().as_ref() {
+                        open.loaded.set(true);
+                    }
+                    self.notice.hide();
+                    self.retitle();
+                    self.rerender_now();
+                }
+                Err(trouble) => self.show_unavailable(trouble.title(), trouble.detail()),
+            }
+            return;
+        }
+
+        // The buffer is the truth, so the model is given what the reader has before it
+        // is asked to compare the two.
+        self.pull_text();
+        let outcome = self.document.borrow_mut().reconcile(file);
+        match outcome {
+            External::Nothing => {}
+            External::Followed => {
+                let text = self.document.borrow().text().to_owned();
+                self.refill(&text);
+                self.notice.hide();
+                self.rerender_now();
+            }
+            External::Gone => {
+                let name = self.document.borrow().name();
+                self.notice.say(
+                    &format!("Could not open {name} — showing the last version read"),
+                    Vec::new(),
+                );
+            }
+            External::Conflict => self.offer_the_choice(),
+        }
+        self.retitle();
+    }
+
+    /// The one place in the app where the reader is asked something about a document
+    /// they did not ask about — and it is beside the document, with the whole choice
+    /// on screen, never a dialog over it (`ux_decisions.md`).
+    fn offer_the_choice(self: &Rc<Self>) {
+        let name = self.document.borrow().name();
+        let keeping = Rc::downgrade(self);
+        let reloading = Rc::downgrade(self);
+        self.notice.say(
+            &format!("{name} changed on disk, and you have unsaved changes"),
+            vec![
+                (
+                    "Keep Mine".to_owned(),
+                    Rc::new(move || {
+                        if let Some(window) = keeping.upgrade() {
+                            window.document.borrow_mut().keep_mine();
+                            window.notice.hide();
+                            window.retitle();
+                        }
+                    }) as Rc<dyn Fn()>,
+                ),
+                (
+                    "Reload".to_owned(),
+                    Rc::new(move || {
+                        if let Some(window) = reloading.upgrade() {
+                            window.document.borrow_mut().take_theirs();
+                            let text = window.document.borrow().text().to_owned();
+                            window.refill(&text);
+                            window.notice.hide();
+                            window.retitle();
+                            window.rerender_now();
+                        }
+                    }) as Rc<dyn Fn()>,
+                ),
+            ],
+        );
+    }
+
+    /// Puts `text` in the editor without disturbing the reader more than the change
+    /// itself does: they keep the line they were on.
+    fn refill(&self, text: &str) {
+        let line = self.editor.caret_line();
+        self.editor.fill(text);
+        if self.mode.get() == Mode::Edit {
+            self.editor.place_caret(line);
+        }
+    }
+
+    /// Keeps the two history buttons saying what they can do. A button that looks
+    /// available and does nothing is worse than one that is plainly not.
     fn retrace(&self) {
-        for (name, forward) in [(BACK_ACTION, false), (FORWARD_ACTION, true)] {
-            if let Some(action) = self.window.lookup_action(name)
+        for (name, forward) in [(BACK, false), (FORWARD, true)] {
+            if let Some(action) = self.window.lookup_action(bare(name))
                 && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
             {
                 action.set_enabled(self.history.borrow().can_step(forward));
             }
+        }
+    }
+
+    /// Switches the window to `wanted`, keeping the reader's place across the switch.
+    ///
+    /// Both directions map through the anchor map and never through proportional
+    /// scroll (invariant 5). Read to edit has to ask the page where the reader is, so
+    /// it finishes a turn of the loop later; edit to read already knows, and hands the
+    /// line to the view to apply once the page has caught up with the buffer.
+    fn set_mode(self: &Rc<Self>, wanted: Mode) {
+        if self.mode.get() == wanted {
+            return;
+        }
+        match wanted {
+            Mode::Edit => {
+                let window = Rc::downgrade(self);
+                self.view.topmost_source_line(move |line| {
+                    if let Some(window) = window.upgrade() {
+                        window.enter(Mode::Edit);
+                        window.editor.place_caret(line);
+                        window.editor.take_the_keyboard();
+                    }
+                });
+            }
+            Mode::Read => {
+                self.view.place_after_next_render(self.editor.caret_line());
+                self.enter(Mode::Read);
+                // Always, even when nothing was typed: the place is applied when the
+                // page next arrives, and this is what makes it arrive.
+                self.rerender_now();
+            }
+        }
+    }
+
+    /// Puts `mode`'s surface on screen and tells the header-bar button about it.
+    fn enter(&self, mode: Mode) {
+        self.mode.set(mode);
+        if self.showing() != STATUS_PAGE || mode == Mode::Edit {
+            self.surfaces.set_visible_child_name(match mode {
+                Mode::Read => DOCUMENT_PAGE,
+                Mode::Edit => EDITOR_PAGE,
+            });
+        }
+        if let Some(action) = self.window.lookup_action(bare(MODE))
+            && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            action.set_state(&(mode == Mode::Edit).to_variant());
         }
     }
 
@@ -509,12 +879,218 @@ impl DocumentWindow {
         });
     }
 
-    /// Reads the open document again — because the file behind it changed, and the
-    /// reader is to see it without asking for it.
-    fn reread(&self) {
+    /// Takes the buffer's text into the model. Costs a copy of the document, so it is
+    /// done when something needs the text rather than when the text changes.
+    fn pull_text(&self) {
+        let text = self.editor.text();
+        self.document.borrow_mut().holds(text);
+    }
+
+    /// Renders what the reader has in front of them, right now.
+    fn rerender_now(&self) {
+        self.pull_text();
+        let source = self.document.borrow().text().to_owned();
         if let Some(open) = self.open.borrow().as_ref() {
-            open.renderer.render(open.file.clone());
+            open.renderer.render(source);
         }
+    }
+
+    /// Renders once the reader stops typing.
+    ///
+    /// The same quiet period a save on disk gets, and for the same reason: a burst of
+    /// keystrokes is one document, not one document per key.
+    fn schedule_render(self: &Rc<Self>) {
+        let mine = self.rerender.get() + 1;
+        self.rerender.set(mine);
+        let window = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            glib::timeout_future(QUIET).await;
+            if let Some(window) = window.upgrade()
+                && window.rerender.get() == mine
+            {
+                window.rerender_now();
+            }
+        });
+    }
+
+    /// Writes the document out once the reader stops typing, if they have asked for
+    /// that (issue #20's `autosave` and `autosave-delay`).
+    ///
+    /// The delay is read when the timer is set rather than remembered, so changing it
+    /// in preferences applies to the very next keystroke — no restart, no reopen
+    /// (invariant 14).
+    fn schedule_autosave(self: &Rc<Self>) {
+        let Some(delay) = self.settings.autosave() else {
+            return;
+        };
+        let mine = self.autosave.get() + 1;
+        self.autosave.set(mine);
+        let window = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            glib::timeout_future(delay).await;
+            if let Some(window) = window.upgrade()
+                && window.autosave.get() == mine
+            {
+                window.autosave_now();
+            }
+        });
+    }
+
+    /// Saves without being asked, when there is something to save and the reader has
+    /// said they want this.
+    ///
+    /// Never for a document that has no file: asking where it goes is a question, and
+    /// a question is exactly what an automatic save must not be. Never over a conflict
+    /// either — the reader is being asked which version they want, and answering it
+    /// for them by writing is the one thing that would lose their work.
+    fn autosave_now(self: &Rc<Self>) {
+        if self.settings.autosave().is_none() {
+            return;
+        }
+        self.pull_text();
+        let worth_writing = {
+            let document = self.document.borrow();
+            document.is_modified() && !document.needs_a_name() && !document.is_conflicted()
+        };
+        if worth_writing {
+            self.write_out();
+        }
+    }
+
+    /// `Ctrl+S`: the file, or the question of which file this is going to be.
+    fn save(self: &Rc<Self>) {
+        if self.document.borrow().needs_a_name() {
+            self.save_as();
+            return;
+        }
+        self.write_out();
+    }
+
+    fn write_out(self: &Rc<Self>) {
+        self.pull_text();
+        let written = self.document.borrow_mut().save();
+        match written {
+            Ok(()) => {
+                self.notice.hide();
+                self.retitle();
+            }
+            // A save the reader asked for and did not get is said where they are
+            // looking, and stays there until something else happens.
+            Err(trouble) => self.notice.say(
+                &format!("{} — {}", trouble.title(), trouble.detail()),
+                Vec::new(),
+            ),
+        }
+    }
+
+    /// `Ctrl+Shift+S`, and what the first `Ctrl+S` on an untitled document runs.
+    ///
+    /// A dialog, and a sanctioned one: the reader asked for something that cannot be
+    /// done without knowing where (`ux_decisions.md`).
+    fn save_as(self: &Rc<Self>) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Save Document")
+            .modal(true)
+            .initial_name(with_a_markdown_name(&self.document.borrow().name()))
+            .build();
+
+        let window = Rc::downgrade(self);
+        dialog.save(Some(&self.window), gio::Cancellable::NONE, move |chosen| {
+            // A cancelled chooser is not an error, and never becomes a message.
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            if let Ok(file) = chosen
+                && let Some(path) = file.path()
+            {
+                window.save_to(&path);
+            }
+        });
+    }
+
+    /// Writes the document to a file the reader has just chosen, and follows it from
+    /// then on: it is this window's document now, watched and rendered from there.
+    pub(crate) fn save_to(self: &Rc<Self>, file: &Path) {
+        self.pull_text();
+        let written = self.document.borrow_mut().save_as(file);
+        if let Err(trouble) = written {
+            self.notice.say(
+                &format!("{} — {}", trouble.title(), trouble.detail()),
+                Vec::new(),
+            );
+            return;
+        }
+        self.history.borrow_mut().restart(Visit {
+            file: file.to_path_buf(),
+            fragment: String::new(),
+        });
+        self.retrace();
+        self.take_over(Some(file), "");
+        if let Some(open) = self.open.borrow().as_ref() {
+            open.loaded.set(true);
+        }
+        self.retitle();
+        self.rerender_now();
+    }
+
+    /// The question on the way out — sanctioned, because closing is something the
+    /// reader just asked for (`ux_decisions.md`). With autosave on it is rare by
+    /// construction: there is nothing unsaved to ask about.
+    fn ask_about_unsaved_work(self: &Rc<Self>) {
+        // No separate title: `AdwAlertDialog` makes the heading the dialog's title, so
+        // what a test reads back is the sentence the reader is looking at.
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!(
+                "Save changes to {} before closing?",
+                self.document.borrow().name()
+            ))
+            .body("If you don't save, your changes will be lost.")
+            .close_response("cancel")
+            .default_response("save")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("discard", "Discard");
+        dialog.add_response("save", "Save");
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+
+        let window = Rc::downgrade(self);
+        dialog.connect_response(None, move |_, answer| {
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            match answer {
+                "discard" => window.leave(),
+                "save" => {
+                    // Saving may itself be a question — an untitled document has to be
+                    // given a name — so the window closes when there is nothing left
+                    // unsaved rather than the moment the reader answers.
+                    window.save();
+                    if !window.document.borrow().is_modified() {
+                        window.leave();
+                    }
+                }
+                _ => {}
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    /// Closes the window the reader has finished answering about.
+    ///
+    /// On the next turn of the loop rather than here: this is called from inside the
+    /// dialog's own response handler, and libadwaita is still taking that dialog off
+    /// the window. A close asked for underneath it is answered by dismissing the
+    /// dialog instead, and the window stays — which is the whole failure the reader
+    /// would see as "I pressed Discard and nothing happened".
+    fn leave(self: &Rc<Self>) {
+        self.leaving.set(true);
+        let window = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            if let Some(window) = window.upgrade() {
+                window.window.close();
+            }
+        });
     }
 
     /// Puts a finished page in front of the reader.
@@ -522,54 +1098,91 @@ impl DocumentWindow {
     /// `epoch` is the document the page was rendered for: a render that outlived the
     /// document that asked for it is dropped rather than shown, so a window given a
     /// second file can never flash the first one back.
-    fn present_page(&self, page: Page, epoch: u64) {
+    fn present_page(&self, page: Rendered, epoch: u64) {
         if epoch != self.epoch.get() {
             return;
         }
-        match page {
-            Page::Rendered(document) => {
-                if let Some(open) = self.open.borrow().as_ref() {
-                    self.view.show(&open.publication, &document, &open.fragment);
-                    // A save may have been a replacement, which gives the path a new
-                    // identity on disk. The window follows it, or it stops
-                    // recognising its own document and opens a second window on it.
-                    open.id.set(FileId::of(&open.file));
-                }
-                self.banner.set_revealed(false);
-                self.pages.set_visible_child_name(DOCUMENT_PAGE);
+        if let Some(open) = self.open.borrow().as_ref() {
+            self.view.show(&open.publication, &page, &open.fragment);
+            // A save may have been a replacement, which gives the path a new identity
+            // on disk. The window follows it, or it stops recognising its own document
+            // and opens a second window on it.
+            if let Some(file) = &open.file {
+                open.id.set(FileId::of(file));
             }
-            Page::Unavailable { title, detail } => {
-                if self.showing() == DOCUMENT_PAGE {
-                    // The reader is reading, and it is the file underneath them that
-                    // went wrong. They keep the version they have and hear about it
-                    // beside the document; the view is never taken away from them,
-                    // and never interrupted by a dialog (`ux_decisions.md`).
-                    self.banner
-                        .set_title(&format!("{title} — showing the last version read"));
-                    self.banner.set_revealed(true);
-                } else {
-                    self.status.set_title(&title);
-                    self.status.set_description(Some(&detail));
-                    self.pages.set_visible_child_name(STATUS_PAGE);
-                }
-            }
+        }
+        // The reader is typing; the page is kept current behind them and put on screen
+        // when they ask for it, not instead of the editor they are in.
+        if self.mode.get() == Mode::Read {
+            self.surfaces.set_visible_child_name(DOCUMENT_PAGE);
         }
         self.renders.set(self.renders.get() + 1);
     }
 
     /// Says, inside the window, why there is nothing to read — never in a dialog.
+    ///
+    /// A reader who already has a document keeps it and hears about the trouble beside
+    /// it; only a window with nothing on screen is given the status page.
     pub(crate) fn show_unavailable(&self, title: &str, detail: &str) {
-        self.status.set_title(title);
-        self.status.set_description(Some(detail));
-        self.pages.set_visible_child_name(STATUS_PAGE);
+        if self.showing() == DOCUMENT_PAGE {
+            self.notice.say(
+                &format!("{title} — showing the last version read"),
+                Vec::new(),
+            );
+        } else {
+            self.status.set_title(title);
+            self.status.set_description(Some(detail));
+            self.surfaces.set_visible_child_name(STATUS_PAGE);
+        }
         self.renders.set(self.renders.get() + 1);
     }
 
-    fn retitle(&self, file: &Path) {
-        let name = file_name(file);
-        self.window.set_title(Some(&name));
-        self.title.set_title(&name);
-        self.title.set_subtitle(&folder_of(file));
+    /// The window's name for its document: what it is called, where it lives, and
+    /// whether there is work in it that is not on disk.
+    fn retitle(&self) {
+        let document = self.document.borrow();
+        let where_it_lives = match document.file() {
+            Some(file) => folder_of(file),
+            None => "Not saved yet".to_owned(),
+        };
+        let name = document.name();
+        let shown = if document.is_modified() {
+            format!("• {name}")
+        } else {
+            name
+        };
+        drop(document);
+        self.retitle_as(&shown, &where_it_lives);
+    }
+
+    fn retitle_as(&self, name: &str, where_it_lives: &str) {
+        self.window.set_title(Some(name));
+        self.title.set_title(name);
+        self.title.set_subtitle(where_it_lives);
+    }
+}
+
+/// The four things a window action can be, so that one closure serves all of them.
+#[derive(Clone, Copy)]
+enum Deed {
+    Save,
+    SaveAs,
+    Undo,
+    Redo,
+}
+
+/// An action's bare name, as a window registers it, from the full one a widget uses.
+fn bare(action: &str) -> &str {
+    action.strip_prefix("win.").unwrap_or(action)
+}
+
+/// What the Save As dialog offers as a name. An untitled document is offered a
+/// Markdown one, because that is the only kind axiomd writes.
+fn with_a_markdown_name(name: &str) -> String {
+    if Path::new(name).extension().is_some() {
+        name.to_owned()
+    } else {
+        format!("{name}.md")
     }
 }
 
@@ -593,6 +1206,88 @@ fn folder_of(file: &Path) -> String {
     }
 }
 
+/// What the app has to say about a document the reader is still reading, said beside
+/// it: a sentence, and the whole of the choice as buttons next to it.
+///
+/// An `AdwBanner` would do for the sentence, but it carries exactly one button, and
+/// the case that matters most — unsaved work meeting a changed file — is a choice
+/// between two things. A choice with one of its halves missing is not a choice.
+struct Notice {
+    revealer: gtk::Revealer,
+    label: gtk::Label,
+    choices: gtk::Box,
+}
+
+impl Notice {
+    fn new() -> Notice {
+        let label = gtk::Label::builder()
+            .hexpand(true)
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        let choices = gtk::Box::builder().spacing(6).build();
+
+        let bar = gtk::Box::builder()
+            .spacing(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        bar.append(&label);
+        bar.append(&choices);
+        bar.add_css_class("toolbar");
+
+        let revealer = gtk::Revealer::builder()
+            .child(&bar)
+            .reveal_child(false)
+            .build();
+        Notice {
+            revealer,
+            label,
+            choices,
+        }
+    }
+
+    fn widget(&self) -> &gtk::Widget {
+        self.revealer.upcast_ref()
+    }
+
+    /// Says `message` beside the document, offering `choices` — each of which is a
+    /// button that does the thing it is labelled with.
+    fn say(&self, message: &str, choices: Vec<(String, Rc<dyn Fn()>)>) {
+        self.clear_choices();
+        self.label.set_label(message);
+        for (label, act) in choices {
+            let button = gtk::Button::with_label(&label);
+            button.connect_clicked(move |_| act());
+            self.choices.append(&button);
+        }
+        self.revealer.set_reveal_child(true);
+    }
+
+    fn hide(&self) {
+        self.revealer.set_reveal_child(false);
+        self.clear_choices();
+        self.label.set_label("");
+    }
+
+    fn clear_choices(&self) {
+        while let Some(child) = self.choices.first_child() {
+            self.choices.remove(&child);
+        }
+    }
+
+    /// What the window is saying, or an empty string when it is saying nothing.
+    fn message(&self) -> String {
+        if self.revealer.reveals_child() {
+            self.label.label().to_string()
+        } else {
+            String::new()
+        }
+    }
+}
+
 /// One of the two history buttons. It is bound to a window action, so GTK makes it
 /// insensitive exactly when there is nowhere that way to go.
 fn step_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
@@ -611,10 +1306,25 @@ fn open_button() -> gtk::Button {
         .build()
 }
 
+/// The switch between reading and editing. A toggle rather than a button, because it
+/// says which of the two the window is in as well as changing it.
+fn mode_button() -> gtk::ToggleButton {
+    gtk::ToggleButton::builder()
+        .icon_name("document-edit-symbolic")
+        .tooltip_text("Edit the source (Ctrl+E)")
+        .action_name(MODE)
+        .build()
+}
+
 fn primary_menu_button() -> gtk::MenuButton {
     let documents = gio::Menu::new();
     documents.append(Some("_New Window"), Some("app.new"));
     documents.append(Some("_Open…"), Some("app.open"));
+
+    let editing = gio::Menu::new();
+    editing.append(Some("_Edit Source"), Some(MODE));
+    editing.append(Some("_Save"), Some(SAVE));
+    editing.append(Some("Save _As…"), Some(SAVE_AS));
 
     let application = gio::Menu::new();
     application.append(Some("_Preferences"), Some("app.preferences"));
@@ -623,6 +1333,7 @@ fn primary_menu_button() -> gtk::MenuButton {
 
     let menu = gio::Menu::new();
     menu.append_section(None, &documents);
+    menu.append_section(None, &editing);
     menu.append_section(None, &application);
 
     gtk::MenuButton::builder()
@@ -718,5 +1429,27 @@ mod tests {
         assert_eq!(names(&history), ["c.md"]);
         assert!(!history.can_step(false));
         assert!(!history.can_step(true));
+    }
+
+    /// Save As offers a name axiomd can actually write. An untitled document has no
+    /// extension to keep, and one that has been saved before keeps its own.
+    #[test]
+    fn save_as_offers_a_markdown_name_for_a_document_that_has_none() {
+        assert_eq!(with_a_markdown_name("Untitled"), "Untitled.md");
+        assert_eq!(with_a_markdown_name("notes.md"), "notes.md");
+        assert_eq!(with_a_markdown_name("README.markdown"), "README.markdown");
+    }
+
+    /// An action is named once, in full, and registered by its bare name. A window
+    /// that registered the full name would have every accelerator silently do nothing.
+    #[test]
+    fn every_window_action_is_registered_under_the_name_its_shortcut_uses() {
+        for action in [BACK, FORWARD, MODE, SAVE, SAVE_AS, UNDO, REDO] {
+            assert!(
+                action.starts_with("win."),
+                "{action} is not a window action",
+            );
+            assert_eq!(bare(action), &action["win.".len()..]);
+        }
     }
 }

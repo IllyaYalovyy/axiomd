@@ -1,21 +1,24 @@
-//! Files on disk turned into pages a window can show — always off the main loop.
+//! The buffer turned into a page a window can show — always off the main loop.
 //!
-//! Reading, parsing and rendering are the only expensive things a viewer does, and
-//! all three happen here, on a worker. The main loop hands over a path and gets a
-//! [`Page`] back later; it never waits, so a huge document cannot make the window
-//! stop drawing.
+//! Parsing and rendering are the expensive things axiomd does, and both happen here,
+//! on a worker. The main loop hands over the text the reader's buffer holds and gets a
+//! [`Rendered`] back later; it never waits, so neither a huge document nor a fast
+//! typist can make the window stop drawing (invariant 4).
+//!
+//! The text comes from the buffer and never from the file (invariant 11): what the
+//! reader sees rendered is what they have in front of them, saved or not.
 //!
 //! A [`Renderer`] holds one document's worth of work at a time. Asking for another
 //! render supersedes the one in flight: the worker abandons it at the next phase
-//! boundary and its result is dropped rather than shown, so a window can never
-//! display a document the user has already moved past. This is the machinery live
-//! reload and mode switching build on.
+//! boundary and its result is dropped rather than shown, so a window can never display
+//! a document the user has already moved past. This is the machinery live reload and
+//! mode switching build on.
 //!
 //! [`FileId`] is the other half: it answers "is this the file that window already
-//! has open?" by identity rather than by spelling, so `./README.md`, an absolute
-//! path and a symlink all name the same document.
+//! has open?" by identity rather than by spelling, so `./README.md`, an absolute path
+//! and a symlink all name the same document.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,18 +27,6 @@ use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
 use axiomd_render::Rendered;
 use gtk::gio;
 use gtk::glib;
-
-/// What a window has to show for a document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Page {
-    /// The rendered document: the whole page for a view that has not shown this
-    /// document yet, and its blocks alone for one that has.
-    Rendered(Rendered),
-    /// The document cannot be shown, and this is what the window says instead. Both
-    /// strings are user-facing; opening never asks the user a question, so this is
-    /// the whole of the report.
-    Unavailable { title: String, detail: String },
-}
 
 /// A file's identity on disk, independent of the path used to reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,24 +52,24 @@ impl FileId {
 /// Renders one window's document away from the main loop.
 pub(crate) struct Renderer {
     generation: Arc<AtomicU64>,
-    show: Rc<dyn Fn(Page)>,
+    show: Rc<dyn Fn(Rendered)>,
 }
 
 impl Renderer {
     /// Builds a renderer that hands every page it finishes to `show`, on the thread
     /// that created it.
-    pub(crate) fn new(show: impl Fn(Page) + 'static) -> Self {
+    pub(crate) fn new(show: impl Fn(Rendered) + 'static) -> Self {
         Self {
             generation: Arc::new(AtomicU64::new(0)),
             show: Rc::new(show),
         }
     }
 
-    /// Starts rendering `path`, superseding whatever was in flight.
+    /// Starts rendering `source`, superseding whatever was in flight.
     ///
     /// Returns at once. The page arrives later through the callback, on the calling
     /// thread; a superseded render never arrives at all.
-    pub(crate) fn render(&self, path: PathBuf) {
+    pub(crate) fn render(&self, source: String) {
         let mine = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = self.generation.clone();
         let show = self.show.clone();
@@ -86,7 +77,7 @@ impl Renderer {
         glib::spawn_future_local(async move {
             let worker = generation.clone();
             let composed = gio::spawn_blocking(move || {
-                compose(&path, &|| worker.load(Ordering::SeqCst) != mine)
+                compose(&source, &|| worker.load(Ordering::SeqCst) != mine)
             })
             .await;
 
@@ -96,11 +87,9 @@ impl Renderer {
             match composed {
                 Ok(Some(page)) => show(page),
                 Ok(None) => {}
-                Err(_) => show(Page::Unavailable {
-                    title: "Could not render this document".to_owned(),
-                    detail: "The renderer stopped unexpectedly. Try opening the file again."
-                        .to_owned(),
-                }),
+                // A panicking worker is a bug in the pipeline, not something the reader
+                // can act on: they keep the page they have and it is reported here.
+                Err(_) => eprintln!("axiomd: the renderer stopped unexpectedly"),
             }
         });
     }
@@ -116,46 +105,18 @@ pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
     [ComrakEngine::new().id()]
 }
 
-/// Reads, parses and renders `path`, giving up as soon as `superseded` says the
-/// result is no longer wanted.
-fn compose(path: &Path, superseded: &dyn Fn() -> bool) -> Option<Page> {
-    let name = path
-        .file_name()
-        .unwrap_or(path.as_os_str())
-        .to_string_lossy()
-        .into_owned();
+/// Parses and renders `source`, giving up as soon as `superseded` says the result is
+/// no longer wanted.
+fn compose(source: &str, superseded: &dyn Fn() -> bool) -> Option<Rendered> {
+    if superseded() {
+        return None;
+    }
+    let parsed = ComrakEngine::new().parse(source, Extensions::FULL);
 
     if superseded() {
         return None;
     }
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Some(Page::Unavailable {
-                title: format!("Could not open {name}"),
-                detail: format!("{error}."),
-            });
-        }
-    };
-    let source = match String::from_utf8(bytes) {
-        Ok(source) => source,
-        Err(_) => {
-            return Some(Page::Unavailable {
-                title: format!("Could not read {name}"),
-                detail: "This file is not UTF-8 text, so it is not a Markdown document.".to_owned(),
-            });
-        }
-    };
-
-    if superseded() {
-        return None;
-    }
-    let parsed = ComrakEngine::new().parse(&source, Extensions::FULL);
-
-    if superseded() {
-        return None;
-    }
-    Some(Page::Rendered(axiomd_render::render(&parsed)))
+    Some(axiomd_render::render(&parsed))
 }
 
 #[cfg(test)]
@@ -179,13 +140,13 @@ mod tests {
     /// one of them.
     struct Harness {
         main_loop: glib::MainLoop,
-        shown: Rc<RefCell<Vec<(Page, ThreadId)>>>,
+        shown: Rc<RefCell<Vec<(Rendered, ThreadId)>>>,
     }
 
     impl Harness {
         /// Runs `body` with a renderer whose deliveries are recorded, and returns the
         /// pages that reached the window, in arrival order.
-        fn run(body: impl FnOnce(&Harness, &Renderer)) -> Vec<(Page, ThreadId)> {
+        fn run(body: impl FnOnce(&Harness, &Renderer)) -> Vec<(Rendered, ThreadId)> {
             let context = glib::MainContext::new();
             let shown = Rc::new(RefCell::new(Vec::new()));
             let delivered = shown.clone();
@@ -210,7 +171,7 @@ mod tests {
             delivered.borrow().clone()
         }
 
-        fn shown(&self) -> Vec<Page> {
+        fn shown(&self) -> Vec<Rendered> {
             self.shown
                 .borrow()
                 .iter()
@@ -233,25 +194,16 @@ mod tests {
         }
     }
 
-    fn html_of(page: &Page) -> &str {
-        match page {
-            Page::Rendered(document) => document.html(),
-            other => panic!("expected a rendered page, got {other:?}"),
-        }
-    }
-
+    /// What the reader has in the buffer is what gets rendered — never a file.
     #[test]
-    fn shows_the_document_the_file_holds() {
-        let scratch = ScratchDir::new("render-ok");
-        let file = scratch.write("notes.md", "# Title\n\nBody text.\n");
-
+    fn shows_the_document_the_buffer_holds() {
         let shown = Harness::run(|harness, renderer| {
-            renderer.render(file.clone());
+            renderer.render("# Title\n\nBody text.\n".to_owned());
             harness.run_until_a_page_is_shown();
         });
 
         assert_eq!(shown.len(), 1);
-        let html = html_of(&shown[0].0);
+        let html = shown[0].0.html();
         assert!(
             html.contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"),
             "{html}"
@@ -263,12 +215,10 @@ mod tests {
     /// until the loop is driven, and the delivery lands on the thread that owns it.
     #[test]
     fn renders_without_blocking_the_thread_that_asked() {
-        let scratch = ScratchDir::new("render-offthread");
-        let file = scratch.write("notes.md", "# Title\n");
         let caller = std::thread::current().id();
 
         let shown = Harness::run(|harness, renderer| {
-            renderer.render(file.clone());
+            renderer.render("# Title\n".to_owned());
             assert!(
                 harness.shown().is_empty(),
                 "render() produced a page before the loop ran, so it did the work inline",
@@ -282,61 +232,20 @@ mod tests {
         );
     }
 
-    /// A window must never flash a document the user has already moved past.
+    /// A window must never flash a document the user has already moved past — which
+    /// while the reader is typing is every keystroke but the last.
     #[test]
     fn a_superseded_render_is_never_shown() {
-        let scratch = ScratchDir::new("render-supersede");
-        let stale = scratch.write("stale.md", "# Stale\n");
-        let wanted = scratch.write("wanted.md", "# Wanted\n");
-
         let shown = Harness::run(|harness, renderer| {
-            renderer.render(stale.clone());
-            renderer.render(wanted.clone());
+            renderer.render("# Stale\n".to_owned());
+            renderer.render("# Wanted\n".to_owned());
             harness.run_until_a_page_is_shown();
         });
 
         assert_eq!(shown.len(), 1, "more than the last request was shown");
-        let html = html_of(&shown[0].0);
+        let html = shown[0].0.html();
         assert!(html.contains("Wanted"), "{html}");
         assert!(!html.contains("Stale"), "{html}");
-    }
-
-    #[test]
-    fn says_why_a_file_it_cannot_read_is_not_shown() {
-        let scratch = ScratchDir::new("render-missing");
-        let missing = scratch.path().join("gone.md");
-
-        let shown = Harness::run(|harness, renderer| {
-            renderer.render(missing.clone());
-            harness.run_until_a_page_is_shown();
-        });
-
-        match &shown[0].0 {
-            Page::Unavailable { title, detail } => {
-                assert!(title.contains("gone.md"), "{title}");
-                assert!(!detail.is_empty(), "the reason was left blank");
-            }
-            other => panic!("expected an unavailable page, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn says_why_a_file_that_is_not_text_is_not_shown() {
-        let scratch = ScratchDir::new("render-binary");
-        let file = scratch.write("image.md", [0xff, 0xfe, 0x00, 0x9f]);
-
-        let shown = Harness::run(|harness, renderer| {
-            renderer.render(file.clone());
-            harness.run_until_a_page_is_shown();
-        });
-
-        match &shown[0].0 {
-            Page::Unavailable { title, detail } => {
-                assert!(title.contains("image.md"), "{title}");
-                assert!(detail.contains("UTF-8"), "{detail}");
-            }
-            other => panic!("expected an unavailable page, got {other:?}"),
-        }
     }
 
     /// Windows are deduplicated by this identity, so spelling must not matter.

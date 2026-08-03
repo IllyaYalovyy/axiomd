@@ -102,6 +102,23 @@ impl Preferences {
         }
     }
 
+    /// A store the reader has already been in: `key` is set to `value` before the
+    /// application is ever started.
+    ///
+    /// Written the way GLib's keyfile backend writes it, which is the same file the
+    /// dialog produces — `wait_until` reads settings back out of it.
+    pub fn with(label: &str, key: &str, value: &str) -> Preferences {
+        let preferences = Preferences::new(label);
+        let keyfile = preferences.keyfile();
+        if let Some(parent) = keyfile.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|error| panic!("create {parent:?}: {error}"));
+        }
+        std::fs::write(&keyfile, format!("[io/github/etf/axiomd]\n{key}={value}\n"))
+            .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
+        preferences
+    }
+
     /// What the store holds for `key` now, as it is written down, or `None` while the
     /// reader has never changed that setting.
     fn get(&self, key: &str) -> Option<String> {
@@ -160,11 +177,19 @@ pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
     app
 }
 
-/// Starts axiomd with nothing open — a bare launch, or `Ctrl+N`.
+/// Starts axiomd with nothing open — a bare launch, which is a new untitled document
+/// in edit mode (`ux_decisions.md`).
 ///
 /// Returns once its window exists.
 pub fn launch_without_document() -> App {
     let app = App::start(None, None);
+    app.wait_until_windows(1);
+    app
+}
+
+/// The same, over a settings store the test controls.
+pub fn launch_without_document_with(preferences: &Preferences) -> App {
+    let app = App::start(None, Some(preferences));
     app.wait_until_windows(1);
     app
 }
@@ -412,6 +437,88 @@ impl App {
     /// application's own doing and nothing the harness reaches into.
     pub fn set_preference(&self, row: &str, value: &str) {
         self.command("set-preference", &format!("{row}={value}"));
+    }
+
+    /// Types `text` where the caret is, exactly as pressing the keys does. The window
+    /// has to be in edit mode, exactly as it does for the reader.
+    pub fn type_text(&self, text: &str) {
+        self.command("type", text);
+    }
+
+    /// Which way the addressed window is showing its document: `read` or `edit`.
+    pub fn mode(&self) -> String {
+        self.property("mode")
+    }
+
+    /// Waits until the addressed window is in `wanted` mode.
+    ///
+    /// Switching from reading to editing asks the page where the reader is before it
+    /// moves the caret, so it finishes a turn of the loop after the key press.
+    pub fn wait_until_mode(&self, wanted: &str) {
+        self.settle(&format!("the window to be in {wanted} mode"), || {
+            Ok(self.try_command("window", "mode")? == wanted)
+        });
+    }
+
+    /// Whether the addressed window holds work that is not on disk — what the bullet
+    /// in its title says, and what closing it would ask about.
+    pub fn is_modified(&self) -> bool {
+        self.property("modified") == "true"
+    }
+
+    /// Waits until the addressed window's document is clean — what an automatic save
+    /// leaves behind.
+    pub fn wait_until_saved(&self) {
+        self.settle("the document to have nothing unsaved in it", || {
+            Ok(self.try_command("window", "modified")? == "false")
+        });
+    }
+
+    /// Puts the caret on `line` in the addressed window's editor, as clicking into
+    /// that line does.
+    pub fn place_caret(&self, line: u32) {
+        self.command("caret", &line.to_string());
+    }
+
+    /// Waits until the addressed window's editor holds exactly `wanted`.
+    pub fn wait_until_source(&self, wanted: &str) {
+        self.settle(&format!("the editor to hold {wanted:?}"), || {
+            Ok(self.try_command("window", "source")? == wanted)
+        });
+    }
+
+    /// The source line the caret is on in the addressed window's editor.
+    pub fn caret_line(&self) -> u32 {
+        self.property("caret").parse().expect("a source line")
+    }
+
+    /// What the reader has in front of them in edit mode.
+    pub fn source(&self) -> String {
+        self.property("source")
+    }
+
+    /// Answers the Save As chooser with `file`, as the reader picking it does.
+    ///
+    /// The chooser itself is a native dialog outside the window's widget tree; this is
+    /// its far side, and everything after the choice is the application's own doing.
+    pub fn save_as(&self, file: &Path) {
+        self.command("save-as", &file.display().to_string());
+    }
+
+    /// Presses the button labelled `label`, wherever the addressed window is showing
+    /// it: beside the document, or in a dialog the reader asked for.
+    pub fn press(&self, label: &str) {
+        self.command("press", label);
+    }
+
+    /// Waits until the addressed window is showing a dialog that says `wanted`.
+    ///
+    /// What a dialog is called is what the reader reads at the top of it — for an
+    /// alert that is its heading, which libadwaita makes the dialog's title.
+    pub fn wait_for_dialog_saying(&self, wanted: &str) {
+        self.settle(&format!("a dialog saying {wanted:?}"), || {
+            Ok(self.try_command("window", "dialog")?.contains(wanted))
+        });
     }
 
     /// What the addressed window's inline banner says, or an empty string when no
