@@ -1,0 +1,38 @@
+# Everything the axiomd sandbox is allowed to reach, in the form
+# `flatpak info --show-permissions io.github.etf.axiomd` prints it.
+#
+# This file is the decision, not a record of one: the manifest's `finish-args` must
+# add up to exactly these, and the installed application's own permissions must be
+# exactly these — both asserted by `crates/axiomd-app/tests/packaging.rs`. Widening
+# the sandbox therefore cannot happen quietly, in the manifest or by a local
+# `flatpak override`.
+#
+# Why each one, and what is deliberately absent:
+#
+#   shared=network   ONLY so that pressing a remote image's placeholder can load it
+#                    (D4, ratified 2026-08-02). Nothing is fetched implicitly, and
+#                    the probe in packaging.rs counts requests from the far end to
+#                    prove it: a document renders with zero, a press makes one.
+#   shared=ipc       WebKit's own processes and X11 need it; it reaches nothing
+#                    outside the sandbox.
+#   sockets          wayland to draw on; fallback-x11 for a session without wayland.
+#                    `x11` is listed here although the manifest asks only for
+#                    wayland and fallback-x11: flatpak records fallback-x11 as the
+#                    x11 flag plus the fallback flag, and decides at launch whether
+#                    to bind the X11 socket at all — it does not when there is a
+#                    wayland one. Observed on flatpak 1.16 by installing this
+#                    manifest and reading `flatpak info --show-permissions` back;
+#                    it is why this file is pinned from the installed application
+#                    rather than written out from the manifest.
+#   devices=dri      hardware rendering for the webview. Without it WebKit falls back
+#                    to software compositing on a machine that has a GPU.
+#
+#   filesystems=     absent, and this is the point. axiomd sees no host filesystem:
+#                    not `host`, not `home`, not one `xdg-` directory. A document
+#                    arrives through the document portal, which grants that one file.
+#                    Widening this is not a packaging detail — it is the sandbox — so
+#                    it is a decision for the project owner (issue #14).
+[Context]
+shared=network;ipc;
+sockets=x11;wayland;fallback-x11;
+devices=dri;

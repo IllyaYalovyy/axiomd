@@ -23,6 +23,11 @@
 # Build artifacts
 /target/
 /build/
+# flatpak-builder's cache, staging tree and local repository, which it writes
+# beside the manifest it was given.
+/build-aux/flatpak/.flatpak-builder/
+/build-aux/flatpak/build/
+/build-aux/flatpak/repo/
 /dist/
 /out/
 /coverage/

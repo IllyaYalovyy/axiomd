@@ -264,6 +264,35 @@ pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
     app
 }
 
+/// Starts the axiomd **installed as a flatpak on this machine** showing `document`,
+/// and drives it exactly as every other launch here is driven (issue #14).
+///
+/// This is how a packaged axiomd is asserted about rather than assumed about: the
+/// application runs in its own sandbox, with the runtime, the libraries and the
+/// installed data files of the package — so what the rendered document proves is that
+/// the *package* renders, not that this machine's development build does.
+/// `docs/TESTING.md` category 3 asks for exactly this in place of somebody installing
+/// the flatpak and looking at it.
+///
+/// Nothing about the sandbox is relaxed except the two ways in a probe has to have:
+///
+/// * the launch's own directories — the control socket, the pinned settings, the log —
+///   and the folder the document is in are handed to the sandbox as `--filesystem`,
+///   because a test that cannot reach the application cannot assert anything about it.
+///   These are arguments to *this launch*, not permissions of the package: what the
+///   package itself is allowed is pinned in `build-aux/flatpak/permissions.pinned` and
+///   asserted from the installed application by `packaging.rs`.
+/// * the session bus is taken away, for the same reason it is on the host: a
+///   single-instance application with a bus to reach would hand its document to a
+///   copy the developer already had open.
+///
+/// Panics with what to run if no flatpak is installed.
+pub fn launch_installed_flatpak(document: &Path) -> App {
+    let app = App::start_under(Under::InstalledFlatpak, Some(document), None, None);
+    app.wait_for_a_rendered_document();
+    app
+}
+
 /// Starts axiomd with nothing open — a bare launch, which is a new untitled document
 /// in edit mode (`ux_decisions.md`).
 ///
@@ -302,6 +331,15 @@ impl App {
         preferences: Option<&Preferences>,
         engine: Option<&str>,
     ) -> App {
+        App::start_under(Under::BesideThisTest, document, preferences, engine)
+    }
+
+    fn start_under(
+        under: Under,
+        document: Option<&Path>,
+        preferences: Option<&Preferences>,
+        engine: Option<&str>,
+    ) -> App {
         let scratch = Scratch::new("app");
         let display = Display::start(scratch.path());
         let environment = Environment::pin(
@@ -312,15 +350,34 @@ impl App {
         let socket = control.socket().to_path_buf();
         let log = scratch.path().join("axiomd.log");
 
-        let mut command = Command::new(binary());
-        environment.apply(
-            &mut command,
-            display
-                .wayland()
-                .into_iter()
-                .map(|(name, value)| (name.to_owned(), value))
-                .chain([("AXIOMD_TEST_CONTROL".to_owned(), socket.clone())]),
-        );
+        let control_variable = [("AXIOMD_TEST_CONTROL".to_owned(), socket.clone())];
+        let mut command = match under {
+            Under::BesideThisTest => {
+                let mut command = Command::new(binary());
+                environment.apply(
+                    &mut command,
+                    display
+                        .wayland()
+                        .into_iter()
+                        .map(|(name, value)| (name.to_owned(), value))
+                        .chain(control_variable),
+                );
+                command
+            }
+            Under::InstalledFlatpak => {
+                let sandbox = environment.sandbox_arguments(
+                    display
+                        .wayland_in_a_sandbox()
+                        .into_iter()
+                        .map(|(name, value)| (name.to_owned(), value))
+                        .chain(control_variable),
+                );
+                sandboxed_command(
+                    sandbox,
+                    [Some(scratch.path()), document].into_iter().flatten(),
+                )
+            }
+        };
         if let Some(engine) = engine {
             command.arg(format!("--engine={engine}"));
         }
@@ -332,7 +389,7 @@ impl App {
             .stdout(append_to(&log))
             .stderr(append_to(&log))
             .spawn()
-            .unwrap_or_else(|error| panic!("start {}: {error}", binary().display()));
+            .unwrap_or_else(|error| panic!("start {under}: {error}"));
 
         let diagnostics = {
             let log = log.clone();
@@ -976,6 +1033,63 @@ impl Drop for App {
         self.wait_for_exit();
     }
 }
+
+/// Which axiomd a launch drives.
+#[derive(Clone, Copy)]
+enum Under {
+    /// The binary built beside the test running it — every launch but one.
+    BesideThisTest,
+    /// The flatpak installed on this machine, in its own sandbox.
+    InstalledFlatpak,
+}
+
+impl std::fmt::Display for Under {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Under::BesideThisTest => write!(out, "{}", binary().display()),
+            Under::InstalledFlatpak => write!(out, "the installed flatpak {APP_ID}"),
+        }
+    }
+}
+
+/// `flatpak run`, with the directories the probe needs to be able to see into it and
+/// the pinned environment handed to it.
+fn sandboxed_command<'a>(
+    environment: Vec<String>,
+    visible: impl IntoIterator<Item = &'a Path>,
+) -> Command {
+    assert!(
+        Command::new("flatpak")
+            .args(["info", APP_ID])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success()),
+        "no axiomd flatpak is installed, so there is none to drive.\n  \
+         Build and install one, and run the probes that need it, with:\n    \
+         ./scripts/quality.d/40-flatpak.sh",
+    );
+
+    let mut command = Command::new("flatpak");
+    command.arg("run");
+    for directory in visible {
+        let directory = match directory.is_dir() {
+            true => directory.to_path_buf(),
+            // A document: the sandbox is shown the folder it is in, because a document
+            // is rarely alone — the images it references resolve beside it.
+            false => directory.parent().unwrap_or(directory).to_path_buf(),
+        };
+        command.arg(format!("--filesystem={}", directory.display()));
+    }
+    command.arg("--nosocket=session-bus");
+    command.args(environment);
+    command.arg(APP_ID);
+    command
+}
+
+/// The application id the package installs under, which is also the bus name a launch
+/// would claim if it had a bus (see [`launch_installed_flatpak`]).
+const APP_ID: &str = "io.github.etf.axiomd";
 
 /// The `axiomd` this harness drives: the one built beside the test binary running it,
 /// so a suite can never test a stale copy from somewhere else on the machine.

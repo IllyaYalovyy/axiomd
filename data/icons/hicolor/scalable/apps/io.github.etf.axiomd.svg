@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!--
+    axiomd's application icon: the Markdown mark on a page, on the 128x128 canvas
+    GNOME application icons use, with the shape inset 8px on every side.
+
+    Everything here is flat geometry - rectangles, gradients and filled paths. No
+    filters, no strokes, no embedded raster: strokes are not recoloured by GTK's
+    symbolic machinery and filters are the part of SVG renderers that differs
+    between them, and an icon that renders differently in the shell than in the
+    about dialog is worse than a plainer one that does not.
+    This note is inside `<svg>` and not above it on purpose: gdk-pixbuf recognises
+    an SVG by looking at the start of the file, and a comment ahead of the root
+    element makes it "not an image" - which is every icon of this application
+    missing, and `appstreamcli compose` failing the flatpak build outright. Probed
+    on librsvg 2.61.4 / gdk-pixbuf 2.44.4; asserted by
+    `crates/axiomd-app/tests/packaging.rs`.
+  -->
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62a0ea"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="24" fill="url(#backdrop)"/>
+  <rect x="26" y="22" width="76" height="84" rx="8" fill="#ffffff"/>
+  <path d="M35 88 L35 46 L42 46 L51 60 L60 46 L67 46 L67 88 L59 88 L59 62 L51 74 L43 62 L43 88 Z" fill="#1a5fb4"/>
+  <path d="M78 46 L86 46 L86 68 L93 68 L82 84 L71 68 L78 68 Z" fill="#1a5fb4"/>
+</svg>

@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Illya Yalovyy -->
+<component type="desktop-application">
+  <id>io.github.etf.axiomd</id>
+  <name>axiomd</name>
+  <summary>Read and write Markdown documents</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="io.github.etf">
+    <name>Illya Yalovyy</name>
+  </developer>
+
+  <description>
+    <p>
+      axiomd is a fast, native Markdown viewer and editor for modern GNOME. It
+      opens a document instantly, renders it faithfully to the CommonMark and
+      GitHub Flavored Markdown specifications, and stays responsive with many
+      windows and very large files.
+    </p>
+    <p>Reading leads, and everything a day of work needs is built in:</p>
+    <ul>
+      <li>First-class tables, images, code highlighting, math and diagrams</li>
+      <li>An outline sidebar and search that follow the document as you read</li>
+      <li>An editor with live preview, and a reading position that survives switching between them</li>
+      <li>Printing and export to PDF and standalone HTML</li>
+      <li>Live reload when a document changes on disk, without losing your place</li>
+    </ul>
+    <p>
+      Documents never reach the network on their own: every asset axiomd renders
+      with is bundled, and a remote image is loaded only when you press its
+      placeholder.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.etf.axiomd.desktop</launchable>
+
+  <provides>
+    <mediatype>text/markdown</mediatype>
+  </provides>
+
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+  </categories>
+
+  <keywords>
+    <keyword>markdown</keyword>
+    <keyword>md</keyword>
+    <keyword>readme</keyword>
+    <keyword>notes</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/IllyaYalovyy/axiomd</url>
+  <url type="bugtracker">https://github.com/IllyaYalovyy/axiomd/issues</url>
+  <url type="vcs-browser">https://github.com/IllyaYalovyy/axiomd</url>
+
+  <!--
+    Placeholder until a rendered window is pinned as a screenshot golden and
+    published (issue #14 keeps flathub polish out of scope; a store listing
+    needs a real image here first).
+  -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>A document open in axiomd</caption>
+      <image type="source">https://raw.githubusercontent.com/IllyaYalovyy/axiomd/main/data/screenshots/reading.png</image>
+    </screenshot>
+  </screenshots>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#a5c8f2</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-03" type="development">
+      <description>
+        <p>Pre-MVP development build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -443,6 +443,60 @@ Mirrors the GitHub issues; order is the ktask queue order.
 - [ ] **Q1** — Meson+cargo hybrid (GNOME Builder convention) vs pure cargo
   with a small install script; decide when flatpak packaging lands
   (Step 14).
+
+  **Implemented in Step 14 as pure cargo plus `scripts/install.sh`**, for
+  the project owner to ratify or overturn. What the packaging actually
+  needed turned out to be small and fully covered: cargo builds the binary,
+  `scripts/install.sh` installs the seven files an installed axiomd is read
+  from (binary, desktop entry, metainfo, gschema **and its compiled
+  `gschemas.compiled`**, both icons), and the flatpak manifest calls the two
+  in order. The prefix that produces is asserted end to end — the files, the
+  compiled schema, and `appstreamcli compose` over the result — in
+  `crates/axiomd-app/tests/packaging.rs`.
+
+  Rationale for not adding meson: it would own only file copying and schema
+  compilation, which is 60 lines of shell, while adding a second build
+  system to the gate, a second place dependencies and features are declared,
+  and a layer between `cargo test` and the binary the e2e harness drives.
+  That is a shallow module with a wide interface (VISION principle 9). What
+  meson conventionally buys — `gnome.post_install()`, i18n, GResource
+  bundling, subprojects — axiomd does not use: assets are compiled in with
+  `include_str!`, and flatpak-builder runs the post-install steps itself
+  when it exports. Revisit if translations or GResource bundles land, which
+  is when meson's machinery starts paying for itself.
+
+- [ ] **Q3** — **A document opened through the document portal cannot reach
+  the images beside it.** Probed live on flatpak 1.16 (2026-08-03) by
+  launching the installed package exactly as the desktop does —
+  `flatpak run --file-forwarding io.github.etf.axiomd @@ <doc.md> @@`: the
+  document arrives as `/run/user/1000/doc/<id>/doc.md`, a directory
+  containing that one file and nothing else; a sibling `local.png` is not
+  readable, and the document's real host directory does not exist inside the
+  sandbox. So `![local](local.png)` renders as a broken image in the
+  packaged application while it renders in a development build. Sibling
+  access is *not* obtainable under pure portals, so per issue #14 this stops
+  here rather than widening the sandbox. Options, cheapest first:
+
+  1. **An inline "show images in this folder" affordance.** The file-chooser
+     portal can be asked for a *directory*, and picking one grants it to the
+     app through the document portal for good. A document with unreadable
+     relative images gets an inline one-click card, like D4's remote-image
+     placeholder — the same shape as an existing ratified decision, no
+     permission widened by default, and the reader grants exactly the folder
+     they are reading from. Costs a portal call axiomd does not make yet.
+  2. **`--filesystem=host:ro`.** One line, everything works, and the sandbox
+     stops being a sandbox: every file the user can read, axiomd can read.
+     What most Markdown editors ship, and against this project's stated
+     posture.
+  3. **`--filesystem=xdg-documents:ro` (and friends).** Works for documents
+     under the blessed directories only; a README in a source checkout — the
+     stated primary use case — still shows broken images.
+  4. **Accept it**: relative images do not load in the flatpak. Cheapest,
+     and a visible fidelity regression against the development build.
+
+  Recommendation: (1), as a follow-up issue; it is the only option that
+  keeps "no host filesystem" true and still shows the reader their images.
+  Not implemented, not decided — the owner's call.
 - [ ] **Q2** — When the block-cache lands (Step 9's budgets decide), does
   the DOM patch move to morphdom-style diffing or anchor-keyed block
   replacement?

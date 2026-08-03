@@ -1,0 +1,52 @@
+{
+    "id": "io.github.etf.axiomd",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "49",
+    "sdk": "org.gnome.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "axiomd",
+    "finish-args": [
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--share=ipc",
+        "--device=dri",
+        "--share=network"
+    ],
+    "cleanup": [
+        "/include",
+        "/lib/pkgconfig",
+        "/share/man"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+            "CARGO_HOME": "/run/build/axiomd/cargo",
+            "CARGO_NET_OFFLINE": "true"
+        }
+    },
+    "modules": [
+        {
+            "name": "axiomd",
+            "buildsystem": "simple",
+            "build-commands": [
+                "cargo --offline build --release --locked --bin axiomd",
+                "scripts/install.sh --prefix /app --binary target/release/axiomd"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../..",
+                    "skip": [
+                        "target",
+                        ".git",
+                        "build-aux/flatpak/.flatpak-builder",
+                        "build-aux/flatpak/build"
+                    ]
+                },
+                "cargo-sources.json"
+            ]
+        }
+    ]
+}

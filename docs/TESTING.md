@@ -55,9 +55,13 @@ decision. Everything on it has a defined partial check:
    pick-up) — automated to the boundary: desktop-file validation, `xdg-mime`
    query checks, and launching the real binary with a file argument headless.
    The final DE-side dispatch is the platform's contract, not ours.
-3. **Flatpak runtime behavior** — asserted by scripted probes inside the
-   installed flatpak (network egress fails, permissions list pinned); the
-   store-side install flow is not ours.
+3. **Flatpak runtime behavior** — asserted by scripted probes that drive the
+   *installed* flatpak: the packaged application opens a document and renders
+   it, a document full of remote images makes zero requests until one is
+   pressed, and the sandbox's own permissions are compared with the pinned
+   `build-aux/flatpak/permissions.pinned`. They are the `#[ignore]`d tests in
+   `crates/axiomd-app/tests/packaging.rs`, built, installed and run by
+   `scripts/quality.d/40-flatpak.sh`. The store-side install flow is not ours.
 
 If work surfaces a fourth category, it goes to the human before the task
 closes.
