@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; font-src axiomd:; base-uri 'none'; form-action 'none'">
+<title>Math</title>
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+<link rel="stylesheet" href="axiomd://assets/plugin/math/math.css">
+</head>
+<body>
+<article class="markdown">
+<h1 id="math" data-line="1">Math</h1>
+<p data-line="3">Inline math sits in a sentence: the area of a circle is <math display="inline"><semantics><mrow><mi>A</mi><mo>=</mo><mi>π</mi><msup><mi>r</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">A = \pi r^2</annotation></semantics></math>, and
+<math display="inline"><semantics><mrow><msup><mi>e</mi><mrow><mi>i</mi><mi>π</mi></mrow></msup><mo>+</mo><mn>1</mn><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">e^{i\pi} + 1 = 0</annotation></semantics></math> closes it.</p>
+<p data-line="6">Fractions, roots and nested scripts: <math display="inline"><semantics><mrow><mfrac><mrow><mi>−</mi><mi>b</mi><mo>±</mo><msqrt><mrow><msup><mi>b</mi><mn>2</mn></msup><mo>−</mo><mn>4</mn><mi>a</mi><mi>c</mi></mrow></msqrt></mrow><mrow><mn>2</mn><mi>a</mi></mrow></mfrac></mrow><annotation encoding="application/x-tex">\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}</annotation></semantics></math> and
+<math display="inline"><semantics><mrow><msubsup><mi>x</mi><mrow><msub><mi>i</mi><mi>j</mi></msub></mrow><mrow><msup><mn>2</mn><mi>k</mi></msup></mrow></msubsup></mrow><annotation encoding="application/x-tex">x_{i_j}^{2^k}</annotation></semantics></math>.</p>
+<p data-line="9">Greek and operators: <math display="inline"><semantics><mrow><mi>α</mi><mo>,</mo><mi>β</mi><mo>,</mo><mi mathvariant="normal">Γ</mi><mo>,</mo><mi mathvariant="normal">Δ</mi><mo>,</mo><mo movablelimits="false">∑</mo><mo>,</mo><mo movablelimits="false">∏</mo><mo>,</mo><mo movablelimits="false">∫</mo><mo>,</mo><mo movablelimits="false">∮</mo><mo>,</mo><mi>∇</mi><mo>,</mo><mi>∂</mi><mo>,</mo><mi>∞</mi><mo>,</mo><mo>≤</mo><mo>,</mo><mo>≥</mo><mo>,</mo><mo>≠</mo><mo>,</mo><mo>≈</mo><mo>,</mo><mo>∈</mo><mo>,</mo><mo>⊂</mo><mo>,</mo><mi>∪</mi><mo>,</mo><mi>∩</mi></mrow><annotation encoding="application/x-tex">\alpha, \beta, \Gamma, \Delta, \sum, \prod, \int, \oint, \nabla, \partial, \infty, \leq, \geq, \neq, \approx, \in, \subset, \cup, \cap</annotation></semantics></math>.</p>
+<p data-line="12">A display equation stands alone:</p>
+<p data-line="14"><math display="block"><semantics><mrow><msubsup><mo movablelimits="false">∫</mo><mn>0</mn><mi>∞</mi></msubsup><msup><mi>e</mi><mrow><mi>−</mi><msup><mi>x</mi><mn>2</mn></msup></mrow></msup><mspace width="0.16666667em"></mspace><mi>d</mi><mi>x</mi><mo>=</mo><mfrac><mrow><msqrt><mrow><mi>π</mi></mrow></msqrt></mrow><mrow><mn>2</mn></mrow></mfrac></mrow><annotation encoding="application/x-tex">
+\int_0^\infty e^{-x^2} \, dx = \frac{\sqrt{\pi}}{2}
+</annotation></semantics></math></p>
+<p data-line="18">A sum with limits above and below:</p>
+<p data-line="20"><math display="block"><semantics><mrow><munderover><mo movablelimits="false">∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mrow><mi>n</mi></mrow></munderover><mi>i</mi><mo>=</mo><mfrac><mrow><mi>n</mi><mo symmetric="false" stretchy="false">(</mo><mi>n</mi><mo>+</mo><mn>1</mn><mo symmetric="false" stretchy="false">)</mo></mrow><mrow><mn>2</mn></mrow></mfrac></mrow><annotation encoding="application/x-tex">
+\sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+</annotation></semantics></math></p>
+<p data-line="24">A matrix:</p>
+<p data-line="26"><math display="block"><semantics><mrow><mrow><mo stretchy="true">(</mo><mtable class="menv-arraylike"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable><mo stretchy="true">)</mo></mrow><mrow><mo stretchy="true">(</mo><mtable class="menv-arraylike"><mtr><mtd><mi>x</mi></mtd></mtr><mtr><mtd><mi>y</mi></mtd></mtr></mtable><mo stretchy="true">)</mo></mrow><mo>=</mo><mrow><mo stretchy="true">(</mo><mtable class="menv-arraylike"><mtr><mtd><mi>a</mi><mi>x</mi><mo>+</mo><mi>b</mi><mi>y</mi></mtd></mtr><mtr><mtd><mi>c</mi><mi>x</mi><mo>+</mo><mi>d</mi><mi>y</mi></mtd></mtr></mtable><mo stretchy="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">
+\begin{pmatrix} a &amp; b \\ c &amp; d \end{pmatrix}
+\begin{pmatrix} x \\ y \end{pmatrix} =
+\begin{pmatrix} ax + by \\ cx + dy \end{pmatrix}
+</annotation></semantics></math></p>
+<p data-line="32">An aligned derivation:</p>
+<p data-line="34"><math display="block"><semantics><mrow><mtable class="menv-alignlike menv-align"><mtr><mtd><mo symmetric="false" stretchy="false">(</mo><mi>a</mi><mo>+</mo><mi>b</mi><msup><mo symmetric="false" stretchy="false">)</mo><mn>2</mn></msup></mtd><mtd><mo>=</mo><mo symmetric="false" stretchy="false">(</mo><mi>a</mi><mo>+</mo><mi>b</mi><mo symmetric="false" stretchy="false">)</mo><mo symmetric="false" stretchy="false">(</mo><mi>a</mi><mo>+</mo><mi>b</mi><mo symmetric="false" stretchy="false">)</mo></mtd></mtr><mtr><mtd></mtd><mtd><mo>=</mo><msup><mi>a</mi><mn>2</mn></msup><mo>+</mo><mn>2</mn><mi>a</mi><mi>b</mi><mo>+</mo><msup><mi>b</mi><mn>2</mn></msup></mtd></mtr></mtable></mrow><annotation encoding="application/x-tex">
+\begin{aligned}
+(a + b)^2 &amp;= (a + b)(a + b) \\
+&amp;= a^2 + 2ab + b^2
+\end{aligned}
+</annotation></semantics></math></p>
+<p data-line="41">A case distinction:</p>
+<p data-line="43"><math display="block"><semantics><mrow><mi>|</mi><mi>x</mi><mi>|</mi><mo>=</mo><mrow><mo stretchy="true">{</mo><mtable class="menv-cells-left menv-cases"><mtr><mtd><mi>x</mi></mtd><mtd><mtext>if&nbsp;</mtext><mi>x</mi><mo>≥</mo><mn>0</mn></mtd></mtr><mtr><mtd><mi>−</mi><mi>x</mi></mtd><mtd><mtext>otherwise</mtext></mtd></mtr></mtable></mrow></mrow><annotation encoding="application/x-tex">
+|x| = \begin{cases}
+x  &amp; \text{if } x \geq 0 \\
+-x &amp; \text{otherwise}
+\end{cases}
+</annotation></semantics></math></p>
+<p data-line="50">Delimiters that grow with what they hold:</p>
+<p data-line="52"><math display="block"><semantics><mrow><msup><mrow><mo stretchy="true">(</mo><mfrac><mrow><mn>1</mn></mrow><mrow><mn>1</mn><mo>−</mo><mfrac><mrow><mn>1</mn></mrow><mrow><mi>n</mi></mrow></mfrac></mrow></mfrac><mo stretchy="true">)</mo></mrow><mi>n</mi></msup><mover><mo>→</mo><mrow><mi>n</mi><mo>→</mo><mi>∞</mi></mrow></mover><mi>e</mi></mrow><annotation encoding="application/x-tex">
+\left( \frac{1}{1 - \frac{1}{n}} \right)^n \xrightarrow{n \to \infty} e
+</annotation></semantics></math></p>
+<p data-line="56">An equation in a heading, which the outline still names:</p>
+<h2 id="the-limit-lim_n-to-infty-a_n" data-line="58">The limit <math display="inline"><semantics><mrow><msub><mi>lim</mi><mrow><mi>n</mi><mo>→</mo><mi>∞</mi></mrow></msub><mo>⁡</mo><mspace width="0.1667em"></mspace><msub><mi>a</mi><mi>n</mi></msub></mrow><annotation encoding="application/x-tex">\lim_{n \to \infty} a_n</annotation></semantics></math></h2>
+<p data-line="60">And LaTeX nobody can read, which costs the reader the formula and nothing else:
+<span class="math-error math-error-inline"><span class="math-error-source">a^b^c</span><span class="math-error-reason">trying to add a superscript twice to the same element</span></span> here, and a display one below.</p>
+<p data-line="63"><span class="math-error math-error-display"><span class="math-error-source">
+\frac{1}
+</span><span class="math-error-reason">expected a token</span></span></p>
+<p data-line="67">The document goes on.</p>
+</article>
+</body>
+</html>

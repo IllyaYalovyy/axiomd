@@ -44,6 +44,7 @@
 //! changes; adding a hook with a default implementation does not change it.
 
 mod emoji;
+mod math;
 mod mermaid;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -361,12 +362,50 @@ impl Used {
     }
 }
 
+/// Where a document asks the application for a bundled file.
+const ASSET_ORIGIN: &str = "axiomd://assets";
+
 /// The URI a document links one plugin's stylesheet from.
 pub(crate) fn asset_uri(id: &str, asset: &Asset) -> String {
-    format!(
-        "axiomd://assets{ASSET_PREFIX}{id}/{name}",
-        name = asset.name
-    )
+    format!("{ASSET_ORIGIN}{ASSET_PREFIX}{id}/{name}", name = asset.name)
+}
+
+/// One plugin stylesheet as a document that has left axiomd needs it: every file it
+/// names carried inside it instead of asked for.
+///
+/// A stylesheet may reference a second asset — a font, an icon — and on screen that
+/// reference is a URI the application answers. In a file there is no application, so
+/// each one becomes the bytes themselves. This is the same move `callout::icon_styling`
+/// makes for the icons, generalised to whatever a plugin carries, which is what keeps
+/// "an exported document names nothing and fetches nothing" a property of the pipeline
+/// rather than a promise each plugin has to keep on its own.
+pub(crate) fn carried_inside(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(at) = rest.find(ASSET_ORIGIN) {
+        out.push_str(&rest[..at]);
+        let named = &rest[at + ASSET_ORIGIN.len()..];
+        let end = named
+            .find(['"', '\'', ')', ' ', '\n'])
+            .unwrap_or(named.len());
+        match asset(&named[..end]) {
+            Some(found) => out.push_str(&format!(
+                "data:{};base64,{}",
+                found.content_type,
+                crate::body::base64(found.bytes)
+            )),
+            // A path this build answers for nothing is written back as it was: an
+            // export that quietly dropped a reference would look like a stylesheet
+            // that never had one.
+            None => {
+                out.push_str(ASSET_ORIGIN);
+                out.push_str(&named[..end]);
+            }
+        }
+        rest = &named[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The asset behind a request path under `axiomd://assets`, or `None` for a path that
@@ -392,6 +431,10 @@ fn builtin() -> impl Iterator<Item = Arc<dyn Plugin>> {
     [
         Arc::new(emoji::Emoji) as Arc<dyn Plugin>,
         Arc::new(mermaid::Mermaid) as Arc<dyn Plugin>,
+        // Last, so that nothing rewrites what it produces: the LaTeX it writes back
+        // out as text is the author's source, and a shortcode or a fence handler
+        // finding something to do with it would change an equation nobody can see.
+        Arc::new(math::Math) as Arc<dyn Plugin>,
     ]
     .into_iter()
 }

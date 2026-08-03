@@ -94,17 +94,24 @@ pub fn asset(path: &str) -> Option<Asset> {
 pub const STYLESHEET_URI: &str = "axiomd://assets/axiomd.css";
 
 /// The policy the rendered document is displayed under: no script, no plugins, no
-/// frames, no form submission, and images and styles only from the app's own scheme.
-const CONTENT_SECURITY_POLICY: &str =
-    "default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'";
+/// frames, no form submission, and images, styles and fonts only from the app's own
+/// scheme.
+///
+/// `font-src` is not a loosening: without it a face would fall back to `default-src
+/// 'none'` and be refused, and every face this scheme can answer for is a file
+/// compiled into the application (`plugin::asset`). It is here so that a capability
+/// may carry the typography its output is unreadable without — mathematics is the
+/// first — while the page stays a page that can fetch nothing.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; img-src axiomd:; style-src axiomd:; font-src axiomd:; \
+     base-uri 'none'; form-action 'none'";
 
 /// The same policy for a document that has left axiomd: everything it needs is inside
 /// it, so the only picture it may show is one it carries and the only styling it may
 /// use is the one written into it. A browser enforces this, which makes "an exported
 /// document fetches nothing" true of the file rather than only of the code that wrote
 /// it.
-const EXPORTED_SECURITY_POLICY: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; \
-     form-action 'none'";
+const EXPORTED_SECURITY_POLICY: &str = "default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; \
+     base-uri 'none'; form-action 'none'";
 
 /// A render happens on a worker thread and its result is handed to the main loop,
 /// so the document must be able to cross a thread boundary.
@@ -336,7 +343,7 @@ pub fn standalone(
     let plugin_stylesheets: String = rendered
         .stylesheets
         .iter()
-        .map(|(_, asset)| String::from_utf8_lossy(asset.bytes).into_owned())
+        .map(|(_, asset)| plugin::carried_inside(&String::from_utf8_lossy(asset.bytes)))
         .collect();
     format!(
         "<!DOCTYPE html>\n\
