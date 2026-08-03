@@ -309,3 +309,36 @@ fn every_engine_the_build_has_can_be_picked_and_reads_the_document() {
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
+
+/// What is exported is what the preview shows — including which engine read it.
+///
+/// The exported page is composed from the buffer rather than lifted off the screen
+/// (`export.rs`), so it is a second path that has to be told which engine the reader
+/// chose. A window switched to one engine that exported the other's document would be
+/// an affordance quietly doing something else.
+#[test]
+fn an_exported_page_is_read_with_the_engine_the_window_was_switched_to() {
+    let fixture = Fixture::new("engine-export");
+    let document = fixture.write("notes.md", &notes());
+    let page = document.with_file_name("notes.html");
+    let app = axiomd_e2e::launch(&document);
+
+    app.activate(&format!("win.engine::{LEAVES_BARE_ADDRESSES}"));
+    app.wait_until(&format!("!({LINKED})"));
+
+    app.export_to(&page);
+    let said = app.wait_for_banner("Exported");
+    assert_eq!(said, "Exported notes.html");
+
+    let exported = std::fs::read_to_string(&page).expect("the exported page");
+    assert!(
+        exported.contains("www.example.com"),
+        "the address left the exported page entirely",
+    );
+    assert!(
+        !exported.contains("href=\"http://www.example.com\""),
+        "the exported page was read with an engine the reader had switched away from",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
