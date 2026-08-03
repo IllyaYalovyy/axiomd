@@ -95,3 +95,41 @@ fn reports_the_unusable_display_instead_of_starting_or_hanging() {
         "expected the failure to name the display; stderr: {stderr}",
     );
 }
+
+/// `--engine` naming an engine this build has not got says so, names the ones it has,
+/// and stops — without a display, exactly as `--version` answers without one.
+///
+/// The failure this guards is the shape the flag would have had if it were not
+/// declared as a command-line option: an application that HANDLES_OPEN takes every
+/// argument for a file, so `--engine nonsense` would have become a document that does
+/// not exist, and the reader would have got a window explaining that instead of an
+/// answer about their command line.
+#[test]
+fn an_unknown_engine_is_reported_without_needing_a_display() {
+    let output = headless_axiomd()
+        .arg("--engine=no-such-engine")
+        .output()
+        .expect("run axiomd --engine");
+
+    assert!(
+        !output.status.success(),
+        "axiomd claimed success with an engine it does not have; stdout: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no-such-engine"),
+        "the failure does not name the engine that was asked for; stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("comrak") && stderr.contains("pulldown-cmark"),
+        "the failure does not say which engines this build has; stderr: {stderr}",
+    );
+    // Not the failure a broken display is: this is a command line that is wrong, and a
+    // reader who mistyped an engine must not be told their display is at fault.
+    assert!(
+        !stderr.to_lowercase().contains("display"),
+        "a wrong engine name was reported as a display problem; stderr: {stderr}",
+    );
+}

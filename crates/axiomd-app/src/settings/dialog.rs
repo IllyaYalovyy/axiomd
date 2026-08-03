@@ -7,10 +7,10 @@
 //! dialog is not a confirmation step and there is no Apply button, because there is
 //! nothing left to apply.
 //!
-//! Rows for a capability that has not landed yet (autosave, spellcheck, the engine
-//! list) still write their setting, which is what #17 and #18 read when they arrive.
-//! Every later feature with a knob adds its row here (invariant 14) — a plugin does so
-//! by existing, since the plugin group is built from what this build has registered.
+//! Rows for a capability that has not landed yet (spellcheck) still write their
+//! setting, which is what #18 reads when it arrives. Every later feature with a knob
+//! adds its row here (invariant 14) — a plugin and an engine both do so by existing,
+//! since those two groups are built from what this build has registered.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -122,9 +122,11 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
 /// How a document is turned into a page: the engine, and the optional capabilities on
 /// top of it.
 fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw::PreferencesPage {
-    let engines: Vec<(&'static str, &'static str)> = crate::document::engines()
-        .into_iter()
-        .map(|engine| (engine.as_str(), engine.as_str()))
+    // Named by the engines themselves, so an engine that lands is offered here without
+    // this file learning anything about it — the same shape the plugin group has.
+    let engines: Vec<(&'static str, &'static str)> = axiomd_engine::engines()
+        .iter()
+        .map(|engine| (engine.id().as_str(), engine.id().as_str()))
         .collect();
 
     let group = adw::PreferencesGroup::builder().title("Rendering").build();
@@ -132,7 +134,8 @@ fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw
         settings,
         Key::Engine,
         "Markdown engine",
-        "The parser documents are read with",
+        "The parser documents are read with. One window can be switched to another \
+         from its main menu.",
         &engines,
     ));
 

@@ -53,6 +53,9 @@ pub(crate) struct Document {
     /// The optional capabilities the reader is reading under. What is exported is what
     /// the preview shows, so an exported file has the plugins the window had.
     pub(crate) plugins: axiomd_render::Plugins,
+    /// And the engine it was read with, for the same reason: a document exported from
+    /// a window whose engine the reader changed is the document they were looking at.
+    pub(crate) engine: axiomd_engine::EngineId,
 }
 
 /// How a delivery ended, in the words the window has to say about it.
@@ -163,6 +166,7 @@ fn write_a_page(document: &Document, file: &Path, then: impl Fn(Outcome) + 'stat
     let name = document.name.clone();
     let root = document.root.clone();
     let plugins = document.plugins.clone();
+    let engine = document.engine;
     let file = file.to_path_buf();
 
     glib::spawn_future_local(async move {
@@ -172,6 +176,7 @@ fn write_a_page(document: &Document, file: &Path, then: impl Fn(Outcome) + 'stat
                 let page = crate::document::compose_standalone(
                     &source,
                     &name,
+                    engine,
                     &plugins,
                     root.as_deref(),
                     &|reference| picture(root.as_deref(), reference),

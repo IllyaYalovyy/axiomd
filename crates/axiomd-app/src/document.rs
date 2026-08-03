@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
+use axiomd_engine::{EngineId, Extensions, MarkdownEngine};
 use axiomd_render::{Plugins, Rendered};
 use gtk::gio;
 use gtk::glib;
@@ -76,6 +76,7 @@ impl Renderer {
         &self,
         source: String,
         name: String,
+        engine: EngineId,
         plugins: Plugins,
         root: Option<PathBuf>,
     ) {
@@ -86,7 +87,7 @@ impl Renderer {
         glib::spawn_future_local(async move {
             let worker = generation.clone();
             let composed = gio::spawn_blocking(move || {
-                compose(&source, &name, &plugins, root.as_deref(), &|| {
+                compose(&source, &name, engine, &plugins, root.as_deref(), &|| {
                     worker.load(Ordering::SeqCst) != mine
                 })
             })
@@ -106,18 +107,21 @@ impl Renderer {
     }
 }
 
-/// The engines a document can be read with, in the order preferences offer them.
+/// The engine `id` names, or the one a document is read with when nothing has chosen.
 ///
-/// One so far: the boundary exists precisely so that the second (#17) changes this
-/// list and nothing else. The reader's chosen engine is a setting already, so an
-/// engine that is not here is one the dialog can never show and [`compose`] can never
-/// be asked for.
-pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
-    [ComrakEngine::new().id()]
+/// The single place a name becomes something that parses. A name the registry does not
+/// know — a preference written by a build that had an engine this one does not, or an
+/// engine that has been renamed — is answered with a document rather than with nothing:
+/// a reader must never be left staring at an empty window because of a string.
+fn engine_named(id: EngineId) -> &'static dyn MarkdownEngine {
+    axiomd_engine::engine(id.as_str()).unwrap_or_else(|| {
+        eprintln!("axiomd: no {id} engine in this build; reading with the default");
+        axiomd_engine::engines()[0]
+    })
 }
 
-/// Parses and renders `source` with the plugins the reader is reading under, giving up
-/// as soon as `superseded` says the result is no longer wanted.
+/// Parses and renders `source` with the engine and plugins the reader is reading
+/// under, giving up as soon as `superseded` says the result is no longer wanted.
 ///
 /// `root` is the document's own folder, which is what a `[[wikilink]]` in it may reach
 /// (`ux_decisions.md`: there is no vault). It is walked here, on the worker, because
@@ -125,6 +129,7 @@ pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
 fn compose(
     source: &str,
     name: &str,
+    engine: EngineId,
     plugins: &Plugins,
     root: Option<&Path>,
     superseded: &dyn Fn() -> bool,
@@ -132,7 +137,7 @@ fn compose(
     if superseded() {
         return None;
     }
-    let parsed = ComrakEngine::new().parse(source, Extensions::FULL);
+    let parsed = engine_named(engine).parse(source, Extensions::FULL);
 
     if superseded() {
         return None;
@@ -206,20 +211,21 @@ fn is_markdown(name: &str) -> bool {
 /// half of the pipeline.
 ///
 /// It is here rather than beside the exporter so that there is exactly one place that
-/// decides which engine and which extensions a reader's document is read with: what
-/// is exported is what the preview shows, because both are composed by this module
-/// from the same buffer.
+/// turns a chosen engine and an extension set into a parse: what is exported is what
+/// the preview shows, because both are composed by this module from the same buffer
+/// with the same engine.
 ///
 /// Slow by nature — it reads every picture the document names — so it is only ever
 /// called on a worker (`export.rs`).
 pub(crate) fn compose_standalone(
     source: &str,
     name: &str,
+    engine: EngineId,
     plugins: &Plugins,
     root: Option<&Path>,
     embed: &dyn Fn(&str) -> Option<axiomd_render::Picture>,
 ) -> String {
-    let parsed = ComrakEngine::new().parse(source, Extensions::FULL);
+    let parsed = engine_named(engine).parse(source, Extensions::FULL);
     axiomd_render::standalone(&parsed, name, plugins, &beside(root), embed)
 }
 
@@ -305,6 +311,7 @@ mod tests {
             renderer.render(
                 "# Title\n\nBody text.\n".to_owned(),
                 "notes".to_owned(),
+                axiomd_engine::engines()[0].id(),
                 Plugins::builtin(&[]),
                 None,
             );
@@ -330,6 +337,7 @@ mod tests {
             renderer.render(
                 "# Title\n".to_owned(),
                 "notes".to_owned(),
+                axiomd_engine::engines()[0].id(),
                 Plugins::builtin(&[]),
                 None,
             );
@@ -354,12 +362,14 @@ mod tests {
             renderer.render(
                 "# Stale\n".to_owned(),
                 "notes".to_owned(),
+                axiomd_engine::engines()[0].id(),
                 Plugins::builtin(&[]),
                 None,
             );
             renderer.render(
                 "# Wanted\n".to_owned(),
                 "notes".to_owned(),
+                axiomd_engine::engines()[0].id(),
                 Plugins::builtin(&[]),
                 None,
             );

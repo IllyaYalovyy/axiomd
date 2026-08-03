@@ -45,6 +45,18 @@
 //! beside the document and chooses. The window's own saves — including automatic ones
 //! — are recognised as its own and reach none of this.
 //!
+//! # Which engine this window reads with
+//!
+//! The reader's preference decides, unless this window has been switched to another
+//! engine from its main menu (issue #17). The override belongs to the window and to
+//! nothing else: it lasts as long as the window does, it follows the reader from one
+//! document to the next inside it, another window is unaffected, and nothing about it
+//! is written down (invariant 7). A window that has not been switched follows the
+//! preference live — change it and every such window re-renders where it stands.
+//!
+//! Switching costs a render and never a reload: the page is patched, so the reader
+//! keeps their place exactly as they do when a plugin is switched (invariants 5 and 9).
+//!
 //! # Following a link
 //!
 //! A link to another Markdown file in the reader's own folder is read in this same
@@ -159,6 +171,12 @@ pub(crate) struct DocumentWindow {
     /// How big this window shows its documents. One window's own and nothing that is
     /// written down: it lasts as long as the window and no longer (UT-011).
     zoom: Rc<Zoom>,
+    /// The engine this window has been switched to, or `None` while it follows the
+    /// reader's preference. One window's own, and nothing that is written down either.
+    engine: Cell<Option<axiomd_engine::EngineId>>,
+    /// This window's subscription to the reader changing which engine documents are
+    /// read with. Only heeded while this window has not been switched itself.
+    parser: OnceCell<Watch>,
 }
 
 /// Where the reader has been in one window.
@@ -264,6 +282,10 @@ pub(crate) const UNDO: &str = "win.undo";
 pub(crate) const REDO: &str = "win.redo";
 pub(crate) const PRINT: &str = "win.print";
 pub(crate) const EXPORT: &str = "win.export";
+/// Which engine this window reads its document with. Stateful and parameterised: the
+/// menu shows it as a set of radio items, and the state is the engine in force —
+/// whether that is the reader's preference or this window's own choice.
+pub(crate) const ENGINE: &str = "win.engine";
 
 /// The name the primary menu's model gives the slot the zoom row is put into.
 const ZOOM_SLOT: &str = "zoom";
@@ -275,6 +297,7 @@ impl DocumentWindow {
         context: &webkit6::WebContext,
         scheme: &Rc<Scheme>,
         settings: &Rc<Settings>,
+        engine: Option<axiomd_engine::EngineId>,
     ) -> Rc<Self> {
         let view = DocumentView::new(context);
         let editor = Editor::new();
@@ -368,6 +391,8 @@ impl DocumentWindow {
             sidebar: OnceCell::new(),
             capabilities: OnceCell::new(),
             zoom,
+            engine: Cell::new(engine),
+            parser: OnceCell::new(),
         });
 
         // From here on this window lays its documents out the reader's way — the one
@@ -407,6 +432,19 @@ impl DocumentWindow {
                     window.rerender_now();
                 }
             }));
+
+        // And for which engine documents are read with. A window the reader has
+        // switched keeps its own; every other one follows the preference the moment it
+        // changes, re-rendering where it stands rather than reloading (invariant 14).
+        let reparsing = Rc::downgrade(&document_window);
+        let _ = document_window.parser.set(settings.follow_engine(move || {
+            if let Some(window) = reparsing.upgrade()
+                && window.engine.get().is_none()
+            {
+                window.show_engine();
+                window.rerender_now();
+            }
+        }));
 
         // Picking a section takes the reader to it in whichever surface they are on:
         // the page glides to that block, or the caret lands on that line.
@@ -511,6 +549,25 @@ impl DocumentWindow {
         });
         self.window.add_action(&mode);
 
+        // Parameterised and stateful, which is what makes the menu a set of radio
+        // items: the target is the engine's name and the state is the one in force.
+        let engine = gio::SimpleAction::new_stateful(
+            bare(ENGINE),
+            Some(&String::static_variant_type()),
+            &self.engine().as_str().to_variant(),
+        );
+        let choosing = Rc::downgrade(self);
+        engine.connect_activate(move |_, chosen| {
+            let Some(window) = choosing.upgrade() else {
+                return;
+            };
+            let Some(chosen) = chosen.and_then(|chosen| chosen.get::<String>()) else {
+                return;
+            };
+            window.read_with(&chosen);
+        });
+        self.window.add_action(&engine);
+
         for (name, act) in [
             (SAVE, Deed::Save),
             (SAVE_AS, Deed::SaveAs),
@@ -554,6 +611,42 @@ impl DocumentWindow {
 
     pub(crate) fn window(&self) -> &adw::ApplicationWindow {
         &self.window
+    }
+
+    /// The engine this window reads its document with: its own choice, or the
+    /// reader's preference while it has made none.
+    pub(crate) fn engine(&self) -> axiomd_engine::EngineId {
+        self.engine.get().unwrap_or_else(|| self.settings.engine())
+    }
+
+    /// Reads this window's document with `chosen` from now on — what picking an engine
+    /// in the main menu does.
+    ///
+    /// The document the reader is looking at is rendered again from the buffer they
+    /// have in front of them and the page is patched where it stands, so the block that
+    /// changes is the only thing that changes and they keep their place (invariant 5).
+    /// A name this build does not have is ignored rather than acted on: a menu can only
+    /// offer engines that exist, so this is only reachable from a stale action target.
+    fn read_with(self: &Rc<Self>, chosen: &str) {
+        let Some(engine) = axiomd_engine::engine(chosen) else {
+            eprintln!("axiomd: no {chosen} engine in this build");
+            return;
+        };
+        if self.engine() == engine.id() && self.engine.get().is_some() {
+            return;
+        }
+        self.engine.set(Some(engine.id()));
+        self.show_engine();
+        self.rerender_now();
+    }
+
+    /// Keeps the menu showing which engine this window is reading with.
+    fn show_engine(&self) {
+        if let Some(action) = self.window.lookup_action(bare(ENGINE))
+            && let Some(action) = action.downcast_ref::<gio::SimpleAction>()
+        {
+            action.set_state(&self.engine().as_str().to_variant());
+        }
     }
 
     pub(crate) fn webview(&self) -> &webkit6::WebView {
@@ -1157,7 +1250,7 @@ impl DocumentWindow {
         };
         if let Some(open) = self.open.borrow().as_ref() {
             open.renderer
-                .render(source, name, self.settings.plugins(), root);
+                .render(source, name, self.engine(), self.settings.plugins(), root);
         }
     }
 
@@ -1391,6 +1484,7 @@ impl DocumentWindow {
             source: document.text().to_owned(),
             name: document.name(),
             plugins: self.settings.plugins(),
+            engine: self.engine(),
             root: document
                 .file()
                 .and_then(Path::parent)
@@ -1751,6 +1845,16 @@ fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
 
     let reading = gio::Menu::new();
     reading.append(Some("_Find…"), Some(crate::find::FIND));
+    // Which engine this window reads with (issue #17). A submenu of the main menu
+    // rather than something buried: it is two presses from any document, and every
+    // engine this build has is in it, named by the engine itself.
+    let parsers = gio::Menu::new();
+    for engine in axiomd_engine::engines() {
+        let item = gio::MenuItem::new(Some(engine.id().as_str()), None);
+        item.set_action_and_target_value(Some(ENGINE), Some(&engine.id().as_str().to_variant()));
+        parsers.append_item(&item);
+    }
+    reading.append_submenu(Some("Markdown _Engine"), &parsers);
 
     let editing = gio::Menu::new();
     editing.append(Some("_Edit Source"), Some(MODE));
@@ -1922,7 +2026,9 @@ mod tests {
     /// that registered the full name would have every accelerator silently do nothing.
     #[test]
     fn every_window_action_is_registered_under_the_name_its_shortcut_uses() {
-        for action in [BACK, FORWARD, MODE, OUTLINE, SAVE, SAVE_AS, UNDO, REDO] {
+        for action in [
+            BACK, FORWARD, MODE, OUTLINE, SAVE, SAVE_AS, UNDO, REDO, ENGINE,
+        ] {
             assert!(
                 action.starts_with("win."),
                 "{action} is not a window action",
