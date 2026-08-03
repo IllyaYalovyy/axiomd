@@ -254,6 +254,20 @@ impl Environment {
                     }),
                 ),
                 ("GDK_BACKEND", PathBuf::from("wayland")),
+                // Draw with Cairo rather than with GSK's GL renderer. Not a rendering
+                // choice — the application draws the same window either way, and the
+                // pictures the golden tests pin come from WebKit's own snapshot rather
+                // than from GSK. It is the biggest single source of variation between
+                // two machines there is: on a machine with a GPU, GSK's GL renderer
+                // compiles its shaders on the GPU and the first frame is nothing; on
+                // one without — a headless run, a machine with no card, a container —
+                // Mesa falls back to llvmpipe and JIT-compiles them on the CPU. Probed
+                // on 2026-08-03 under this compositor by sampling the main thread's
+                // stack during a launch: it sits in LLVM's instruction selector, and
+                // the GTK main loop does not turn for 762 ms. The same launch with
+                // this set takes 424 ms in total. A budget measured through that is a
+                // budget on Mesa's shader compiler (issue #9).
+                ("GSK_RENDERER", PathBuf::from("cairo")),
                 // Nothing here needs the accessibility bus, and asking for one that
                 // is not there is a warning on every launch.
                 ("GTK_A11Y", PathBuf::from("none")),

@@ -322,10 +322,20 @@ impl Session {
 
     /// Answers one question about the addressed window.
     fn property(&self, name: &str, shell: &Rc<Shell>) -> Answer {
-        // The only question that is about the application rather than about one
-        // window, and the only one answerable when no window is open at all.
+        // The two questions that are about the application rather than about one
+        // window, and the only ones answerable when no window is open at all.
         if name == "count" {
             return Ok(shell.window_count().to_string());
+        }
+        // How long this launch took to have a document, in microseconds — the number
+        // the perf harness holds to the cold-start budget (issue #9). Empty while this
+        // launch has served no document, which is an answer rather than a failure: a
+        // launch with nothing open never starts one.
+        if name == "startup" {
+            return Ok(shell
+                .startup()
+                .map(|took| took.as_micros().to_string())
+                .unwrap_or_default());
         }
         let window = self.target(shell)?;
         // The outline sidebar, as the reader sees it: whether it is there, what it

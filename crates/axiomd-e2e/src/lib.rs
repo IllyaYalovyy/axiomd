@@ -34,7 +34,9 @@
 
 #![deny(missing_docs)]
 
+pub mod budget;
 mod control;
+pub mod corpus;
 mod display;
 mod golden;
 mod process;
@@ -45,6 +47,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub use golden::Screenshot;
+pub use process::Footprint;
 
 use control::Control;
 use display::{Display, Environment};
@@ -404,6 +407,36 @@ impl App {
     /// How many document windows are open.
     pub fn window_count(&self) -> usize {
         self.property("count").parse().expect("a window count")
+    }
+
+    /// How long this launch took to have a document for the reader: from the
+    /// application building itself to the first document's own bytes leaving the
+    /// `axiomd://` handler.
+    ///
+    /// The cold-start budget is this number (issue #9). It is asked of the application
+    /// rather than timed from out here because only the application knows when it
+    /// began: everything a test can see from outside includes starting a compositor
+    /// and connecting a socket, neither of which a reader waits for. What it leaves
+    /// out is `execve` and the dynamic loader, which is the part of a launch axiomd's
+    /// own code has no say in.
+    ///
+    /// Waits for the answer, because a launch is only asked this once it has a
+    /// document and the page it renders reaches the handler on the main loop.
+    pub fn startup(&self) -> Duration {
+        self.settle("this launch to have served a document", || {
+            Ok(!self.try_command("window", "startup")?.is_empty())
+        });
+        Duration::from_micros(self.property("startup").parse().expect("microseconds"))
+    }
+
+    /// What this launch is using now: every process it is made of, and their memory
+    /// together.
+    ///
+    /// The memory budgets are read from here, and so is the wait a test does after
+    /// closing windows — a web process going away is not instant, and memory read
+    /// before it has gone is memory that was about to be freed.
+    pub fn footprint(&self) -> Footprint {
+        process::footprint(&self.socket)
     }
 
     /// Waits until `condition` holds, failing with `what` if it never does.
