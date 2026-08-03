@@ -50,5 +50,5 @@ pub fn parse(source: &str) -> Parsed<'_> {
 
 /// Parses and renders in one step, for tests that only care about the output.
 pub fn render(source: &str) -> Rendered {
-    axiomd_render::render(&parse(source))
+    axiomd_render::render(&parse(source), "fixture")
 }

@@ -23,3 +23,15 @@ axiomd-render = { path = "../axiomd-render" }
 # The e2e harness drives the binary this package builds, so its tests live here:
 # an integration test of a package with a binary target is guaranteed that binary.
 axiomd-e2e = { path = "../axiomd-e2e" }
+# Reads an exported PDF back the way its recipient does — text, per page — so the
+# print suite asserts what came out rather than that an export was attempted. A
+# library rather than `pdftotext`: the gate stays hermetic, and nothing in this
+# project shells out to read a document (`design_decisions.md`).
+#
+# `pdf-extract` rather than `lopdf` alone, which it is built on: WebKit embeds a
+# variable UI font as a Type 3 font with a `ToUnicode` map, and `lopdf`'s own
+# `extract_text` ignores that map — every heading and paragraph came back as
+# mojibake, while the monospace code (a CID TrueType font) read fine. Measured on
+# an exported PDF from this suite, cross-checked against poppler's `pdftotext`,
+# which agrees with `pdf-extract` line for line.
+pdf-extract = "0.9"

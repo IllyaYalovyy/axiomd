@@ -247,6 +247,8 @@ pub(crate) const SAVE: &str = "win.save";
 pub(crate) const SAVE_AS: &str = "win.save-as";
 pub(crate) const UNDO: &str = "win.undo";
 pub(crate) const REDO: &str = "win.redo";
+pub(crate) const PRINT: &str = "win.print";
+pub(crate) const EXPORT: &str = "win.export";
 
 impl DocumentWindow {
     /// Builds a window holding a new untitled document, ready to be given a file.
@@ -401,6 +403,8 @@ impl DocumentWindow {
             (SAVE_AS, Deed::SaveAs),
             (UNDO, Deed::Undo),
             (REDO, Deed::Redo),
+            (PRINT, Deed::Print),
+            (EXPORT, Deed::Export),
         ] {
             let action = gio::SimpleAction::new(bare(name), None);
             let doing = Rc::downgrade(self);
@@ -411,6 +415,8 @@ impl DocumentWindow {
                         Deed::SaveAs => window.save_as(),
                         Deed::Undo => window.editor.undo(),
                         Deed::Redo => window.editor.redo(),
+                        Deed::Print => window.print(),
+                        Deed::Export => window.export(),
                     }
                 }
             });
@@ -450,14 +456,41 @@ impl DocumentWindow {
     /// showing none.
     ///
     /// Opening and reading a document is never interrupted by a question
-    /// (`ux_decisions.md`), so this is empty for the whole of that path; the two that
-    /// do put something in it — preferences, and unsaved work on the way out — are
-    /// both answers to something the reader just asked for.
+    /// (`ux_decisions.md`), so this is empty for the whole of that path; everything
+    /// that does put something in it — preferences, unsaved work on the way out, the
+    /// print dialog — is an answer to something the reader just asked for.
+    ///
+    /// Two kinds of dialog, because a window can be interrupted by two kinds: one
+    /// libadwaita puts inside the window, and one that is a window of its own put in
+    /// front of it. The reader cannot tell them apart and neither does this.
     pub(crate) fn visible_dialog(&self) -> String {
-        self.window
-            .visible_dialog()
-            .map(|dialog| dialog.title().to_string())
+        if let Some(dialog) = self.window.visible_dialog() {
+            return dialog.title().to_string();
+        }
+        self.dialog_window()
+            .and_then(|dialog| dialog.title())
+            .map(|title| title.to_string())
             .unwrap_or_default()
+    }
+
+    /// The dialog window standing in front of this one, if there is one.
+    fn dialog_window(&self) -> Option<gtk::Window> {
+        let toplevels = gtk::Window::toplevels();
+        (0..toplevels.n_items())
+            .filter_map(|at| toplevels.item(at))
+            .filter_map(|object| object.downcast::<gtk::Window>().ok())
+            .find(|top| {
+                top.is_visible()
+                    && top.transient_for().as_ref() == Some(self.window.upcast_ref::<gtk::Window>())
+            })
+    }
+
+    /// Everything the reader could press in this window right now: the window itself,
+    /// and any dialog standing in front of it.
+    pub(crate) fn pressable(&self) -> Vec<gtk::Widget> {
+        let mut surfaces = vec![self.window.clone().upcast::<gtk::Widget>()];
+        surfaces.extend(self.dialog_window().map(|dialog| dialog.upcast()));
+        surfaces
     }
 
     /// What the window is saying beside the document, or an empty string when it has
@@ -889,9 +922,12 @@ impl DocumentWindow {
     /// Renders what the reader has in front of them, right now.
     fn rerender_now(&self) {
         self.pull_text();
-        let source = self.document.borrow().text().to_owned();
+        let (source, name) = {
+            let document = self.document.borrow();
+            (document.text().to_owned(), document.name())
+        };
         if let Some(open) = self.open.borrow().as_ref() {
-            open.renderer.render(source);
+            open.renderer.render(source, name);
         }
     }
 
@@ -1033,6 +1069,123 @@ impl DocumentWindow {
         self.rerender_now();
     }
 
+    /// `Ctrl+P`: the reader's own print dialog, over the page they are looking at.
+    ///
+    /// A dialog, and a sanctioned one: printing is something the reader just asked
+    /// for, and what to print it on is a question only they can answer
+    /// (`ux_decisions.md`). What comes back is said beside the document, never over
+    /// it — and a reader who changes their mind is told nothing at all.
+    fn print(self: &Rc<Self>) {
+        let saying = Rc::downgrade(self);
+        crate::export::print(
+            &self.deliverable(),
+            self.window.upcast_ref::<gtk::Window>(),
+            move |outcome| {
+                if let Some(window) = saying.upgrade() {
+                    window.report(outcome, "Printed");
+                }
+            },
+        );
+    }
+
+    /// `Ctrl+Shift+E`: the document as a file somebody else can open.
+    ///
+    /// Which format is the name the reader gives the file, chosen in the chooser they
+    /// are already in — a PDF, or a page that carries everything it needs. There is no
+    /// question afterwards and nothing to configure.
+    fn export(self: &Rc<Self>) {
+        let pdf = gtk::FileFilter::new();
+        pdf.set_name(Some("PDF Document"));
+        pdf.add_mime_type("application/pdf");
+        pdf.add_pattern("*.pdf");
+        let page = gtk::FileFilter::new();
+        page.set_name(Some("Web Page"));
+        page.add_mime_type("text/html");
+        page.add_pattern("*.html");
+
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&pdf);
+        filters.append(&page);
+
+        let stem = self.document.borrow().name();
+        let stem = Path::new(&stem)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or(stem.clone());
+        let dialog = gtk::FileDialog::builder()
+            .title("Export Document")
+            .modal(true)
+            .filters(&filters)
+            .default_filter(&pdf)
+            .initial_name(format!("{stem}.pdf"))
+            .build();
+
+        let window = Rc::downgrade(self);
+        dialog.save(Some(&self.window), gio::Cancellable::NONE, move |chosen| {
+            // A cancelled chooser is not an error, and never becomes a message.
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            if let Ok(file) = chosen
+                && let Some(path) = file.path()
+            {
+                window.export_to(&path);
+            }
+        });
+    }
+
+    /// Writes this document to `file` — the far side of the export chooser.
+    ///
+    /// Returns at once, and says so beside the document while it happens: composing a
+    /// page or paginating a PDF is work, and the window stays usable throughout
+    /// (invariant 4).
+    pub(crate) fn export_to(self: &Rc<Self>, file: &Path) {
+        self.pull_text();
+        self.notice
+            .say(&format!("Exporting {}…", file_name(file)), Vec::new());
+
+        let saying = Rc::downgrade(self);
+        crate::export::write(&self.deliverable(), file, move |outcome| {
+            if let Some(window) = saying.upgrade() {
+                window.report(outcome, "Exported");
+            }
+        });
+    }
+
+    /// The document as the exporter needs it: the page on screen, and the buffer it
+    /// was made from (invariant 11).
+    fn deliverable(&self) -> crate::export::Document {
+        let document = self.document.borrow();
+        crate::export::Document {
+            view: self.view.widget().clone(),
+            source: document.text().to_owned(),
+            name: document.name(),
+            root: document
+                .file()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+        }
+    }
+
+    /// Says how a print or an export ended, beside the document — the only place the
+    /// app ever says anything about a document the reader is reading (invariant 12).
+    fn report(&self, outcome: crate::export::Outcome, done: &str) {
+        match outcome {
+            crate::export::Outcome::Done(file) => {
+                let what = file
+                    .map(|file| file_name(&file))
+                    .unwrap_or_else(|| self.document.borrow().name());
+                self.notice.say(&format!("{done} {what}"), Vec::new());
+            }
+            // Nothing happened, so nothing is said — and whatever was being said
+            // while it was happening stops.
+            crate::export::Outcome::Cancelled => self.notice.hide(),
+            crate::export::Outcome::Failed(trouble) => self
+                .notice
+                .say(&format!("{done} nothing — {trouble}"), Vec::new()),
+        }
+    }
+
     /// The question on the way out — sanctioned, because closing is something the
     /// reader just asked for (`ux_decisions.md`). With autosave on it is rare by
     /// construction: there is nothing unsaved to ask about.
@@ -1162,13 +1315,15 @@ impl DocumentWindow {
     }
 }
 
-/// The four things a window action can be, so that one closure serves all of them.
+/// The things a window action can be, so that one closure serves all of them.
 #[derive(Clone, Copy)]
 enum Deed {
     Save,
     SaveAs,
     Undo,
     Redo,
+    Print,
+    Export,
 }
 
 /// An action's bare name, as a window registers it, from the full one a widget uses.
@@ -1326,6 +1481,10 @@ fn primary_menu_button() -> gtk::MenuButton {
     editing.append(Some("_Save"), Some(SAVE));
     editing.append(Some("Save _As…"), Some(SAVE_AS));
 
+    let leaving = gio::Menu::new();
+    leaving.append(Some("_Print…"), Some(PRINT));
+    leaving.append(Some("E_xport…"), Some(EXPORT));
+
     let application = gio::Menu::new();
     application.append(Some("_Preferences"), Some("app.preferences"));
     application.append(Some("_Close Window"), Some("app.close-window"));
@@ -1334,6 +1493,7 @@ fn primary_menu_button() -> gtk::MenuButton {
     let menu = gio::Menu::new();
     menu.append_section(None, &documents);
     menu.append_section(None, &editing);
+    menu.append_section(None, &leaving);
     menu.append_section(None, &application);
 
     gtk::MenuButton::builder()

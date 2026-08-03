@@ -347,6 +347,16 @@ impl App {
             .collect()
     }
 
+    /// The documents folder of the desktop this launch runs on — which is where its
+    /// print dialog offers to write a file, and so where a test that presses Print
+    /// in that dialog finds what came out.
+    ///
+    /// It is inside the launch's own scratch and goes away with it, so a printing
+    /// test never writes into the developer's home (see `display.rs`).
+    pub fn documents_dir(&self) -> PathBuf {
+        display::documents_dir(self.scratch.path())
+    }
+
     /// Waits until `javascript` evaluates to something truthy in the document.
     ///
     /// The way to wait for anything the DOM shows, and the reason no test here
@@ -505,8 +515,19 @@ impl App {
         self.command("save-as", &file.display().to_string());
     }
 
+    /// Answers the export chooser with `file`, as the reader picking it does.
+    ///
+    /// The format is the name: a `.html` file is a standalone page, anything else is
+    /// a PDF. Like the Save As chooser this is the far side of a native dialog, and
+    /// everything after the choice is the application's own doing — including the
+    /// waiting, so a test must wait for the window to say it is done.
+    pub fn export_to(&self, file: &Path) {
+        self.command("export-to", &file.display().to_string());
+    }
+
     /// Presses the button labelled `label`, wherever the addressed window is showing
-    /// it: beside the document, or in a dialog the reader asked for.
+    /// it: beside the document, or in a dialog the reader asked for — one inside the
+    /// window, or one standing in front of it.
     pub fn press(&self, label: &str) {
         self.command("press", label);
     }

@@ -339,11 +339,12 @@ fn file_under(root: &Path, request: &str) -> Served {
     }
 }
 
-/// What a document's own files are declared as. Anything the pipeline does not put
-/// in a document stays `application/octet-stream`; the rendered page's
-/// content-security policy accepts images and styles only, so an unknown type is
-/// inert even if something asks for it.
-fn content_type(path: &Path) -> &'static str {
+/// What a document's own files are declared as. Shared with the exporter, so a
+/// picture carried inside an exported page is declared exactly as the app serves
+/// it. Anything the pipeline does not put in a document stays
+/// `application/octet-stream`; the rendered page's content-security policy accepts
+/// images and styles only, so an unknown type is inert even if something asks for it.
+pub(crate) fn content_type(path: &Path) -> &'static str {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())

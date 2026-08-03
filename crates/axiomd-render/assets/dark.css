@@ -1,0 +1,27 @@
+/*
+ * The dark palette, and nothing else.
+ *
+ * Scoped to `screen` on purpose. A printed page and an exported file are read on
+ * paper and on somebody else's machine, where the reader's colour scheme is not a
+ * choice anyone is making — so the dark palette must be unreachable there rather
+ * than merely overridden by a later rule, which the next edit to the stylesheet
+ * would silently undo.
+ */
+
+@media screen and (prefers-color-scheme: dark) {
+  :root {
+    --axiomd-bg: #1d1d20;
+    --axiomd-fg: rgb(255 255 255 / 90%);
+    --axiomd-fg-dim: rgb(255 255 255 / 60%);
+    --axiomd-accent: #78aeed;
+    --axiomd-border: rgb(255 255 255 / 15%);
+    --axiomd-surface: rgb(255 255 255 / 6%);
+    --axiomd-surface-strong: rgb(255 255 255 / 10%);
+
+    --axiomd-note: #62a0ea;
+    --axiomd-tip: #57e389;
+    --axiomd-important: #dc8add;
+    --axiomd-warning: #f8e45c;
+    --axiomd-caution: #ff7b63;
+  }
+}

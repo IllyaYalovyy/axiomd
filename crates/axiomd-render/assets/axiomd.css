@@ -3,9 +3,10 @@
  *
  * Adwaita-compatible reading typography. Every colour is a custom property so a
  * theme change is a property swap — the document is never re-parsed or reloaded to
- * restyle it. The dark palette overrides the light one in a single
- * `prefers-color-scheme` block; the code palettes generated from the bundled syntect
- * themes are appended after this file and follow the same shape.
+ * restyle it. This file is the light document, and the whole of it: the dark palette
+ * lives in `dark.css` and the code palettes are generated from the bundled syntect
+ * themes, both appended after this file, and both scoped to `screen` so that neither
+ * can follow the reader onto paper or into an exported file.
  *
  * Colours follow libadwaita's named colours (GNOME 49) so a rendered document sits
  * in an Adwaita window without looking foreign. Layout is benchmarked against
@@ -34,24 +35,6 @@
   --axiomd-important: #9141ac;
   --axiomd-warning: #e5a50a;
   --axiomd-caution: #e01b24;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --axiomd-bg: #1d1d20;
-    --axiomd-fg: rgb(255 255 255 / 90%);
-    --axiomd-fg-dim: rgb(255 255 255 / 60%);
-    --axiomd-accent: #78aeed;
-    --axiomd-border: rgb(255 255 255 / 15%);
-    --axiomd-surface: rgb(255 255 255 / 6%);
-    --axiomd-surface-strong: rgb(255 255 255 / 10%);
-
-    --axiomd-note: #62a0ea;
-    --axiomd-tip: #57e389;
-    --axiomd-important: #dc8add;
-    --axiomd-warning: #f8e45c;
-    --axiomd-caution: #ff7b63;
-  }
 }
 
 html {
@@ -419,9 +402,30 @@ body {
   text-align: center;
 }
 
-/* Print: the page is the document, without app chrome or dark surfaces. */
+/* Print: the page is the document, without app chrome or dark surfaces.
+ *
+ * The same block is what an exported PDF is made of, because a PDF is a print job
+ * to a file (`design_decisions.md`) — so anything wrong here is wrong twice. Page
+ * furniture is deliberately absent: no header, no date, no file name (owner ruling,
+ * 2026-08-02). The page-number footer that ruling also asks for is the one thing
+ * missing, and it is missing because this engine cannot draw it — measured on
+ * WebKitGTK 2.52.5, both ways it could be asked for:
+ *
+ *   - `@page { @bottom-center { content: counter(page) } }` — the CSS paged-media
+ *     margin box — printed nothing at all on any page;
+ *   - a `position: fixed` footer with `content: counter(page)` was laid out once, at
+ *     the end of the flow rather than on every page, and the counter read 0.
+ *
+ * Stamping the numbers into the PDF afterwards would put them in the exported file
+ * and not on the printed page, which is the one thing this stylesheet exists to
+ * prevent. So it is escalated in the report for #19 rather than half-done. */
 
 @media print {
+  @page {
+    size: auto;
+    margin: 18mm 16mm;
+  }
+
   :root {
     --axiomd-bg: #ffffff;
     --axiomd-fg: #000000;
@@ -430,6 +434,11 @@ body {
     --axiomd-border: #bbbbbb;
     --axiomd-surface: #f4f4f4;
     --axiomd-surface-strong: #eaeaea;
+  }
+
+  html,
+  body {
+    background: #ffffff;
   }
 
   .markdown {
@@ -441,21 +450,94 @@ body {
     text-decoration: none;
   }
 
+  /* Paper cannot be clicked, so an address the reader would have followed is
+     written out beside the words that carried it. Only the addresses that lead
+     somewhere off this page: a footnote jump or a section link would print as noise. */
+  .markdown a[href^="http://"]::after,
+  .markdown a[href^="https://"]::after,
+  .markdown a[href^="mailto:"]::after {
+    content: " <" attr(href) ">";
+    color: var(--axiomd-fg-dim);
+    font-size: 0.85em;
+    overflow-wrap: anywhere;
+  }
+
+  /* A heading is the start of what follows it, so it never ends a page with its
+     section overleaf.
+     Not `break-after: avoid`, which says exactly that and which this engine ignores
+     — measured on WebKitGTK 2.52.5 (see the report for #19: the heading was still
+     the last line of a page with both the modern and the legacy property set).
+     `break-inside: avoid` it does honour, so the heading is given a box that reaches
+     KEEP_WITH_NEXT below its own text and is kept whole: a heading without that much
+     room left moves to the next page and takes its section with it. The negative
+     margin gives the space straight back, so the printed page is spaced as the screen
+     is — 0.75rem after a heading, minus the padding that only exists to be indivisible.
+     h2's rule line would otherwise be dragged to the foot of that padding, so in print
+     it is drawn by the pseudo-element instead, which sits above it. */
   .markdown h1,
   .markdown h2,
   .markdown h3,
   .markdown h4,
   .markdown h5,
   .markdown h6 {
-    break-after: avoid;
-    page-break-after: avoid;
+    break-inside: avoid;
+    padding-bottom: 5em;
+    margin-bottom: calc(0.75rem - 5em);
+  }
+
+  .markdown h2 {
+    border-bottom: none;
+  }
+
+  .markdown h2::after {
+    content: "";
+    display: block;
+    margin-top: 0.25rem;
+    border-top: 1px solid var(--axiomd-border);
+  }
+
+  .markdown p,
+  .markdown li {
+    orphans: 3;
+    widows: 3;
   }
 
   .markdown pre,
   .markdown blockquote,
   .markdown table,
-  .markdown img {
+  .markdown img,
+  .markdown .footnote-definition,
+  .markdown .math-display {
     break-inside: avoid;
     page-break-inside: avoid;
+  }
+
+  /* On screen a long line scrolls sideways; on paper it would simply be cut off,
+     so code and tables are laid out to fit the page instead. */
+  .markdown pre {
+    overflow: visible;
+  }
+
+  .markdown pre code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown table {
+    display: table;
+    width: 100%;
+    overflow: visible;
+  }
+
+  /* App chrome, which is what the two remote-image affordances are: a button that
+     only axiomd can answer is not a button on paper, and nothing that cannot be
+     pressed is printed as though it could be. */
+  .markdown .remote-banner,
+  .markdown .remote-image-action {
+    display: none;
+  }
+
+  .markdown a.remote-image {
+    color: var(--axiomd-fg-dim);
   }
 }

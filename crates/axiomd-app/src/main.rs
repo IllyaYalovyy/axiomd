@@ -3,6 +3,7 @@
 mod control;
 mod document;
 mod editor;
+mod export;
 mod links;
 mod remote;
 mod scheme;
