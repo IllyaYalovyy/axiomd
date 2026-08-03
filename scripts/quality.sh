@@ -119,10 +119,23 @@ run_project_hooks() {
     fi
 
     local hook
+    local found=0
+    # -u+x, not -111: git records only the owner's execute bit (mode 100755), and a
+    # checkout under the usual umask 027 lands as rwxr-x---. Requiring all three
+    # execute bits made every project hook invisible on a normal clone — and
+    # invisible silently, which is the worst way for a gate check to be missing.
     while IFS= read -r hook; do
+        found=1
         log "Project quality hook: ${hook}"
         "${hook}"
-    done < <(find scripts/quality.d -maxdepth 1 -type f -perm -111 | sort)
+    done < <(find scripts/quality.d -maxdepth 1 -type f -perm -u+x | sort)
+
+    # A hook directory holding nothing runnable means checks that are meant to be
+    # part of the gate are not in it. Say so rather than pass quietly.
+    if [[ ${found} -eq 0 ]] && compgen -G "scripts/quality.d/*" >/dev/null; then
+        printf 'scripts/quality.d holds files but none are executable; no project hook ran.\n' >&2
+        return 1
+    fi
 }
 
 run_shell_syntax_checks

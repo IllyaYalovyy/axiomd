@@ -17,3 +17,8 @@ gtk.workspace = true
 webkit6.workspace = true
 axiomd-engine = { path = "../axiomd-engine" }
 axiomd-render = { path = "../axiomd-render" }
+
+[dev-dependencies]
+# The e2e harness drives the binary this package builds, so its tests live here:
+# an integration test of a package with a binary target is guaranteed that binary.
+axiomd-e2e = { path = "../axiomd-e2e" }

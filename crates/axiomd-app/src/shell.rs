@@ -63,7 +63,7 @@ pub fn run() -> ExitCode {
 
 /// The application's own state: the windows that are open, and the origin they serve
 /// their documents from.
-struct Shell {
+pub(crate) struct Shell {
     scheme: Rc<Scheme>,
     /// Built on first use rather than at construction, because it needs an
     /// initialised GTK — and because the scheme has to be installed on it before any
@@ -86,7 +86,7 @@ impl Shell {
     /// A file that is already open comes to the front instead of opening twice.
     /// Otherwise it takes over `into` when one is given — the window the user pressed
     /// Ctrl+O in — and gets a new window when not.
-    fn show(
+    pub(crate) fn show(
         self: &Rc<Self>,
         app: &adw::Application,
         file: &Path,
@@ -119,6 +119,15 @@ impl Shell {
         window.present();
     }
 
+    /// How many document windows are open, in the order they were opened.
+    pub(crate) fn window_count(&self) -> usize {
+        self.windows.borrow().len()
+    }
+
+    pub(crate) fn window_at(&self, index: usize) -> Option<Rc<DocumentWindow>> {
+        self.windows.borrow().get(index).cloned()
+    }
+
     fn window_holding(&self, file: &Path) -> Option<Rc<DocumentWindow>> {
         let wanted = FileId::of(file)?;
         self.windows
@@ -144,12 +153,23 @@ impl Shell {
 
         // Forgetting the window here is what frees it: with the shell's reference
         // gone, its webview, its renderer and its place on the scheme go too.
+        //
+        // On `close-request` rather than on `destroy`, which never arrives while the
+        // shell is the thing holding the window. GTK4 emits `GtkWidget::destroy` when
+        // the widget is disposed — that is, once nothing references it any more — so a
+        // handler whose whole job is to drop the last reference cannot run: the
+        // reference it would drop is what keeps the emission from happening. Probed on
+        // this machine (GTK 4.20.4) by closing a window with handlers on all four
+        // signals: `close-request` and `unrealize` fired, `hide` and `destroy` did not,
+        // and GTK had already taken the window off `GtkApplication`'s own list. That is
+        // the leak `a_document_reopened_after_its_window_closed_comes_back` catches.
         let shell = self.clone();
-        window.window().connect_destroy(move |destroyed| {
+        window.window().connect_close_request(move |closing| {
             shell
                 .windows
                 .borrow_mut()
-                .retain(|open| open.window() != destroyed);
+                .retain(|open| open.window() != closing);
+            glib::Propagation::Proceed
         });
         window
     }
@@ -174,6 +194,13 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
         // arguments; without this the desktop cannot launch it with a file at all.
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
         .build();
+
+    // Before any window exists, so a test is already listening when the first one
+    // appears. Does nothing at all unless a test launched this process.
+    app.connect_startup({
+        let shell = shell.clone();
+        move |app| crate::control::arm(app, &shell)
+    });
 
     app.connect_activate({
         let shell = shell.clone();

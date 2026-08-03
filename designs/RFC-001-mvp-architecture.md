@@ -385,7 +385,7 @@ Mirrors the GitHub issues; order is the ktask queue order.
   default stylesheet *(Step 2)*
 - [x] **Step 4** — App shell: window, open paths, webview, custom scheme,
   MIME registration *(Step 3)*
-- [ ] **Step 4b** — e2e harness: headless app driving, DOM assertions,
+- [x] **Step 4b** — e2e harness: headless app driving, DOM assertions,
   screenshot goldens with human-only pinning *(Step 4)*
 - [ ] **Step 5** — Live reload with anchor preservation *(Steps 4, 4b)*
 - [ ] **Step 6** — Links and images: relative nav, anchors, external,
