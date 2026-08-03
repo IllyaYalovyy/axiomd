@@ -59,9 +59,9 @@ fn preferences_open_when_they_are_asked_for_and_reading_asks_nothing() {
     app.activate("app.preferences");
     assert_eq!(app.visible_dialog(), "Preferences");
 
-    // The plugin section is there even with nothing in it yet, saying so rather than
-    // standing empty (#16 fills it).
-    assert_eq!(app.preference("No plugins yet"), "");
+    // The plugin section lists what this build has, each one switched on until the
+    // reader says otherwise (#16).
+    assert_eq!(app.preference("Emoji shortcodes"), "true");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
@@ -140,8 +140,9 @@ fn the_theme_override_recolours_the_document_without_rendering_it_again() {
 /// written down where the next launch will find it.
 ///
 /// The rows whose feature has not landed yet — autosave, spelling, the engine — are
-/// here for exactly that reason: what they do today is remember, and #16, #17 and #18
-/// read what they remembered.
+/// here for exactly that reason: what they do today is remember, and #17 and #18 read
+/// what they remembered. The plugin switch is not one of them: what it writes is read
+/// by the very next render (`plugins.rs`).
 #[test]
 fn every_row_the_dialog_offers_turns_and_is_written_down() {
     let fixture = Fixture::new("preferences-rows");
@@ -166,6 +167,13 @@ fn every_row_the_dialog_offers_turns_and_is_written_down() {
         ("Autosave", "true", "false", "autosave", "false"),
         ("Autosave delay", "2", "9", "autosave-delay", "9"),
         ("Check spelling", "true", "false", "spellcheck", "false"),
+        (
+            "Emoji shortcodes",
+            "true",
+            "false",
+            "disabled-plugins",
+            "['emoji']",
+        ),
     ];
 
     for (row, first_run, turned_to, key, stored) in rows {

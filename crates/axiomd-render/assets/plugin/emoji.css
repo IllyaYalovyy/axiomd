@@ -1,0 +1,15 @@
+/*
+ * The emoji plugin's styling, linked only into a document that has a shortcode in it.
+ *
+ * An emoji is a picture, not a letter: it must not be slanted with the prose around
+ * it — a synthesised oblique distorts the glyph — and it must not be bolded into a
+ * different face. Sizing stays with the text so an emoji in a heading is a heading's
+ * emoji.
+ */
+
+.markdown .emoji {
+  font-family: "Noto Color Emoji", "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1;
+}

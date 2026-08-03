@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
-use axiomd_render::Rendered;
+use axiomd_render::{Plugins, Rendered};
 use gtk::gio;
 use gtk::glib;
 
@@ -72,7 +72,7 @@ impl Renderer {
     ///
     /// Returns at once. The page arrives later through the callback, on the calling
     /// thread; a superseded render never arrives at all.
-    pub(crate) fn render(&self, source: String, name: String) {
+    pub(crate) fn render(&self, source: String, name: String, plugins: Plugins) {
         let mine = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let generation = self.generation.clone();
         let show = self.show.clone();
@@ -80,7 +80,9 @@ impl Renderer {
         glib::spawn_future_local(async move {
             let worker = generation.clone();
             let composed = gio::spawn_blocking(move || {
-                compose(&source, &name, &|| worker.load(Ordering::SeqCst) != mine)
+                compose(&source, &name, &plugins, &|| {
+                    worker.load(Ordering::SeqCst) != mine
+                })
             })
             .await;
 
@@ -108,9 +110,14 @@ pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
     [ComrakEngine::new().id()]
 }
 
-/// Parses and renders `source`, giving up as soon as `superseded` says the result is
-/// no longer wanted.
-fn compose(source: &str, name: &str, superseded: &dyn Fn() -> bool) -> Option<Rendered> {
+/// Parses and renders `source` with the plugins the reader is reading under, giving up
+/// as soon as `superseded` says the result is no longer wanted.
+fn compose(
+    source: &str,
+    name: &str,
+    plugins: &Plugins,
+    superseded: &dyn Fn() -> bool,
+) -> Option<Rendered> {
     if superseded() {
         return None;
     }
@@ -119,7 +126,7 @@ fn compose(source: &str, name: &str, superseded: &dyn Fn() -> bool) -> Option<Re
     if superseded() {
         return None;
     }
-    Some(axiomd_render::render(&parsed, name))
+    Some(axiomd_render::render(&parsed, name, plugins))
 }
 
 /// The same document as one file that carries everything it needs — the export path's
@@ -135,10 +142,11 @@ fn compose(source: &str, name: &str, superseded: &dyn Fn() -> bool) -> Option<Re
 pub(crate) fn compose_standalone(
     source: &str,
     name: &str,
+    plugins: &Plugins,
     embed: &dyn Fn(&str) -> Option<axiomd_render::Picture>,
 ) -> String {
     let parsed = ComrakEngine::new().parse(source, Extensions::FULL);
-    axiomd_render::standalone(&parsed, name, embed)
+    axiomd_render::standalone(&parsed, name, plugins, embed)
 }
 
 #[cfg(test)]
@@ -220,7 +228,11 @@ mod tests {
     #[test]
     fn shows_the_document_the_buffer_holds() {
         let shown = Harness::run(|harness, renderer| {
-            renderer.render("# Title\n\nBody text.\n".to_owned(), "notes".to_owned());
+            renderer.render(
+                "# Title\n\nBody text.\n".to_owned(),
+                "notes".to_owned(),
+                Plugins::builtin(&[]),
+            );
             harness.run_until_a_page_is_shown();
         });
 
@@ -240,7 +252,11 @@ mod tests {
         let caller = std::thread::current().id();
 
         let shown = Harness::run(|harness, renderer| {
-            renderer.render("# Title\n".to_owned(), "notes".to_owned());
+            renderer.render(
+                "# Title\n".to_owned(),
+                "notes".to_owned(),
+                Plugins::builtin(&[]),
+            );
             assert!(
                 harness.shown().is_empty(),
                 "render() produced a page before the loop ran, so it did the work inline",
@@ -259,8 +275,16 @@ mod tests {
     #[test]
     fn a_superseded_render_is_never_shown() {
         let shown = Harness::run(|harness, renderer| {
-            renderer.render("# Stale\n".to_owned(), "notes".to_owned());
-            renderer.render("# Wanted\n".to_owned(), "notes".to_owned());
+            renderer.render(
+                "# Stale\n".to_owned(),
+                "notes".to_owned(),
+                Plugins::builtin(&[]),
+            );
+            renderer.render(
+                "# Wanted\n".to_owned(),
+                "notes".to_owned(),
+                Plugins::builtin(&[]),
+            );
             harness.run_until_a_page_is_shown();
         });
 

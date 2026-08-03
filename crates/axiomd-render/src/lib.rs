@@ -8,7 +8,8 @@
 //! use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
 //!
 //! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
-//! let rendered = axiomd_render::render(&parsed, "notes");
+//! let plugins = axiomd_render::Plugins::builtin(&[]);
+//! let rendered = axiomd_render::render(&parsed, "notes", &plugins);
 //! assert!(rendered.html().contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
 //! // The blocks alone, for patching them into a document that is already on screen.
 //! assert!(rendered.body().starts_with("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
@@ -37,6 +38,11 @@
 //!   desktop asks for on top of that — a measure, high contrast — is a second
 //!   stylesheet ([`reader_stylesheet`]) the app installs over the first, for the same
 //!   reason and at the same cost.
+//! * **Extensible without being weakened.** Everything beyond core CommonMark and GFM
+//!   is an optional [`Plugin`] the reader can switch off: it claims fences, rewrites
+//!   events and decorates markup through [`Plugins`], and it is held to every rule
+//!   above — its output is sanitised with the document's, its styling is bundled, and
+//!   a plugin that fails loses its own block and nothing else.
 //! * **Portable.** The same parse becomes a page that needs the app
 //!   ([`render`]) or one that needs nothing at all ([`standalone`]): styling inlined,
 //!   pictures carried inside it, and not one reference that would be fetched when
@@ -47,6 +53,7 @@
 mod body;
 mod highlight;
 mod meta;
+mod plugin;
 mod request;
 mod sanitize;
 mod slug;
@@ -56,6 +63,7 @@ use std::sync::OnceLock;
 
 use axiomd_engine::Parsed;
 
+pub use plugin::{Asset, Manifest, PLUGIN_API, Plugin, Plugins};
 pub use request::Request;
 
 /// Where the rendered document loads [`stylesheet`] from. The app serves this URI
@@ -92,12 +100,27 @@ pub struct Rendered {
     anchors: Vec<Anchor>,
     outline: Vec<Heading>,
     remote_images: Vec<String>,
+    stylesheets: Vec<String>,
 }
 
 impl Rendered {
     /// The complete HTML document.
     pub fn html(&self) -> &str {
         &self.html
+    }
+
+    /// The styling this document needs beyond the bundled stylesheet: one URI per
+    /// plugin that contributed to it, in registration order, already linked in the head
+    /// of [`html`].
+    ///
+    /// It travels beside [`body`] rather than inside it because a view that patches a
+    /// document it is already showing replaces the blocks and not the head — and a
+    /// capability switched on or off between two renders changes exactly this list.
+    ///
+    /// [`html`]: Rendered::html
+    /// [`body`]: Rendered::body
+    pub fn stylesheets(&self) -> &[String] {
+        &self.stylesheets
     }
 
     /// The document's blocks alone — what lies inside the `<article>` of [`html`].
@@ -182,9 +205,14 @@ pub struct Anchor {
 /// gives no title of its own — in frontmatter or in its first heading. The title
 /// matters beyond the window: printing this page names the job with it, and a PDF
 /// made from it carries it as metadata.
-pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
-    let rendered = body::render(parsed, &body::Destination::Screen);
+pub fn render(parsed: &Parsed<'_>, name: &str, plugins: &Plugins) -> Rendered {
+    let rendered = body::render(parsed, &body::Destination::Screen, plugins);
     let body = sanitize::clean(&rendered.markup);
+    let stylesheets: Vec<String> = rendered
+        .stylesheets
+        .iter()
+        .map(|(id, asset)| plugin::asset_uri(id, asset))
+        .collect();
     let mut html = format!(
         "<!DOCTYPE html>\n\
          <html>\n\
@@ -194,10 +222,14 @@ pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
          <meta http-equiv=\"Content-Security-Policy\" content=\"{CONTENT_SECURITY_POLICY}\">\n\
          <title>{title}</title>\n\
          <link rel=\"stylesheet\" href=\"{STYLESHEET_URI}\">\n\
-         </head>\n\
+         {plugin_stylesheets}</head>\n\
          <body>\n\
          <article class=\"markdown\">\n",
         title = body::escape_text(&meta::title(parsed, name)),
+        plugin_stylesheets = stylesheets
+            .iter()
+            .map(|uri| format!("<link rel=\"stylesheet\" href=\"{uri}\">\n"))
+            .collect::<String>(),
     );
     let start = html.len();
     html.push_str(&body);
@@ -209,6 +241,7 @@ pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
         anchors: rendered.anchors,
         outline: rendered.outline,
         remote_images: rendered.remote_images,
+        stylesheets,
     }
 }
 
@@ -228,10 +261,19 @@ pub fn render(parsed: &Parsed<'_>, name: &str) -> Rendered {
 pub fn standalone(
     parsed: &Parsed<'_>,
     name: &str,
+    plugins: &Plugins,
     embed: &dyn Fn(&str) -> Option<Picture>,
 ) -> String {
-    let body = body::render(parsed, &body::Destination::File(embed));
-    let body = sanitize::clean_for_a_file(&body.markup);
+    let rendered = body::render(parsed, &body::Destination::File(embed), plugins);
+    let body = sanitize::clean_for_a_file(&rendered.markup);
+    // A plugin's styling travels inside the file like everything else the document
+    // needs: an exported document names nothing, so it cannot link an asset the app
+    // would have answered for.
+    let plugin_stylesheets: String = rendered
+        .stylesheets
+        .iter()
+        .map(|(_, asset)| String::from_utf8_lossy(asset.bytes).into_owned())
+        .collect();
     format!(
         "<!DOCTYPE html>\n\
          <html>\n\
@@ -240,7 +282,7 @@ pub fn standalone(
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{EXPORTED_SECURITY_POLICY}\">\n\
          <title>{title}</title>\n\
-         <style>\n{stylesheet}</style>\n\
+         <style>\n{stylesheet}\n{plugin_stylesheets}</style>\n\
          </head>\n\
          <body>\n\
          <article class=\"markdown\">\n\

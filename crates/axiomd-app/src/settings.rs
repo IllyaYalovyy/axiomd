@@ -69,14 +69,7 @@ pub(crate) enum Key {
     Spellcheck,
     /// The engine new documents are parsed with (#17 consumes it).
     Engine,
-    /// The rendering plugins the reader has switched off (#16 consumes it).
-    ///
-    /// The one key nothing reads yet: no plugin exists to switch off. It is in the
-    /// schema because #16 must find it there rather than migrate a store.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the schema's key for #16; no plugin exists yet")
-    )]
+    /// The rendering plugins the reader has switched off, by id.
     DisabledPlugins,
 }
 
@@ -223,6 +216,58 @@ impl Settings {
         };
         apply();
         self.watch(&[Key::Outline], apply)
+    }
+
+    /// The optional rendering capabilities the reader is reading with — every plugin
+    /// this build has, minus the ones they switched off.
+    ///
+    /// Read at each render rather than remembered, so switching one changes the very
+    /// next render of every open document and nothing is restarted or reloaded for it
+    /// (invariant 14).
+    pub(crate) fn plugins(&self) -> axiomd_render::Plugins {
+        axiomd_render::Plugins::builtin(&self.disabled_plugins())
+    }
+
+    /// Tells `rerender` that the plugins have changed, whenever they do.
+    ///
+    /// The one preference that is not a restyle: a plugin decides what the document
+    /// *is*, not how it looks, so it costs a render — but never a reload. The window
+    /// patches the page it is already showing, which is what keeps the reader's place
+    /// (invariants 5 and 9).
+    pub(crate) fn follow_plugins(self: &Rc<Self>, rerender: impl Fn() + 'static) -> Watch {
+        self.watch(&[Key::DisabledPlugins], rerender)
+    }
+
+    /// The ids the reader has switched off, as the store holds them.
+    fn disabled_plugins(&self) -> Vec<String> {
+        self.store
+            .strv(Key::DisabledPlugins.name())
+            .iter()
+            .map(|id| id.to_string())
+            .collect()
+    }
+
+    /// Switches one plugin on or off, keeping every other id the store holds —
+    /// including one belonging to a plugin this build does not have.
+    pub(crate) fn set_plugin_enabled(&self, id: &str, enabled: bool) {
+        let mut disabled = self.disabled_plugins();
+        let already = disabled.iter().any(|off| off == id);
+        if already == !enabled {
+            return;
+        }
+        match enabled {
+            true => disabled.retain(|off| off != id),
+            false => disabled.push(id.to_owned()),
+        }
+        let disabled: Vec<&str> = disabled.iter().map(String::as_str).collect();
+        if let Err(error) = self.store.set_strv(Key::DisabledPlugins.name(), disabled) {
+            eprintln!("axiomd: could not write the plugin setting: {error}");
+        }
+    }
+
+    /// Whether the reader has `id` switched on.
+    pub(crate) fn plugin_enabled(&self, id: &str) -> bool {
+        !self.disabled_plugins().iter().any(|off| off == id)
     }
 
     /// How long after the reader stops typing their work is written back, or `None`

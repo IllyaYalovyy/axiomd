@@ -50,6 +50,9 @@ pub(crate) struct Document {
     /// The document's folder — the whole of what its pictures may come from, and
     /// `None` for a document that has never been saved and so has none.
     pub(crate) root: Option<PathBuf>,
+    /// The optional capabilities the reader is reading under. What is exported is what
+    /// the preview shows, so an exported file has the plugins the window had.
+    pub(crate) plugins: axiomd_render::Plugins,
 }
 
 /// How a delivery ended, in the words the window has to say about it.
@@ -159,15 +162,17 @@ fn write_a_page(document: &Document, file: &Path, then: impl Fn(Outcome) + 'stat
     let source = document.source.clone();
     let name = document.name.clone();
     let root = document.root.clone();
+    let plugins = document.plugins.clone();
     let file = file.to_path_buf();
 
     glib::spawn_future_local(async move {
         let written = {
             let file = file.clone();
             gio::spawn_blocking(move || {
-                let page = crate::document::compose_standalone(&source, &name, &|reference| {
-                    picture(root.as_deref(), reference)
-                });
+                let page =
+                    crate::document::compose_standalone(&source, &name, &plugins, &|reference| {
+                        picture(root.as_deref(), reference)
+                    });
                 std::fs::write(&file, page).map_err(|trouble| trouble.to_string())
             })
             .await

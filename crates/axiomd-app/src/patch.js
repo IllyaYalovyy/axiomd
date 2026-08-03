@@ -22,10 +22,28 @@
 // survived takes its place — again by identity, since the lines have moved. Only when
 // nothing above the reader survived at all is there nothing left to go on but the
 // line, and the block nearest to it becomes the answer.
-(next) => {
+(next, stylesheets) => {
   const article = document.querySelector('article.markdown');
   if (article === null) {
     return 'no document';
+  }
+
+  // The styling the document needs beyond the bundled sheet, which lives in the head
+  // and so is not part of the article this patch replaces. A capability switched on or
+  // off between two renders changes exactly this list: the sheet its blocks need has to
+  // arrive with them, and the sheet nothing needs any more has to go.
+  const wanted = new Set(stylesheets);
+  for (const link of document.querySelectorAll('link[rel="stylesheet"]')) {
+    const href = link.getAttribute('href') || '';
+    if (href.startsWith('axiomd://assets/plugin/') && !wanted.delete(href)) {
+      link.remove();
+    }
+  }
+  for (const href of wanted) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = href;
+    document.head.appendChild(link);
   }
 
   // A block's content, with the source line it happens to be on left out.

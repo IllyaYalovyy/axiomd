@@ -8,14 +8,16 @@
 //! nothing left to apply.
 //!
 //! Rows for a capability that has not landed yet (autosave, spellcheck, the engine
-//! list, plugins) still write their setting, which is what #16, #17 and #18 read when
-//! they arrive. Every later feature with a knob adds its row here (invariant 14).
+//! list) still write their setting, which is what #17 and #18 read when they arrive.
+//! Every later feature with a knob adds its row here (invariant 14) — a plugin does so
+//! by existing, since the plugin group is built from what this build has registered.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 
-use super::{Key, Settings};
+use super::{Key, Settings, Watch};
 
 /// What the dialog is called — the title `Ctrl+comma` puts on screen.
 const TITLE: &str = "Preferences";
@@ -34,7 +36,14 @@ pub(super) fn present(settings: &Rc<Settings>, parent: &impl IsA<gtk::Widget>) {
     let dialog = adw::PreferencesDialog::builder().title(TITLE).build();
     dialog.add(&appearance(settings));
     dialog.add(&editing(settings));
-    dialog.add(&rendering(settings));
+
+    // The plugin switches are the one kind of row that is not a two-way binding on a
+    // key, so they keep their own subscriptions — and let go of them when the dialog
+    // the reader opened is closed again (invariant 7).
+    let watching = Rc::new(RefCell::new(Vec::new()));
+    dialog.add(&rendering(settings, &watching));
+    dialog.connect_closed(move |_| watching.borrow_mut().clear());
+
     dialog.present(Some(parent));
 }
 
@@ -112,7 +121,7 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
 
 /// How a document is turned into a page: the engine, and the optional capabilities on
 /// top of it.
-fn rendering(settings: &Rc<Settings>) -> adw::PreferencesPage {
+fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw::PreferencesPage {
     let engines: Vec<(&'static str, &'static str)> = crate::document::engines()
         .into_iter()
         .map(|engine| (engine.as_str(), engine.as_str()))
@@ -131,19 +140,48 @@ fn rendering(settings: &Rc<Settings>) -> adw::PreferencesPage {
         .title("Plugins")
         .description("Rendering capabilities beyond the core, each one optional")
         .build();
-    // Nothing registers a plugin yet (#16). The group says so rather than standing
-    // empty, and every plugin that lands adds its own switch here.
-    plugins.add(
-        &adw::ActionRow::builder()
-            .title("No plugins yet")
-            .subtitle("Diagrams, mathematics and the rest arrive here as they are added.")
-            .sensitive(false)
-            .build(),
-    );
+    // One switch per plugin this build has, named by the plugin itself: a capability
+    // that lands is offered here without this file learning anything about it.
+    for manifest in axiomd_render::Plugins::builtin(&[]).manifests() {
+        let (row, watch) = plugin(settings, manifest);
+        plugins.add(&row);
+        watching.borrow_mut().push(watch);
+    }
 
     let page = page("Rendering", "view-paged-symbolic", group);
     page.add(&plugins);
     page
+}
+
+/// One plugin, as a switch the reader turns.
+///
+/// Not a `bind` like the rows above it: the setting is the list of plugins that are
+/// *off*, so what the switch shows and what turning it writes are both about this
+/// plugin's place in that list — and an id belonging to a plugin this build does not
+/// have is left in it untouched.
+fn plugin(
+    settings: &Rc<Settings>,
+    manifest: &'static axiomd_render::Manifest,
+) -> (adw::SwitchRow, Watch) {
+    let row = adw::SwitchRow::builder()
+        .title(manifest.name)
+        .subtitle(manifest.description)
+        .active(settings.plugin_enabled(manifest.id))
+        .build();
+    let writing = settings.clone();
+    row.connect_active_notify(move |row| {
+        writing.set_plugin_enabled(manifest.id, row.is_active());
+    });
+    // And the other direction, so a change made elsewhere while this dialog is open is
+    // what the switch shows.
+    let showing = row.downgrade();
+    let reading = settings.clone();
+    let watch = settings.follow_plugins(move || {
+        if let Some(row) = showing.upgrade() {
+            row.set_active(reading.plugin_enabled(manifest.id));
+        }
+    });
+    (row, watch)
 }
 
 fn page(title: &str, icon: &str, group: adw::PreferencesGroup) -> adw::PreferencesPage {

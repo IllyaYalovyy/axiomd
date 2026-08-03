@@ -152,6 +152,10 @@ pub(crate) struct DocumentWindow {
     layout: OnceCell<Watch>,
     /// The same, for whether the outline sits beside documents.
     sidebar: OnceCell<Watch>,
+    /// And for which optional rendering capabilities are switched on. This one costs a
+    /// render rather than a restyle — a plugin changes what the document is — and the
+    /// page on screen is patched, never reloaded.
+    capabilities: OnceCell<Watch>,
     /// How big this window shows its documents. One window's own and nothing that is
     /// written down: it lasts as long as the window and no longer (UT-011).
     zoom: Rc<Zoom>,
@@ -362,6 +366,7 @@ impl DocumentWindow {
             fetching: RefCell::new(Vec::new()),
             layout: OnceCell::new(),
             sidebar: OnceCell::new(),
+            capabilities: OnceCell::new(),
             zoom,
         });
 
@@ -386,6 +391,20 @@ impl DocumentWindow {
             .set(settings.follow_outline(move |shown| {
                 if let Some(window) = revealing.upgrade() {
                     window.outline.reveal(shown);
+                }
+            }));
+
+        // And for the optional capabilities documents are rendered with. Switching one
+        // renders the document the reader is looking at again, from the buffer they
+        // have in front of them — the page is patched where it stands, so the block
+        // that changes is the only thing that changes and the reader keeps their place
+        // (invariants 5 and 14).
+        let recomposing = Rc::downgrade(&document_window);
+        let _ = document_window
+            .capabilities
+            .set(settings.follow_plugins(move || {
+                if let Some(window) = recomposing.upgrade() {
+                    window.rerender_now();
                 }
             }));
 
@@ -1104,7 +1123,7 @@ impl DocumentWindow {
             (document.text().to_owned(), document.name())
         };
         if let Some(open) = self.open.borrow().as_ref() {
-            open.renderer.render(source, name);
+            open.renderer.render(source, name, self.settings.plugins());
         }
     }
 
@@ -1337,6 +1356,7 @@ impl DocumentWindow {
             view: self.view.widget().clone(),
             source: document.text().to_owned(),
             name: document.name(),
+            plugins: self.settings.plugins(),
             root: document
                 .file()
                 .and_then(Path::parent)

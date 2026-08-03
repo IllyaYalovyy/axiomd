@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine, Parsed};
-use axiomd_render::Rendered;
+use axiomd_render::{Plugins, Rendered};
 
 /// Every golden fixture, as `(name, markdown)`, in a stable order.
 pub fn fixtures() -> Vec<(String, String)> {
@@ -48,7 +48,8 @@ pub fn parse(source: &str) -> Parsed<'_> {
     ComrakEngine::new().parse(source, Extensions::FULL)
 }
 
-/// Parses and renders in one step, for tests that only care about the output.
+/// Parses and renders in one step, with the plugins a first run reads under — which is
+/// what the app hands the pipeline.
 pub fn render(source: &str) -> Rendered {
-    axiomd_render::render(&parse(source), "fixture")
+    axiomd_render::render(&parse(source), "fixture", &Plugins::builtin(&[]))
 }

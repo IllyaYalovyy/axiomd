@@ -218,6 +218,22 @@ body {
   white-space: nowrap;
 }
 
+/* A block an optional plugin could not draw: the source the author wrote, and one
+   line saying who could not draw it. It stands where the block stands and carries the
+   block's own line, so a reader keeps both their content and their place — and it is
+   said beside the document rather than in a dialog (`ux_decisions.md`). */
+.markdown .plugin-failure > pre.sy-code {
+  margin-bottom: 0.4rem;
+}
+
+.markdown .plugin-badge {
+  margin: 0 0 1.25rem;
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--axiomd-warning);
+  color: var(--axiomd-fg-dim);
+  font-size: 0.85em;
+}
+
 /* Lists */
 
 .markdown ul,

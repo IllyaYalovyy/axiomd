@@ -187,6 +187,7 @@ fn deeply_nested_blocks_do_not_take_time_out_of_proportion_to_their_size() {
     use axiomd_engine::{ComrakEngine, Extensions, MarkdownEngine};
 
     let source = corpus::deeply_nested();
+    let plugins = axiomd_render::Plugins::builtin(&[]);
 
     budget::time(
         "parse and render of 200-deep nesting",
@@ -194,7 +195,7 @@ fn deeply_nested_blocks_do_not_take_time_out_of_proportion_to_their_size() {
         || {
             let began = Instant::now();
             let parsed = ComrakEngine::new().parse(&source, Extensions::FULL);
-            let rendered = axiomd_render::render(&parsed, "nested");
+            let rendered = axiomd_render::render(&parsed, "nested", &plugins);
             let took = began.elapsed();
             assert!(rendered.html().contains("Bottom."), "the document was lost");
             took
@@ -280,11 +281,12 @@ fn a_ten_megabyte_document_is_parsed_and_rendered_within_its_budget() {
         return;
     }
     let source = ten_megabytes();
+    let plugins = axiomd_render::Plugins::builtin(&[]);
 
     budget::time(what, budgets::TEN_MEGABYTE_RENDER, || {
         let began = Instant::now();
         let parsed = ComrakEngine::new().parse(&source, Extensions::FULL);
-        let rendered = axiomd_render::render(&parsed, "corpus");
+        let rendered = axiomd_render::render(&parsed, "corpus", &plugins);
         let took = began.elapsed();
         assert!(
             rendered.anchors().len() > 10_000,

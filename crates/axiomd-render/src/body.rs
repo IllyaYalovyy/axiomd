@@ -15,6 +15,7 @@
 
 use axiomd_engine::{Alignment, CalloutKind, Event, Parsed, Span, SpannedEvent, Tag, TagEnd};
 
+use crate::plugin::{Asset, Plugins, Used};
 use crate::request::{Request, origin_of};
 use crate::sanitize::is_remote;
 use crate::{Anchor, Heading, Picture, highlight, slug};
@@ -43,24 +44,46 @@ pub(crate) struct Body {
     pub(crate) outline: Vec<Heading>,
     /// The remote images standing behind placeholders in it.
     pub(crate) remote_images: Vec<String>,
+    /// The styling this document needs beyond the bundled one: one entry per
+    /// stylesheet of a plugin that contributed to it, as `(plugin id, asset)`.
+    pub(crate) stylesheets: Vec<(&'static str, Asset)>,
 }
 
-/// Renders one parse.
-pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>) -> Body {
+/// Renders one parse, with the plugins the reader is reading under.
+pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>, plugins: &Plugins) -> Body {
     let mut writer = Writer {
         headings: slug::heading_ids(parsed),
+        used: plugins.nothing_used(),
         ..Writer::default()
     };
     for SpannedEvent { event, span } in parsed.events() {
-        writer.event(event, span, to);
+        // A plugin sees prose, never code: what is inside a code block belongs to
+        // whichever plugin claimed the fence, and to no transform at all.
+        let rewritten = match writer.code.is_some() || plugins.is_empty() {
+            true => None,
+            false => plugins.rewrite(event, &mut writer.used),
+        };
+        match &rewritten {
+            // The replacement is written at the span of what it replaced, so no
+            // rewriting a plugin can do moves a block or breaks the source map.
+            Some(events) => {
+                for event in events {
+                    writer.event(event, span, to, plugins);
+                }
+            }
+            None => writer.event(event, span, to, plugins),
+        }
     }
     let mut markup = writer.out;
     // Only the app can answer it, so only the app's own window carries it.
     if !writer.remote_images.is_empty() && matches!(to, Destination::Screen) {
         markup.insert_str(0, &load_all_banner(writer.remote_images.len()));
     }
+    let mut used = writer.used;
+    let markup = plugins.decorate(markup, &writer.anchors, &mut used);
     Body {
         markup,
+        stylesheets: plugins.stylesheets(&used),
         anchors: writer.anchors,
         outline: writer.outline,
         remote_images: writer.remote_images,
@@ -118,6 +141,23 @@ struct Image {
     alt: String,
 }
 
+/// The code block being written, once its info string has been read.
+enum Code {
+    /// The pipeline's own: highlighted in this language, or in none.
+    Core(Option<String>),
+    /// Claimed by a plugin, which is handed the whole block when the fence closes —
+    /// so the source is collected here rather than written out.
+    Claimed {
+        /// Which plugin in the registry claimed it.
+        at: usize,
+        language: String,
+        source: String,
+        /// The anchor attribute the block was given when it opened. The block is
+        /// written when it closes, and it must carry the line it started on.
+        anchor: String,
+    },
+}
+
 #[derive(Default)]
 struct Writer {
     out: String,
@@ -128,8 +168,11 @@ struct Writer {
     /// One entry per open image. Non-empty means markup is suppressed and text is
     /// being collected into an alt attribute instead.
     alt: Vec<Image>,
-    /// The open code block's language, once removed from its info string.
-    code: Option<Option<String>>,
+    /// The open code block, once its info string has been read.
+    code: Option<Code>,
+    /// Which plugins have contributed to this document — the set whose styling it
+    /// needs.
+    used: Used,
     /// The anchor id of each heading, in document order, and how many have been
     /// written. Computed ahead of the walk because a heading's id comes from text
     /// that only arrives after its opening tag has to be written.
@@ -147,15 +190,16 @@ struct Writer {
 }
 
 impl Writer {
-    fn event(&mut self, event: &Event<'_>, span: &Span, to: &Destination<'_>) {
+    fn event(&mut self, event: &Event<'_>, span: &Span, to: &Destination<'_>, plugins: &Plugins) {
         match event {
-            Event::Start(tag) => self.start(tag, span),
-            Event::End(end) => self.end(end, to),
-            Event::Text(text) => match &self.code {
-                Some(language) => {
+            Event::Start(tag) => self.start(tag, span, plugins),
+            Event::End(end) => self.end(end, to, plugins),
+            Event::Text(text) => match &mut self.code {
+                Some(Code::Core(language)) => {
                     let code = highlight_or_escape(language.as_deref(), text);
                     self.out.push_str(&code);
                 }
+                Some(Code::Claimed { source, .. }) => source.push_str(text),
                 None => self.text(text),
             },
             Event::Code(code) => {
@@ -212,7 +256,7 @@ impl Writer {
         }
     }
 
-    fn start(&mut self, tag: &Tag<'_>, span: &Span) {
+    fn start(&mut self, tag: &Tag<'_>, span: &Span, plugins: &Plugins) {
         match tag {
             Tag::Paragraph => {
                 let wrapped = !matches!(self.stack.last(), Some(Frame::Item { tight: true }));
@@ -257,6 +301,21 @@ impl Writer {
             }
             Tag::CodeBlock { language, .. } => {
                 let anchor = self.anchor(span);
+                // A claimed fence is not written as it opens: the plugin is handed the
+                // whole block at once, and what it answers with — its own markup, or
+                // the source with a badge — is what stands here.
+                if let Some(language) = language
+                    && let Some(at) = plugins.claiming(language)
+                {
+                    self.code = Some(Code::Claimed {
+                        at,
+                        language: language.to_string(),
+                        source: String::new(),
+                        anchor,
+                    });
+                    self.stack.push(Frame::Other);
+                    return;
+                }
                 let class = match language {
                     Some(language) => {
                         format!(" class=\"language-{}\"", escape_attribute(language))
@@ -264,7 +323,7 @@ impl Writer {
                     None => String::new(),
                 };
                 self.block(&format!("<pre class=\"sy-code\"{anchor}><code{class}>"));
-                self.code = Some(language.as_deref().map(str::to_string));
+                self.code = Some(Code::Core(language.as_deref().map(str::to_string)));
                 self.stack.push(Frame::Other);
             }
             Tag::List { start, tight } => {
@@ -362,7 +421,7 @@ impl Writer {
         }
     }
 
-    fn end(&mut self, end: &TagEnd, to: &Destination<'_>) {
+    fn end(&mut self, end: &TagEnd, to: &Destination<'_>, plugins: &Plugins) {
         match end {
             TagEnd::Paragraph => {
                 if matches!(self.stack.pop(), Some(Frame::Paragraph { wrapped: true })) {
@@ -383,8 +442,15 @@ impl Writer {
             }
             TagEnd::CodeBlock => {
                 self.stack.pop();
-                self.code = None;
-                self.out.push_str("</code></pre>\n");
+                match self.code.take() {
+                    Some(Code::Claimed {
+                        at,
+                        language,
+                        source,
+                        anchor,
+                    }) => self.claimed_fence(plugins, at, &language, &source, &anchor),
+                    _ => self.out.push_str("</code></pre>\n"),
+                }
             }
             TagEnd::List { ordered } => {
                 self.stack.pop();
@@ -462,6 +528,49 @@ impl Writer {
                 title_attribute(&image.title)
             )),
             None => self.out.push_str(&missing_picture(&image)),
+        }
+    }
+
+    /// Writes a fence a plugin claimed: what the plugin drew, or — when it could not —
+    /// the block as the author wrote it, with a badge saying who could not draw it.
+    ///
+    /// The degraded block is the source, highlighted exactly as it would have been
+    /// with the plugin switched off, so a reader never loses a line of their document
+    /// to a plugin (invariant 13). The badge is inline beside it and never a dialog
+    /// (`ux_decisions.md`), and the wrapper carries the block's anchor either way.
+    fn claimed_fence(
+        &mut self,
+        plugins: &Plugins,
+        at: usize,
+        language: &str,
+        source: &str,
+        anchor: &str,
+    ) {
+        match plugins.fence(at, language, source, &mut self.used) {
+            Ok(markup) => {
+                self.block(&format!(
+                    "<div class=\"plugin plugin-{id}\"{anchor}>",
+                    id = escape_attribute(plugins.id_of(at)),
+                ));
+                self.out.push('\n');
+                self.out.push_str(&markup);
+                self.close("</div>");
+            }
+            Err(reason) => {
+                self.block(&format!("<div class=\"plugin-failure\"{anchor}>"));
+                self.out.push('\n');
+                self.out.push_str(&format!(
+                    "<pre class=\"sy-code\"><code class=\"language-{language}\">{code}</code></pre>\n",
+                    language = escape_attribute(language),
+                    code = highlight_or_escape(Some(language), source),
+                ));
+                self.out.push_str(&format!(
+                    "<p class=\"plugin-badge\">{name} could not draw this block: {reason}</p>\n",
+                    name = escape_text(plugins.name_of(at)),
+                    reason = escape_text(&reason),
+                ));
+                self.close("</div>");
+            }
         }
     }
 
