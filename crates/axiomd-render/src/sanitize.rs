@@ -18,6 +18,11 @@
 //!   as raw HTML, so that "zero implicit network" holds for any document, not just
 //!   well-behaved ones.
 //!
+//! MathML is the third rule and the one that needed a vocabulary of its own: an
+//! equation is markup, not a picture, so the elements the math plugin writes have to
+//! survive this gate. What is admitted is the presentation vocabulary of MathML Core
+//! and nothing beside it — see [`MATHML`].
+//!
 //! Letting `axiomd:` through as a link scheme is not a grant: it is a scheme only
 //! the app answers for, every request on it is decided by the app's own navigation
 //! policy, and a document forging one gets exactly what an ordinary link gets.
@@ -41,6 +46,101 @@ pub(crate) fn clean(html: &str) -> String {
 pub(crate) fn clean_for_a_file(html: &str) -> String {
     builder(true).clean(html).to_string()
 }
+
+/// The elements an equation is built out of: the presentation vocabulary of MathML
+/// Core (W3C Recommendation, §3), which is the whole of what WebKitGTK lays out.
+///
+/// Three of the specification's elements are deliberately absent. `<maction>` is
+/// interactive and MathML Core dropped it; `<mglyph>` names a picture by URL, which is
+/// a fetch this document may not make; and `<annotation-xml>` carries a foreign
+/// document — HTML or SVG — inside the equation, which is a way into the page that
+/// nothing here needs. An equation missing one of them degrades to markup that reads
+/// as text, which is what a best-effort renderer owes a document it cannot fully draw.
+const MATHML: [&str; 29] = [
+    "math",
+    "mi",
+    "mn",
+    "mo",
+    "ms",
+    "mtext",
+    "mspace",
+    "mrow",
+    "mfrac",
+    "msqrt",
+    "mroot",
+    "mstyle",
+    "merror",
+    "mpadded",
+    "mphantom",
+    "msub",
+    "msup",
+    "msubsup",
+    "munder",
+    "mover",
+    "munderover",
+    "mmultiscripts",
+    "mprescripts",
+    "none",
+    "mtable",
+    "mtr",
+    "mtd",
+    "semantics",
+    "annotation",
+];
+
+/// What those elements may say about themselves: MathML Core's global attributes and
+/// the per-element ones, as one set rather than a table.
+///
+/// One set because none of them is a way to do anything — they are sizes, alignments
+/// and typographic switches — so which element may carry which is the layout engine's
+/// business and not this gate's. `class` and `id` are already generic here, and
+/// `style` is admitted separately and filtered down to the six properties the renderer
+/// writes.
+const MATHML_ATTRIBUTES: [&str; 29] = [
+    "accent",
+    "accentunder",
+    "columnspan",
+    "depth",
+    "dir",
+    "display",
+    "displaystyle",
+    "encoding",
+    "fence",
+    "form",
+    "height",
+    "largeop",
+    "linethickness",
+    "lspace",
+    "mathbackground",
+    "mathcolor",
+    "mathsize",
+    "mathvariant",
+    "maxsize",
+    "minsize",
+    "movablelimits",
+    "rowspan",
+    "rspace",
+    "scriptlevel",
+    "separator",
+    "stretchy",
+    "symmetric",
+    "voffset",
+    "width",
+];
+
+/// The declarations a `style` attribute may hold, which is the whole of what the
+/// MathML renderer puts in one: colour for `\color` and for an error's border, and the
+/// three lengths it spaces a formula with. Nothing here can position an element or
+/// cover the page, which is why `style` — admitted nowhere else in a document — is
+/// admitted at all.
+const MATHML_STYLE: [&str; 6] = [
+    "color",
+    "background-color",
+    "border",
+    "border-color",
+    "margin-left",
+    "height",
+];
 
 /// Whether `url` is a picture carried inside the document itself.
 fn is_embedded_image(url: &str) -> bool {
@@ -73,7 +173,13 @@ fn builder(carrying_its_pictures: bool) -> Builder<'static> {
     if carrying_its_pictures {
         builder.add_url_schemes(["data"]);
     }
+    builder.add_tags(MATHML);
+    for element in MATHML {
+        builder.add_tag_attributes(element, MATHML_ATTRIBUTES);
+        builder.add_tag_attributes(element, ["style"]);
+    }
     builder
+        .filter_style_properties(MATHML_STYLE.into())
         .add_generic_attributes(["class", "data-line", "id"])
         .add_tags(["input"])
         .add_tag_attributes("input", ["checked", "disabled"])

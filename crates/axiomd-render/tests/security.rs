@@ -102,8 +102,32 @@ fn the_document_declares_a_policy_that_permits_no_script_and_no_remote_content()
 
     assert_eq!(
         policy,
-        "default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'"
+        "default-src 'none'; img-src axiomd:; style-src axiomd:; font-src axiomd:; \
+         base-uri 'none'; form-action 'none'"
     );
+}
+
+/// A face is the one thing beyond a picture and a stylesheet a document may ask the
+/// application for, and `axiomd:` is the only place it may ask. Nothing in the policy
+/// says `https:`, and nothing in it says `data:` either: a document on screen carries
+/// no bytes of its own.
+#[test]
+fn the_policy_admits_a_font_only_from_the_application_itself() {
+    let html = render("An equation: $x^2$.\n").html().to_string();
+    let policy = between(
+        &html,
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"",
+        "\"",
+    )
+    .expect("the document declares a content security policy");
+
+    assert!(policy.contains("font-src axiomd:;"), "{policy}");
+    for scheme in ["https:", "http:", "data:", "'unsafe-inline'", "*"] {
+        assert!(
+            !policy.contains(scheme),
+            "the policy of a document with an equation in it admits {scheme}: {policy}",
+        );
+    }
 }
 
 /// The one interactive element the pipeline emits is a task-list checkbox. A

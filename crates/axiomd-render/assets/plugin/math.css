@@ -1,0 +1,209 @@
+/*
+ * The math plugin's styling, linked only into a document that has an equation in it.
+ *
+ * Three things live here and nothing else does:
+ *
+ *   1. the math face itself, carried by the application rather than named and hoped
+ *      for — the reader's system may have no math font at all, and a document that
+ *      typeset differently on two machines could not be golden-tested;
+ *   2. how an equation sits in the page: a display equation is a centred block that
+ *      scrolls sideways when it is wider than the measure rather than pushing the
+ *      whole document wide, and an inline one is a word among words;
+ *   3. what the renderer's own markup needs to line up — the `menv-*` classes
+ *      `pulldown-latex` puts on the tables it builds environments out of. Those rules
+ *      are adapted from that crate's `styles.css` (MIT, Charles Edward Gagnon), with
+ *      its namespace prefixes dropped — this document is HTML, where an unprefixed
+ *      type selector matches an element in any namespace — and its hard-coded black
+ *      replaced by `currentColor` so a negated operator is legible in the dark.
+ */
+
+/* The bundled face, under a name no installed font can answer to: what a document
+   shows must not depend on which fonts the reader happens to have. Served by the
+   app's own scheme, so this is a file that shipped with axiomd and never a fetch. */
+@font-face {
+  font-family: "axiomd-math";
+  src: url("axiomd://assets/plugin/math/stix-two-math.woff2") format("woff2");
+  font-display: block;
+}
+
+.markdown math {
+  font-family: "axiomd-math", math;
+}
+
+/* A display equation stands on its own line with room around it. Centring is not
+   written here because it is not this stylesheet's to do: WebKitGTK centres the
+   contents of a `block math` box itself, and a rule that sized the box would take
+   that away (measured on WebKitGTK 2.52.5 — a `width: fit-content` box came back
+   squeezed to 24px around an integral that needs 300).
+
+   `display` is deliberately not set either: the user-agent sheet already makes this
+   box `block math`, and writing `block` would set its *inner* display to flow and
+   take the maths layout with it. */
+.markdown math[display="block"] {
+  margin: 1rem 0;
+}
+
+/* An equation wider than the measure scrolls where it stands rather than making the
+   whole document scroll sideways — which is what it does otherwise: a `math` box takes
+   its own intrinsic width whatever its container is, so the container is what has to
+   scroll (probed on WebKitGTK 2.52.5: a 745px matrix inside a 654px column took the
+   page's own scroll width to 769px until this rule, and to nothing after it).
+
+   The two containers a display equation is ever written into, and no more: the
+   paragraph the pipeline puts one in, and the item of a tight list, which has no
+   paragraph to put it in. */
+.markdown p:has(> math[display="block"]),
+.markdown li:has(> math[display="block"]) {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* What LaTeX the renderer could not read: the source, kept and marked, never a blank
+   space and never a dialog. The reason stands beside it in the reader's own words —
+   the same shape a fence a plugin could not draw degrades to. */
+.markdown .math-error {
+  color: var(--axiomd-failure);
+}
+
+.markdown .math-error-source {
+  font-family: var(--axiomd-font-mono);
+  text-decoration: underline wavy;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 0.2em;
+}
+
+.markdown .math-error-reason {
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+
+.markdown .math-error-reason::before {
+  content: " — ";
+}
+
+/* A display equation that failed is still a block of its own, so it does not run into
+   the prose around it. */
+.markdown .math-error-display {
+  display: block;
+  margin: 1rem 0;
+  text-align: center;
+}
+
+/* --- The renderer's environments (adapted from pulldown-latex's styles.css) ------ */
+
+.markdown mtd {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.markdown mo.small {
+  font-size: 70%;
+}
+
+.markdown merror > mtext {
+  font-family: var(--axiomd-font-mono);
+  white-space-collapse: preserve;
+  display: block;
+  text-align: left;
+}
+
+.markdown mtable {
+  border-color: currentColor;
+  border-spacing: 0;
+  border-collapse: collapse;
+}
+
+.markdown mtr:last-child > mtd:empty:only-child,
+.markdown mtr:last-child:has(> mtd:empty)::after {
+  display: none;
+}
+
+.markdown mtable.menv-alignlike > mtr > mtd:nth-child(odd),
+.markdown mtable.menv-cells-right > mtr > mtd,
+.markdown mtable.menv-multline > mtr > mtd:last-child,
+.markdown mtd.cell-right {
+  text-align: right;
+  text-align: -webkit-right;
+}
+
+.markdown mtable.menv-alignlike > mtr > mtd:nth-child(even),
+.markdown mtable.menv-cells-left > mtr > mtd,
+.markdown mtable.menv-multline > mtr > mtd:first-child,
+.markdown mtd.cell-left {
+  text-align: left;
+}
+
+.markdown mtable.menv-multline > mtr > mtd {
+  width: 100%;
+}
+
+.markdown mtable.menv-align > mtr > mtd:nth-child(2n + 3) {
+  padding-left: 1em;
+}
+
+.markdown mtable.menv-cases > mtr > mtd:first-child {
+  padding-right: 1em;
+}
+
+.markdown mtable.menv-arraylike > mtr > mtd {
+  padding-left: 0.4em;
+  padding-right: 0.4em;
+}
+
+.markdown mtable.menv-with-eqn > mtr:not(:has(> mtd.menv-nonumber)) {
+  counter-increment: eq-number;
+}
+
+.markdown mtable.menv-with-eqn > mtr:not(:has(> mtd.menv-nonumber))::after {
+  position: absolute;
+  right: 0;
+  padding: 0 0.4em;
+  content: "(" counter(eq-number) ")";
+}
+
+.markdown mo.mop-negated {
+  background: linear-gradient(
+    to top left,
+    transparent 0%,
+    transparent calc(50% - 0.8px),
+    currentColor 50%,
+    transparent calc(50% + 0.8px),
+    transparent 100%
+  );
+}
+
+.markdown mtd.menv-left-solid {
+  border-left: 0.06em solid;
+}
+
+.markdown mtd.menv-right-solid {
+  border-right: 0.06em solid;
+}
+
+.markdown mtd.menv-left-dashed {
+  border-left: 0.06em dashed;
+}
+
+.markdown mtd.menv-right-dashed {
+  border-right: 0.06em dashed;
+}
+
+.markdown mtr.menv-hline {
+  border-top: 0.06em solid;
+}
+
+.markdown mtr.menv-hdashline {
+  border-top: 0.06em dashed;
+}
+
+.markdown mtr.menv-hline > mtd.menv-nonumber:only-child,
+.markdown mtr.menv-hdashline:empty > mtd.menv-nonumber:only-child {
+  padding-top: 0.1em;
+  padding-bottom: 0;
+}
+
+.markdown mtd.menv-border-only:empty {
+  width: 0.1em;
+  padding: 0;
+  margin: 0;
+}

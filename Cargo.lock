@@ -93,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "axiomd-engine",
+ "pulldown-latex",
  "syntect",
  "two-face",
 ]
@@ -150,6 +151,12 @@ checksum = "a8894febbff9f758034a5b8e12d87918f56dfc64a8e1fe757d65e29041538d93"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "bumpalo"
+version = "3.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bytecount"
@@ -1313,6 +1320,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-latex"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cf850381ae0dbb131f36e31d6090f55363d079ab3e518ad0323b9cb6a96d115"
+dependencies = [
+ "bumpalo",
 ]
 
 [[package]]
