@@ -125,12 +125,20 @@ fn an_external_link_and_an_unrenderable_file_leave_the_app_and_the_document_stay
     app.click("a[href=\"report.pdf\"]");
     app.wait_for_handed_over(2);
 
+    // Both of them left, and the order they left in is not asserted: each hand-over is
+    // a process of its own that the desktop starts and that writes into the log when
+    // it runs (`axiomd-e2e/src/display.rs`), so which of two writes first is the
+    // machine's business and not axiomd's. Asserting it made this test fail under a
+    // loaded gate run with the two the other way round.
     let handed = app.handed_over();
-    assert_eq!(handed[0], "https://example.com/page");
+    assert_eq!(handed.len(), 2, "the desktop was handed {handed:?}");
     assert!(
-        handed[1].ends_with("report.pdf"),
-        "the attachment handed over was {:?}",
-        handed[1],
+        handed.iter().any(|out| out == "https://example.com/page"),
+        "the external address was not handed to the desktop: {handed:?}",
+    );
+    assert!(
+        handed.iter().any(|out| out.ends_with("report.pdf")),
+        "the attachment was not handed to the desktop: {handed:?}",
     );
     assert_eq!(app.dom_text("h1"), "Guide", "the view left the document");
     assert_eq!(
