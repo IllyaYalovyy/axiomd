@@ -161,6 +161,51 @@ fn equations_are_set_in_the_face_the_application_carries() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// An equation is written in the ink the reader is reading in, and follows them when
+/// the desktop changes its mind — without the document being parsed or loaded again
+/// (invariant 9).
+#[test]
+fn an_equation_follows_the_desktop_from_light_to_dark() {
+    let ink = "getComputedStyle(document.querySelector('mi')).color";
+    let fixture = Fixture::new("math-theme");
+    let preferences = Preferences::new("math-theme");
+    let app = axiomd_e2e::launch_with(
+        &fixture.write("notes.md", "# Notes\n\nAn equation: $a + b$.\n"),
+        &preferences,
+    );
+
+    showing_equations(&app, 1);
+    let light = app.dom(ink);
+    assert_eq!(
+        light, "rgba(0, 0, 6, 0.8)",
+        "the light ink is not the page's"
+    );
+    let loads = app.navigation_count();
+    let renders = app.render_count();
+
+    app.activate("app.preferences");
+    app.set_preference("Theme", "Dark");
+    app.wait_until(&format!("({ink}) !== '{light}'"));
+
+    assert_eq!(
+        app.dom(ink),
+        "rgba(255, 255, 255, 0.9)",
+        "the equation stayed in the light palette",
+    );
+    assert_eq!(
+        app.navigation_count(),
+        loads,
+        "changing the theme reloaded the page",
+    );
+    assert_eq!(
+        app.render_count(),
+        renders,
+        "changing the theme rendered the document again",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// A display equation is centred, and an equation wider than the measure scrolls where
 /// it stands rather than making the whole document scroll sideways.
 #[test]
