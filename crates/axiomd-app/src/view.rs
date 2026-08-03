@@ -58,6 +58,10 @@ const PATCH: &str = include_str!("patch.js");
 /// The remote images the reader has asked for, put back into the page.
 const REMOTE: &str = include_str!("remote.js");
 
+/// The two halves of the span map as the rendered page sees it: which block the reader
+/// is looking at, and putting a source line back at the top of the page.
+const PLACE: &str = include_str!("place.js");
+
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
     webview: webkit6::WebView,
@@ -78,8 +82,16 @@ pub(crate) struct DocumentView {
     /// and read back through the test-control channel.
     navigations: Cell<u32>,
     /// The directory the document on screen lives in — the whole of what its links
-    /// may reach.
-    root: RefCell<PathBuf>,
+    /// may reach. `None` for an untitled document, which is nowhere and reaches
+    /// nothing.
+    root: RefCell<Option<PathBuf>>,
+    /// The source line to bring to the top of the page once it is next up to date.
+    ///
+    /// Switching out of edit mode is the one thing that has to happen *after* a
+    /// render: scrolling the page the reader is leaving would land on blocks the
+    /// document no longer has. Held here so that the patch and the scroll are one
+    /// task rather than two racing ones.
+    place: Cell<Option<u32>>,
     /// What the window does about a link the view will not follow itself.
     followed: RefCell<Option<Followed>>,
     /// The remote images of the document on screen: every one the reader has asked
@@ -111,7 +123,8 @@ impl DocumentView {
             ready: Cell::new(false),
             pending: RefCell::new(None),
             navigations: Cell::new(0),
-            root: RefCell::new(PathBuf::new()),
+            root: RefCell::new(None),
+            place: Cell::new(None),
             followed: RefCell::new(None),
             images: RefCell::new(RemoteImages::default()),
         });
@@ -162,7 +175,7 @@ impl DocumentView {
                     });
                     let here = webview.uri().unwrap_or_default();
 
-                    match follow(&here, &view.root.borrow(), &target, clicked) {
+                    match follow(&here, view.root.borrow().as_deref(), &target, clicked) {
                         Follow::Stay => decision.use_(),
                         elsewhere => {
                             decision.ignore();
@@ -262,6 +275,43 @@ impl DocumentView {
         }
     }
 
+    /// Asks the page which source line the reader is looking at: the line of the
+    /// topmost block that is still on screen, which is what edit mode puts the caret on.
+    ///
+    /// The answer arrives on the main loop; a page with no blocks in it answers with
+    /// the first line, because that is where an empty document starts.
+    pub(crate) fn topmost_source_line(&self, then: impl FnOnce(u32) + 'static) {
+        let webview = self.webview.clone();
+        let ready = self.ready.get();
+        glib::spawn_future_local(async move {
+            let mut line = 1;
+            if ready
+                && let Ok(answer) = webview
+                    .evaluate_javascript_future(&format!("({PLACE}).topmost()"), Some(WORLD), None)
+                    .await
+            {
+                line = answer.to_str().parse().unwrap_or(1);
+            }
+            then(line);
+        });
+    }
+
+    /// Brings the block that source `line` belongs to to the top of the page, once the
+    /// page has caught up with the buffer.
+    ///
+    /// Deliberately not now: the reader is leaving the editor, and the page still
+    /// shows the document as it was before they typed. Scrolling it would land on
+    /// blocks the document no longer has. The view applies this at the end of the next
+    /// update, in the same task as the patch, so the place is always meant against the
+    /// blocks it is applied to.
+    ///
+    /// The rule, stated once in `place.js` and shared with live reload: the block the
+    /// reader means is the last one that begins at or before `line`, so a caret inside
+    /// a paragraph lands on that paragraph rather than on the one after it.
+    pub(crate) fn place_after_next_render(&self, line: u32) {
+        self.place.set(Some(line));
+    }
+
     /// The remote images of the document on screen that nobody has asked for yet.
     pub(crate) fn unloaded_images(&self) -> Vec<String> {
         let images = self.images.borrow();
@@ -320,6 +370,10 @@ impl DocumentView {
         }
         let patch = body.map(|body| format!("({PATCH})({})", as_js_string(body)));
         let remote = format!("({REMOTE})({})", self.remote_state());
+        let place = self
+            .place
+            .take()
+            .map(|line| format!("({PLACE}).scrollTo({line})"));
         let webview = self.webview.clone();
         glib::spawn_future_local(async move {
             // Returns at once and finishes on the main loop: patching a large document
@@ -336,6 +390,15 @@ impl DocumentView {
                 .await
             {
                 eprintln!("axiomd: the loaded images could not be shown: {error}");
+            }
+            // Last, and in this same task: the reader's place is only meaningful
+            // against the blocks the page has just been given.
+            if let Some(place) = place
+                && let Err(error) = webview
+                    .evaluate_javascript_future(&place, Some(WORLD), None)
+                    .await
+            {
+                eprintln!("axiomd: the reader's place could not be restored: {error}");
             }
         });
     }

@@ -47,9 +47,10 @@ pub(crate) enum Follow {
 /// Decides one navigation.
 ///
 /// `here` is the URI the view is currently showing (empty before its first load),
-/// `root` the directory the document lives in, `target` where the navigation would
-/// go, and `activated` whether the reader clicked a link to cause it.
-pub(crate) fn follow(here: &str, root: &Path, target: &str, activated: bool) -> Follow {
+/// `root` the directory the document lives in — `None` for an untitled document,
+/// which lives nowhere and can therefore reach nothing — `target` where the
+/// navigation would go, and `activated` whether the reader clicked a link to cause it.
+pub(crate) fn follow(here: &str, root: Option<&Path>, target: &str, activated: bool) -> Follow {
     // The view's own URI carries the fragment it was sent to; the page it is on is
     // what a target has to match to be "this document".
     let page = before_fragment(here);
@@ -74,6 +75,12 @@ pub(crate) fn follow(here: &str, root: &Path, target: &str, activated: bool) -> 
         return Follow::Ask(request);
     }
     if let Some(relative) = destination.strip_prefix(page) {
+        // Relative to what: an untitled document has no folder, so a link into one is
+        // a link to nowhere rather than a link into whatever directory axiomd was
+        // started in.
+        let Some(root) = root else {
+            return Follow::Refuse;
+        };
         let Some(file) = decode(relative).and_then(|relative| path_under(root, &relative)) else {
             return Follow::Refuse;
         };
@@ -168,7 +175,7 @@ mod tests {
     }
 
     fn following(target: &str, scratch: &ScratchDir) -> Follow {
-        follow(HERE, scratch.path(), target, true)
+        follow(HERE, Some(scratch.path()), target, true)
     }
 
     /// UT-007, class by class.
@@ -213,11 +220,37 @@ mod tests {
         assert_eq!(
             follow(
                 "axiomd://doc-3/#first",
-                scratch.path(),
+                Some(scratch.path()),
                 "axiomd://doc-3/#second",
                 true
             ),
             Follow::Stay,
+        );
+    }
+
+    /// An untitled document lives nowhere, so a relative link in one reaches nothing
+    /// — not the directory axiomd happens to have been started in.
+    #[test]
+    fn a_link_in_an_untitled_document_reaches_nothing_on_disk() {
+        assert_eq!(
+            follow(HERE, None, "axiomd://doc-3/notes.md", true),
+            Follow::Refuse,
+        );
+        assert_eq!(
+            follow(HERE, None, "axiomd://doc-3/report.pdf", true),
+            Follow::Refuse,
+        );
+        // What an untitled document can still do: leave the app on a click, and stay
+        // where it is on its own fragments.
+        assert_eq!(
+            follow(HERE, None, "https://example.com/", true),
+            Follow::External {
+                uri: "https://example.com/".to_owned()
+            },
+        );
+        assert_eq!(
+            follow(HERE, None, "axiomd://doc-3/#top", true),
+            Follow::Stay
         );
     }
 
@@ -282,14 +315,14 @@ mod tests {
             &Request::LoadAllImages.uri(),
         ] {
             assert_eq!(
-                follow(HERE, scratch.path(), target, false),
+                follow(HERE, Some(scratch.path()), target, false),
                 Follow::Refuse,
                 "{target} was followed without a click",
             );
         }
         // Except staying where it is, which is what a fragment does.
         assert_eq!(
-            follow(HERE, scratch.path(), "axiomd://doc-3/#x", false),
+            follow(HERE, Some(scratch.path()), "axiomd://doc-3/#x", false),
             Follow::Stay,
         );
     }
@@ -333,11 +366,11 @@ mod tests {
         let scratch = folder();
 
         assert_eq!(
-            follow("", scratch.path(), "axiomd://doc-0/", false),
+            follow("", Some(scratch.path()), "axiomd://doc-0/", false),
             Follow::Stay
         );
         assert_eq!(
-            follow("", scratch.path(), "https://example.com/", false),
+            follow("", Some(scratch.path()), "https://example.com/", false),
             Follow::Refuse,
         );
     }

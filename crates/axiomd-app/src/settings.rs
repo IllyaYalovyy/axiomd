@@ -28,6 +28,7 @@ mod dialog;
 
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::gio;
@@ -49,11 +50,20 @@ pub(crate) enum Key {
     ReadingWidthLimited,
     /// That measure, in rem.
     ReadingWidth,
-    /// Whether edits are written back without being asked for (#18 consumes it).
+    /// Whether edits are written back without being asked for.
     Autosave,
-    /// How long after the last edit that happens, in seconds (#18 consumes it).
+    /// How long after the last edit that happens, in seconds.
     AutosaveDelay,
-    /// Whether the editor marks misspelled words (#18 consumes it).
+    /// Whether the editor marks misspelled words.
+    ///
+    /// Not consumed yet: spell checking needs libspelling, whose development package
+    /// is not installable in this environment (#18, reported to the owner). The key
+    /// and its row are here because the behaviour is the reader's to choose the moment
+    /// it can be honoured.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the schema's key for spell checking; see above")
+    )]
     Spellcheck,
     /// The engine new documents are parsed with (#17 consumes it).
     Engine,
@@ -166,6 +176,17 @@ impl Settings {
         };
         apply();
         self.watch(&[Key::ReadingWidthLimited, Key::ReadingWidth], apply)
+    }
+
+    /// How long after the reader stops typing their work is written back, or `None`
+    /// when they have asked axiomd not to write it for them.
+    ///
+    /// One question rather than two keys, because "autosave off" and "autosave in
+    /// zero seconds" are not two things a caller should be able to confuse.
+    pub(crate) fn autosave(&self) -> Option<Duration> {
+        self.store
+            .boolean(Key::Autosave.name())
+            .then(|| Duration::from_secs(self.store.int(Key::AutosaveDelay.name()).max(1) as u64))
     }
 
     /// The colour scheme the application runs under: the desktop's own, or the

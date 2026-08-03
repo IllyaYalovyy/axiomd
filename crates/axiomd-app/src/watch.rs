@@ -30,8 +30,9 @@ use gtk::glib;
 use gtk::prelude::*;
 
 /// How long the file must be quiet before a change is reported. RFC-001's debounce,
-/// and the same number the editor's own preview will use.
-const QUIET: Duration = Duration::from_millis(150);
+/// and the same number the editor's preview uses for a burst of keystrokes
+/// (`window.rs`) — a burst of writing is one document either way.
+pub(crate) const QUIET: Duration = Duration::from_millis(150);
 
 /// Watches one file for as long as it exists.
 pub(crate) struct FileWatch {

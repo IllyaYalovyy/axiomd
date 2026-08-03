@@ -207,6 +207,42 @@ impl Session {
                     .map_err(|error| error.to_string())?;
                 Ok(value.to_str().to_string())
             }
+            // Typing, exactly as the reader does it: the insertion the buffer sees is
+            // the one a key press makes, so it is undoable, it marks the document
+            // modified and it starts the same debounce.
+            "type" => {
+                let window = self.target(shell)?;
+                if window.showing() != "editor" {
+                    return Err("the window is not in edit mode, so there is nowhere \
+                                to type"
+                        .to_owned());
+                }
+                window.type_text(payload);
+                Ok(String::new())
+            }
+            // Clicking into a line, as the reader does with the pointer: the same
+            // call the mode switch makes to put them where they were reading.
+            "caret" => {
+                let window = self.target(shell)?;
+                let line = payload
+                    .parse::<u32>()
+                    .map_err(|_| format!("not a source line: {payload:?}"))?;
+                window.place_caret(line);
+                Ok(String::new())
+            }
+            // Pressing a button the window is showing — in an inline notice or in a
+            // dialog — by the words on it, which is all the reader has to go on.
+            "press" => press(&self.target(shell)?, payload),
+            // The far side of the Save As chooser: the path the reader picked. This
+            // lands in the very call the chooser's own callback makes, so everything
+            // after the choice — the atomic write, the window following its new file,
+            // the title — is the application's own path. The chooser itself is a
+            // native dialog outside the window's widget tree and is the one thing here
+            // a test cannot press (`docs/TESTING.md`).
+            "save-as" => {
+                self.target(shell)?.save_to(Path::new(payload));
+                Ok(String::new())
+            }
             "window" => self.property(payload, shell),
             // The two halves of driving the preferences dialog: reading a row, and
             // turning it. Turning it sets the very property the reader's click sets,
@@ -257,6 +293,13 @@ impl Session {
             "navigations" => Ok(window.navigations().to_string()),
             "renders" => Ok(window.renders().to_string()),
             "showing" => Ok(window.showing().to_owned()),
+            "mode" => Ok(match window.showing() {
+                "editor" => "edit".to_owned(),
+                _ => "read".to_owned(),
+            }),
+            "modified" => Ok(window.is_modified().to_string()),
+            "caret" => Ok(window.caret_line().to_string()),
+            "source" => Ok(window.editor_text()),
             "banner" => Ok(window.banner()),
             "dialog" => Ok(window.visible_dialog()),
             other => Err(format!("no such window property: {other}")),
@@ -274,6 +317,43 @@ impl Session {
             .window_at(index)
             .ok_or_else(|| format!("window {index} has closed"))
     }
+}
+
+/// Presses the button labelled `label`, wherever in the window it is — the inline
+/// notice beside a document, or a dialog the reader asked for.
+fn press(window: &Rc<DocumentWindow>, label: &str) -> Answer {
+    match find_button(window.window().upcast_ref::<gtk::Widget>(), label) {
+        Some(button) => {
+            // The button's own signal, which is what a pointer press emits — rather
+            // than `gtk_widget_activate`, whose answer depends on whether the widget
+            // is focusable and which is not how a button gets pressed.
+            button.emit_clicked();
+            Ok(String::new())
+        }
+        None => Err(format!(
+            "the window is showing no button labelled {label:?}"
+        )),
+    }
+}
+
+/// Searches `widget` and everything under it for a button the reader could press by
+/// that name.
+fn find_button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(button) = widget.downcast_ref::<gtk::Button>()
+        && button
+            .label()
+            .is_some_and(|shown| shown.replace('_', "") == label)
+    {
+        return Some(button.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        if let Some(found) = find_button(&candidate, label) {
+            return Some(found);
+        }
+        child = candidate.next_sibling();
+    }
+    None
 }
 
 /// What a preferences row currently says, as the reader reads it: a switch as

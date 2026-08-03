@@ -22,16 +22,28 @@ The first paragraph of the document.
 A second section, with `code` and *emphasis*.
 ";
 
-/// Issue #1 shipped this as a manual check: run axiomd, see a window titled axiomd.
+/// Issue #1 shipped this as a manual check: run axiomd, see a window. What that window
+/// holds was settled by the owner in #18 — a new untitled document, in edit mode, ready
+/// to be typed in (`ux_decisions.md`).
 #[test]
-fn a_bare_launch_opens_one_window_titled_axiomd() {
+fn a_bare_launch_opens_a_new_untitled_document_ready_to_type_in() {
     let app = axiomd_e2e::launch_without_document();
 
     assert_eq!(app.window_count(), 1);
-    assert_eq!(app.window_title(), "axiomd");
+    assert_eq!(app.window_title(), "Untitled");
+    assert_eq!(app.mode(), "edit");
     assert!(
         !app.showing_document(),
-        "a launch with no document showed a document",
+        "a launch with no document showed a rendered document",
+    );
+    assert_eq!(
+        app.source(),
+        "",
+        "the new document arrived with something in it"
+    );
+    assert!(
+        !app.is_modified(),
+        "a document nobody has typed in is unsaved work"
     );
 
     assert!(app.close().is_empty(), "the launch left processes behind");
@@ -216,19 +228,22 @@ fn the_close_window_action_closes_the_window_it_acts_on() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
-/// The other half of that menu: a new window, empty and waiting for a document.
+/// The other half of that menu: `Ctrl+N`, which is a new untitled document in edit
+/// mode — and which leaves the document already open exactly as it was.
 #[test]
-fn the_new_window_action_opens_an_empty_window() {
+fn the_new_window_action_opens_an_untitled_document_in_edit_mode() {
     let fixture = Fixture::new("new-action");
     let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
 
     app.activate("app.new");
     app.wait_until_windows(2);
 
-    assert_eq!(app.window_title(), "axiomd");
+    assert_eq!(app.window_title(), "Untitled");
+    assert_eq!(app.mode(), "edit");
     assert!(!app.showing_document(), "a new window arrived with content");
     app.select_window(0);
     assert_eq!(app.dom_text("h1"), "Release Notes");
+    assert_eq!(app.mode(), "read", "the document already open changed mode");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

@@ -1,7 +1,8 @@
-//! axiomd — a fast, beautiful Markdown viewer for modern GNOME.
+//! axiomd — a fast, beautiful Markdown editor and viewer for modern GNOME.
 
 mod control;
 mod document;
+mod editor;
 mod links;
 mod remote;
 mod scheme;
