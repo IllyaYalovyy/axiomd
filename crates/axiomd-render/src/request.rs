@@ -16,15 +16,23 @@ const HOST: &str = "axiomd://request/";
 
 /// What a rendered document asks the application to do.
 ///
-/// Both variants are the same user action seen twice: the reader pressed something
-/// that says it will fetch a remote image, which is the only network use axiomd has
-/// (`design_decisions.md`).
+/// Two things, both of them something the reader pressed: fetching a remote image,
+/// which is the only network use axiomd has (`design_decisions.md`), and ticking a
+/// task off, which is the only way a rendered document changes the source it was
+/// rendered from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Load the one remote image whose placeholder card was pressed.
     LoadImage(String),
     /// Load every remote image in the document that is still a placeholder.
     LoadAllImages,
+    /// Turn the task list item whose box was pressed the other way round.
+    ///
+    /// The number is the byte offset, in the source the page was rendered from, of
+    /// the single character between the brackets. It comes from the parser
+    /// (`axiomd_engine::Task`) and it is what tells two identical items apart —
+    /// nothing on this path ever searches the document's text.
+    ToggleTask(usize),
 }
 
 impl Request {
@@ -33,12 +41,17 @@ impl Request {
         match self {
             Request::LoadImage(url) => format!("{HOST}image?src={}", encode(url)),
             Request::LoadAllImages => format!("{HOST}image?all"),
+            Request::ToggleTask(at) => format!("{HOST}task?at={at}"),
         }
     }
 
     /// The request `uri` names, or `None` when it names none.
     pub fn from_uri(uri: &str) -> Option<Request> {
-        let query = uri.strip_prefix(HOST)?.strip_prefix("image?")?;
+        let query = uri.strip_prefix(HOST)?;
+        if let Some(at) = query.strip_prefix("task?at=") {
+            return Some(Request::ToggleTask(at.parse().ok()?));
+        }
+        let query = query.strip_prefix("image?")?;
         match query {
             "all" => Some(Request::LoadAllImages),
             _ => Some(Request::LoadImage(decode(query.strip_prefix("src=")?)?)),
@@ -129,6 +142,27 @@ mod tests {
             Request::from_uri(&Request::LoadImage(hostile.to_owned()).uri()),
             Some(Request::LoadImage(hostile.to_owned())),
         );
+    }
+
+    /// The vocabulary is closed: exactly what the pipeline writes is read back, and a
+    /// URI that is nearly one of them is not one of them.
+    #[test]
+    fn a_task_toggle_travels_as_the_offset_it_is() {
+        assert_eq!(
+            Request::from_uri(&Request::ToggleTask(0).uri()),
+            Some(Request::ToggleTask(0)),
+        );
+        assert_eq!(
+            Request::from_uri(&Request::ToggleTask(1_234_567).uri()),
+            Some(Request::ToggleTask(1_234_567)),
+        );
+        assert_eq!(Request::ToggleTask(42).uri(), "axiomd://request/task?at=42");
+
+        assert_eq!(Request::from_uri("axiomd://request/task?at="), None);
+        assert_eq!(Request::from_uri("axiomd://request/task?at=-1"), None);
+        assert_eq!(Request::from_uri("axiomd://request/task?at=x"), None);
+        assert_eq!(Request::from_uri("axiomd://request/task"), None);
+        assert_eq!(Request::from_uri("axiomd://doc-1/task?at=1"), None);
     }
 
     #[test]

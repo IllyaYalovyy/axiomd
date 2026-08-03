@@ -21,12 +21,18 @@ const PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 /// Exports `source` with `resolve` answering for the files it names.
 fn export(source: &str, name: &str) -> String {
     let parsed = parse(source);
-    axiomd_render::standalone(&parsed, name, &Plugins::builtin(&[]), &|reference| {
-        (reference == "images/logo.png").then(|| axiomd_render::Picture {
-            bytes: PIXEL_PNG.to_vec(),
-            content_type: "image/png".to_owned(),
-        })
-    })
+    axiomd_render::standalone(
+        &parsed,
+        name,
+        &Plugins::builtin(&[]),
+        &axiomd_render::Folder::empty(),
+        &|reference| {
+            (reference == "images/logo.png").then(|| axiomd_render::Picture {
+                bytes: PIXEL_PNG.to_vec(),
+                content_type: "image/png".to_owned(),
+            })
+        },
+    )
 }
 
 /// Every reference in `html` that a browser would fetch on open: what a stylesheet
@@ -56,7 +62,10 @@ fn fetched_on_open(html: &str) -> Vec<String> {
         let mut rest = html;
         while let Some(at) = rest.find(marker) {
             rest = &rest[at + marker.len()..];
-            fetched.push(rest[..rest.len().min(60)].to_owned());
+            // What the reference *is*, not the sixty characters after the marker: a
+            // CSS url may be quoted, and `"data:…"` is the same fetch as `data:…`.
+            let reference = &rest[..rest.find(')').unwrap_or(rest.len()).min(rest.len())];
+            fetched.push(reference.trim().trim_matches(['"', '\'']).to_owned());
         }
     }
     fetched
@@ -260,7 +269,12 @@ fn an_exported_document_is_light_whoever_opens_it() {
 #[test]
 fn the_document_on_screen_says_what_it_is_called() {
     let parsed = parse("# Release Notes\n\nText.\n");
-    let rendered = axiomd_render::render(&parsed, "notes", &Plugins::builtin(&[]));
+    let rendered = axiomd_render::render(
+        &parsed,
+        "notes",
+        &Plugins::builtin(&[]),
+        &axiomd_render::Folder::empty(),
+    );
 
     assert!(
         rendered.html().contains("<title>Release Notes</title>"),

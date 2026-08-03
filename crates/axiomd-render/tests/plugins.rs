@@ -20,7 +20,12 @@ const WITH_A_DIAGRAM: &str = "# Notes\n\nBefore.\n\n```diagram\nA -> B\n```\n\nA
 
 /// Renders `source` with `plugins`, as a window does.
 fn render(source: &str, plugins: &Plugins) -> axiomd_render::Rendered {
-    axiomd_render::render(&parse(source), "fixture", plugins)
+    axiomd_render::render(
+        &parse(source),
+        "fixture",
+        plugins,
+        &axiomd_render::Folder::empty(),
+    )
 }
 
 /// A registry holding one plugin.
@@ -246,17 +251,17 @@ fn a_plugins_stylesheet_reaches_only_the_documents_that_used_it() {
 /// The bytes behind that link, which the app serves and nothing else can reach.
 #[test]
 fn a_built_in_plugins_asset_is_served_by_name_and_nothing_else_is() {
-    let asset = Plugins::asset("/plugin/emoji/emoji.css").expect("the emoji stylesheet");
+    let asset = axiomd_render::asset("/plugin/emoji/emoji.css").expect("the emoji stylesheet");
 
     assert_eq!(asset.content_type, "text/css");
     assert!(
         String::from_utf8_lossy(asset.bytes).contains(".markdown .emoji"),
         "the served bytes are not the plugin's stylesheet",
     );
-    assert_eq!(Plugins::asset("/plugin/emoji/other.css"), None);
-    assert_eq!(Plugins::asset("/plugin/nobody/emoji.css"), None);
-    assert_eq!(Plugins::asset("/plugin/emoji/../../axiomd.css"), None);
-    assert_eq!(Plugins::asset("/axiomd.css"), None);
+    assert_eq!(axiomd_render::asset("/plugin/emoji/other.css"), None);
+    assert_eq!(axiomd_render::asset("/plugin/nobody/emoji.css"), None);
+    assert_eq!(axiomd_render::asset("/plugin/emoji/../../axiomd.css"), None);
+    assert_eq!(axiomd_render::asset("/axiomd.css"), None);
 }
 
 /// A plugin is no more trusted than the document: whatever it draws goes through the
@@ -536,7 +541,13 @@ fn a_document_rendered_with_every_plugin_off_is_the_plain_document() {
 #[test]
 fn an_exported_document_carries_a_plugins_styling_rather_than_linking_it() {
     let parsed = parse("Shipped :tada: today.\n");
-    let exported = axiomd_render::standalone(&parsed, "notes", &Plugins::builtin(&[]), &|_| None);
+    let exported = axiomd_render::standalone(
+        &parsed,
+        "notes",
+        &Plugins::builtin(&[]),
+        &axiomd_render::Folder::empty(),
+        &|_| None,
+    );
 
     assert!(exported.contains("🎉"), "{exported}");
     assert!(

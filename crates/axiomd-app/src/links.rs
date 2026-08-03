@@ -302,6 +302,19 @@ mod tests {
         );
     }
 
+    /// Pressing a task list item's box is a navigation, because a document that cannot
+    /// run a script has no other way to say it was pressed. It must reach the app as
+    /// the request it is rather than as a link to a file called `task`.
+    #[test]
+    fn pressing_a_task_box_is_recognised_as_a_request() {
+        let scratch = folder();
+
+        assert_eq!(
+            following(&Request::ToggleTask(349).uri(), &scratch),
+            Follow::Ask(Request::ToggleTask(349)),
+        );
+    }
+
     /// The privacy rule, stated as the thing that must not happen: nothing but
     /// staying on the page happens without the reader having clicked.
     #[test]

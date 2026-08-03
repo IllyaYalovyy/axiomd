@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src axiomd:; style-src axiomd:; base-uri 'none'; form-action 'none'">
+<title>Footnotes</title>
+<link rel="stylesheet" href="axiomd://assets/axiomd.css">
+</head>
+<body>
+<article class="markdown">
+<h1 id="footnotes" data-line="1">Footnotes</h1>
+<p data-line="3">The order the reader sees is the order of first reference<sup class="footnote-ref"><a id="fnref-fn-second-1" href="#fn-second" rel="noopener noreferrer">1</a></sup>, not the order
+the definitions are written in<sup class="footnote-ref"><a id="fnref-fn-first-1" href="#fn-first" rel="noopener noreferrer">2</a></sup>.</p>
+<p data-line="6">A footnote referred to twice<sup class="footnote-ref"><a id="fnref-fn-second-2" href="#fn-second" rel="noopener noreferrer">1</a></sup> is one footnote with two ways back.</p>
+<div class="footnote-definition" id="fn-second" data-line="10">
+<sup class="footnote-label">1</sup>
+<p>Written second, referred to first.</p>
+<p>A second paragraph of the same definition. <a class="footnote-backref" href="#fnref-fn-second-1" title="Back to the text" rel="noopener noreferrer">↩</a> <a class="footnote-backref" href="#fnref-fn-second-2" title="Back to the text" rel="noopener noreferrer">↩<sup>2</sup></a></p>
+</div>
+<div class="footnote-definition" id="fn-first">
+<sup class="footnote-label">2</sup>
+<p>Written first, referred to second. <a class="footnote-backref" href="#fnref-fn-first-1" title="Back to the text" rel="noopener noreferrer">↩</a></p>
+</div>
+</article>
+</body>
+</html>

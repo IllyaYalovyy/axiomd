@@ -9,7 +9,10 @@
 //!
 //! let parsed = ComrakEngine::new().parse("# Title\n\nText.\n", Extensions::FULL);
 //! let plugins = axiomd_render::Plugins::builtin(&[]);
-//! let rendered = axiomd_render::render(&parsed, "notes", &plugins);
+//! // What lies beside the document, which is the whole of what a `[[wikilink]]` in it
+//! // can reach. Nothing, here: this document is alone.
+//! let beside = axiomd_render::Folder::empty();
+//! let rendered = axiomd_render::render(&parsed, "notes", &plugins, &beside);
 //! assert!(rendered.html().contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
 //! // The blocks alone, for patching them into a document that is already on screen.
 //! assert!(rendered.body().starts_with("<h1 id=\"title\" data-line=\"1\">Title</h1>"));
@@ -54,12 +57,15 @@
 #![deny(missing_docs)]
 
 mod body;
+mod callout;
+mod footnote;
 mod highlight;
 mod meta;
 mod plugin;
 mod request;
 mod sanitize;
 mod slug;
+mod wikilink;
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -68,6 +74,20 @@ use axiomd_engine::Parsed;
 
 pub use plugin::{Asset, Manifest, PLUGIN_API, Plugin, Plugins};
 pub use request::Request;
+pub use wikilink::Folder;
+
+/// The bundled file served at `path` under `axiomd://assets`, or `None` for a path
+/// that names none.
+///
+/// Every byte a rendered document can reach that is not the document itself: the
+/// icons a callout is drawn with, and the files of the plugins compiled into the
+/// application. It answers from a table compiled into the binary, so a request can
+/// neither miss nor escape onto the reader's filesystem, and it is the one place that
+/// knows what an `axiomd://assets` path means — the app's scheme handler asks rather
+/// than keeping a second list that could drift from this one.
+pub fn asset(path: &str) -> Option<Asset> {
+    callout::asset(path).or_else(|| plugin::asset(path))
+}
 
 /// Where the rendered document loads [`stylesheet`] from. The app serves this URI
 /// from its own scheme handler; nothing else in the document is fetchable.
@@ -226,8 +246,15 @@ pub struct Anchor {
 /// gives no title of its own — in frontmatter or in its first heading. The title
 /// matters beyond the window: printing this page names the job with it, and a PDF
 /// made from it carries it as metadata.
-pub fn render(parsed: &Parsed<'_>, name: &str, plugins: &Plugins) -> Rendered {
-    let rendered = body::render(parsed, &body::Destination::Screen, plugins);
+pub fn render(parsed: &Parsed<'_>, name: &str, plugins: &Plugins, beside: &Folder) -> Rendered {
+    let rendered = body::render(
+        parsed,
+        &body::Page {
+            to: body::Destination::Screen,
+            plugins,
+            beside,
+        },
+    );
     let body = sanitize::clean(&rendered.markup);
     let stylesheets: Vec<String> = rendered
         .stylesheets
@@ -288,9 +315,17 @@ pub fn standalone(
     parsed: &Parsed<'_>,
     name: &str,
     plugins: &Plugins,
+    beside: &Folder,
     embed: &dyn Fn(&str) -> Option<Picture>,
 ) -> String {
-    let rendered = body::render(parsed, &body::Destination::File(embed), plugins);
+    let rendered = body::render(
+        parsed,
+        &body::Page {
+            to: body::Destination::File(embed),
+            plugins,
+            beside,
+        },
+    );
     let body = sanitize::clean_for_a_file(&rendered.markup);
     // A plugin's styling travels inside the file like everything else the document
     // needs: an exported document names nothing, so it cannot link an asset the app
@@ -330,8 +365,17 @@ fn exported_stylesheet() -> &'static str {
     static STYLESHEET: OnceLock<String> = OnceLock::new();
     STYLESHEET.get_or_init(|| {
         format!(
-            "{}\n{}\n:root {{ color-scheme: light; }}\n",
+            "{}\n{}\n{}\n:root {{ color-scheme: light; }}\n",
             include_str!("../assets/axiomd.css"),
+            // A file that leaves axiomd names nothing axiomd would have to answer
+            // for, so its callout icons travel inside it as the bytes they are.
+            callout::icon_styling(&|asset| {
+                format!(
+                    "data:{};base64,{}",
+                    asset.content_type,
+                    body::base64(asset.bytes)
+                )
+            }),
             highlight::light_palette(),
         )
     })
@@ -386,9 +430,12 @@ pub fn stylesheet() -> &'static str {
     static STYLESHEET: OnceLock<String> = OnceLock::new();
     STYLESHEET.get_or_init(|| {
         format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             include_str!("../assets/axiomd.css"),
             include_str!("../assets/dark.css"),
+            // On screen an icon is a file the app's own scheme answers for, which is
+            // what keeps the document's policy to `axiomd:` and nothing else.
+            callout::icon_styling(&callout::icon_uri),
             highlight::palettes()
         )
     })

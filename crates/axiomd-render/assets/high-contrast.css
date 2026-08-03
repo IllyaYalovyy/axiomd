@@ -38,10 +38,18 @@
     --axiomd-surface-strong: #dcdcdc !important;
 
     --axiomd-note: #0000cc !important;
+    --axiomd-abstract: #005c5c !important;
+    --axiomd-info: #0000cc !important;
+    --axiomd-todo: #0000cc !important;
     --axiomd-tip: #005c1f !important;
-    --axiomd-important: #6b0080 !important;
+    --axiomd-success: #005c1f !important;
+    --axiomd-question: #6b4400 !important;
     --axiomd-warning: #6b4400 !important;
-    --axiomd-caution: #a30000 !important;
+    --axiomd-failure: #a30000 !important;
+    --axiomd-danger: #a30000 !important;
+    --axiomd-bug: #a30000 !important;
+    --axiomd-example: #6b0080 !important;
+    --axiomd-quote: #000000 !important;
 
     --axiomd-find: #ffff00 !important;
     --axiomd-find-current: #ff6600 !important;
@@ -59,10 +67,18 @@
       --axiomd-surface-strong: #2e2e2e !important;
 
       --axiomd-note: #8cb4ff !important;
+      --axiomd-abstract: #5ce0e0 !important;
+      --axiomd-info: #8cb4ff !important;
+      --axiomd-todo: #8cb4ff !important;
       --axiomd-tip: #6ee79b !important;
-      --axiomd-important: #eaa8ec !important;
+      --axiomd-success: #6ee79b !important;
+      --axiomd-question: #ffd84d !important;
       --axiomd-warning: #ffd84d !important;
-      --axiomd-caution: #ff9b8a !important;
+      --axiomd-failure: #ff9b8a !important;
+      --axiomd-danger: #ff9b8a !important;
+      --axiomd-bug: #ff9b8a !important;
+      --axiomd-example: #eaa8ec !important;
+      --axiomd-quote: #ffffff !important;
 
       --axiomd-find: #ffff00 !important;
       --axiomd-find-current: #ff9d3d !important;
@@ -80,8 +96,18 @@
      standing in for a remote image are already set apart by their own shape, and
      underlining them would read as a typo in the sentence they sit in. */
   .markdown .footnote-ref a,
+  .markdown .footnote-backref,
+  .markdown li.task-list-item > a.task-toggle,
   .markdown a.remote-image {
     text-decoration: none !important;
+  }
+
+  /* An unresolved wikilink is not a link and must not start looking like one: what
+     sets it apart at high contrast is the dotted rule under it, which needs a colour
+     of its own now that dimmed text is not dim. */
+  .markdown .wikilink-unresolved {
+    text-decoration: underline dotted !important;
+    text-decoration-color: currentColor !important;
   }
 
   /* A dashed 12%-alpha outline is the first thing to disappear at high contrast,

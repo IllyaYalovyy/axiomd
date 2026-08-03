@@ -13,12 +13,14 @@
 //! recognise. Nothing here panics on an event it does not fully implement, and no
 //! document ever loses content to a missing feature.
 
-use axiomd_engine::{Alignment, CalloutKind, Event, Parsed, Span, SpannedEvent, Tag, TagEnd};
+use axiomd_engine::{Alignment, Event, Parsed, Span, SpannedEvent, Tag, TagEnd, Task};
 
+use crate::footnote::Footnotes;
 use crate::plugin::{Asset, Plugins, Used};
 use crate::request::{Request, origin_of};
 use crate::sanitize::is_remote;
-use crate::{Anchor, Heading, Picture, highlight, slug};
+use crate::wikilink::Folder;
+use crate::{Anchor, Heading, Picture, callout, highlight, slug};
 
 /// Where the markup being written is going to be read.
 ///
@@ -53,10 +55,14 @@ pub(crate) struct Body {
     pub(crate) scripts: Vec<(&'static str, Asset)>,
 }
 
-/// Renders one parse, with the plugins the reader is reading under.
-pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>, plugins: &Plugins) -> Body {
+/// Renders one parse, with the plugins the reader is reading under and the documents
+/// beside the one being rendered — which is the whole of what a wikilink in it can
+/// reach (`wikilink.rs`).
+pub(crate) fn render(parsed: &Parsed<'_>, into: &Page<'_>) -> Body {
+    let plugins = into.plugins;
     let mut writer = Writer {
         headings: slug::heading_ids(parsed),
+        footnotes: Footnotes::of(parsed),
         used: plugins.nothing_used(),
         ..Writer::default()
     };
@@ -72,15 +78,15 @@ pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>, plugins: &Plugin
             // rewriting a plugin can do moves a block or breaks the source map.
             Some(events) => {
                 for event in events {
-                    writer.event(event, span, to, plugins);
+                    writer.event(event, span, into);
                 }
             }
-            None => writer.event(event, span, to, plugins),
+            None => writer.event(event, span, into),
         }
     }
     let mut markup = writer.out;
     // Only the app can answer it, so only the app's own window carries it.
-    if !writer.remote_images.is_empty() && matches!(to, Destination::Screen) {
+    if !writer.remote_images.is_empty() && matches!(into.to, Destination::Screen) {
         markup.insert_str(0, &load_all_banner(writer.remote_images.len()));
     }
     let mut used = writer.used;
@@ -93,6 +99,20 @@ pub(crate) fn render(parsed: &Parsed<'_>, to: &Destination<'_>, plugins: &Plugin
         outline: writer.outline,
         remote_images: writer.remote_images,
     }
+}
+
+/// Everything about a render that is not the document: where the markup is going, the
+/// capabilities it is written with, and what lies beside it on disk.
+///
+/// One value rather than three parameters threaded through every method of the walk:
+/// they are always all three of them together, and a walk that took them apart would
+/// be a walk with three chances to pass the wrong one.
+pub(crate) struct Page<'a> {
+    pub(crate) to: Destination<'a>,
+    pub(crate) plugins: &'a Plugins,
+    /// The Markdown documents under the rendered document's own directory — the whole
+    /// of what a `[[wikilink]]` in it can resolve to.
+    pub(crate) beside: &'a Folder,
 }
 
 /// The one affordance a document with remote images carries: inline, above the
@@ -135,6 +155,17 @@ enum Frame {
     /// One cell, which must close with the tag it opened with.
     Cell {
         head: bool,
+    },
+    /// A callout, which closes with whichever element it opened as — a foldable one
+    /// is a `<details>` and every other is a `<blockquote>`.
+    Callout {
+        element: &'static str,
+    },
+    /// A footnote definition, carrying the way back to every reference that sent a
+    /// reader here — written when the definition closes, because that is when its
+    /// last paragraph is known.
+    Definition {
+        backrefs: String,
     },
     Other,
 }
@@ -192,13 +223,22 @@ struct Writer {
     /// The source of every placeholder standing in for an image the reader has not
     /// asked for, in document order.
     remote_images: Vec<String>,
+    /// What each footnote label is called in front of the reader, and how many places
+    /// refer to it (`footnote.rs`).
+    footnotes: Footnotes,
+    /// One entry per open wikilink: whether it resolved, and so which element has to
+    /// be closed when it ends.
+    wikilinks: Vec<bool>,
+    /// Where in the markup the footnote definition being written began, so its
+    /// back-references can be put at the end of it.
+    definition: Option<usize>,
 }
 
 impl Writer {
-    fn event(&mut self, event: &Event<'_>, span: &Span, to: &Destination<'_>, plugins: &Plugins) {
+    fn event(&mut self, event: &Event<'_>, span: &Span, into: &Page<'_>) {
         match event {
-            Event::Start(tag) => self.start(tag, span, plugins),
-            Event::End(end) => self.end(end, to, plugins),
+            Event::Start(tag) => self.start(tag, span, into),
+            Event::End(end) => self.end(end, into),
             Event::Text(text) => match &mut self.code {
                 Some(Code::Core(language)) => {
                     let code = highlight_or_escape(language.as_deref(), text);
@@ -239,12 +279,25 @@ impl Writer {
                     self.out.push_str(html);
                 }
             }
+            // What the reader sees is a number in the order the document refers to
+            // its footnotes, not the label the author filed it under — and every
+            // reference is named so that the definition can send them back to the one
+            // they came from.
             Event::FootnoteReference(label) => {
                 let id = footnote_id(label);
-                let label = escape_text(label);
-                self.inline(&format!(
-                    "<sup class=\"footnote-ref\"><a href=\"#{id}\">{label}</a></sup>"
-                ));
+                let shown = match self.footnotes.referenced(label) {
+                    Some(reference) => format!(
+                        "<sup class=\"footnote-ref\">\
+                         <a id=\"fnref-{id}-{nth}\" href=\"#{id}\">{number}</a></sup>",
+                        nth = reference.nth,
+                        number = reference.number,
+                    ),
+                    None => format!(
+                        "<sup class=\"footnote-ref\"><a href=\"#{id}\">{}</a></sup>",
+                        escape_text(label),
+                    ),
+                };
+                self.inline(&shown);
             }
             Event::SoftBreak => self.text("\n"),
             Event::HardBreak => {
@@ -261,7 +314,7 @@ impl Writer {
         }
     }
 
-    fn start(&mut self, tag: &Tag<'_>, span: &Span, plugins: &Plugins) {
+    fn start(&mut self, tag: &Tag<'_>, span: &Span, into: &Page<'_>) {
         match tag {
             Tag::Paragraph => {
                 let wrapped = !matches!(self.stack.last(), Some(Frame::Item { tight: true }));
@@ -288,18 +341,29 @@ impl Writer {
                 let anchor = self.anchor(span);
                 match callout {
                     None => self.block(&format!("<blockquote{anchor}>")),
+                    // A foldable callout is a `<details>` and its title the `<summary>`
+                    // that opens it: folding is then the browser's own, which is what
+                    // "no JavaScript" means for a document that cannot run any.
                     Some(callout) => {
-                        let kind = callout_kind(callout.kind);
+                        let kind = callout::class_of(&callout.kind);
+                        let (element, title_element, open) = match callout.fold {
+                            None => ("blockquote", "p", ""),
+                            Some(true) => ("details", "summary", " open"),
+                            Some(false) => ("details", "summary", ""),
+                        };
                         self.block(&format!(
-                            "<blockquote class=\"callout callout-{kind}\"{anchor}>"
+                            "<{element} class=\"callout callout-{kind}\"{open}{anchor}>"
                         ));
                         let title = match &callout.title {
                             Some(title) => escape_text(title),
-                            None => callout_title(callout.kind).to_string(),
+                            None => escape_text(&callout::title_of(&callout.kind)),
                         };
                         self.out.push('\n');
-                        self.out
-                            .push_str(&format!("<p class=\"callout-title\">{title}</p>"));
+                        self.out.push_str(&format!(
+                            "<{title_element} class=\"callout-title\">{title}</{title_element}>"
+                        ));
+                        self.stack.push(Frame::Callout { element });
+                        return;
                     }
                 }
                 self.stack.push(Frame::Other);
@@ -310,7 +374,7 @@ impl Writer {
                 // whole block at once, and what it answers with — its own markup, or
                 // the source with a badge — is what stands here.
                 if let Some(language) = language
-                    && let Some(at) = plugins.claiming(language)
+                    && let Some(at) = into.plugins.claiming(language)
                 {
                     self.code = Some(Code::Claimed {
                         at,
@@ -344,12 +408,7 @@ impl Writer {
                 let tight = matches!(self.stack.last(), Some(Frame::List { tight: true }));
                 match task {
                     None => self.block("<li>"),
-                    Some(checked) => {
-                        let checked = if *checked { " checked" } else { "" };
-                        self.block(&format!(
-                            "<li class=\"task-list-item\"><input type=\"checkbox\" disabled{checked}> "
-                        ));
-                    }
+                    Some(task) => self.block(&task_checkbox(task, &into.to)),
                 }
                 self.stack.push(Frame::Item { tight });
             }
@@ -360,11 +419,18 @@ impl Writer {
                     "<div class=\"footnote-definition\" id=\"{id}\"{anchor}>"
                 ));
                 self.out.push('\n');
-                self.out.push_str(&format!(
-                    "<sup class=\"footnote-label\">{}</sup>",
-                    escape_text(label)
-                ));
-                self.stack.push(Frame::Other);
+                let shown = match self.footnotes.defined(label) {
+                    Some((number, _)) => number.to_string(),
+                    None => escape_text(label),
+                };
+                self.out
+                    .push_str(&format!("<sup class=\"footnote-label\">{shown}</sup>"));
+                // Where the definition's own markup starts, so its back-references can
+                // be put at the end of it when it closes.
+                self.definition = Some(self.out.len());
+                self.stack.push(Frame::Definition {
+                    backrefs: backrefs(&id, self.footnotes.defined(label)),
+                });
             }
             Tag::Table { .. } => {
                 let anchor = self.anchor(span);
@@ -410,11 +476,21 @@ impl Writer {
                     title_attribute(title)
                 ));
             }
-            Tag::WikiLink { target } => {
-                self.inline(&format!(
-                    "<a class=\"wikilink\" href=\"{}\">",
-                    escape_attribute(target)
-                ));
+            // A wikilink is a link only when it goes somewhere. One that resolves to
+            // nothing — a target no document answers to, a name two of them answer to,
+            // or an embed, which axiomd shows rather than transcludes — is written as a
+            // span: styled as a link that leads nowhere, and inert by construction
+            // rather than by a policy that has to refuse it later.
+            Tag::WikiLink { target, embed } => {
+                let found = (!embed).then(|| into.beside.resolve(target)).flatten();
+                self.wikilinks.push(found.is_some());
+                match found {
+                    Some(found) => self.inline(&format!(
+                        "<a class=\"wikilink\" href=\"{}\">",
+                        escape_attribute(&found.href),
+                    )),
+                    None => self.inline("<span class=\"wikilink wikilink-unresolved\">"),
+                }
             }
             // An image's label is alt text, which is a plain-text attribute: markup
             // inside it is collected as text until the image closes.
@@ -426,7 +502,7 @@ impl Writer {
         }
     }
 
-    fn end(&mut self, end: &TagEnd, to: &Destination<'_>, plugins: &Plugins) {
+    fn end(&mut self, end: &TagEnd, into: &Page<'_>) {
         match end {
             TagEnd::Paragraph => {
                 if matches!(self.stack.pop(), Some(Frame::Paragraph { wrapped: true })) {
@@ -442,8 +518,11 @@ impl Writer {
                 self.close(&format!("</h{level}>"));
             }
             TagEnd::BlockQuote => {
-                self.stack.pop();
-                self.close("</blockquote>");
+                let element = match self.stack.pop() {
+                    Some(Frame::Callout { element }) => element,
+                    _ => "blockquote",
+                };
+                self.close(&format!("</{element}>"));
             }
             TagEnd::CodeBlock => {
                 self.stack.pop();
@@ -453,7 +532,7 @@ impl Writer {
                         language,
                         source,
                         anchor,
-                    }) => self.claimed_fence(plugins, at, &language, &source, &anchor),
+                    }) => self.claimed_fence(into.plugins, at, &language, &source, &anchor),
                     _ => self.out.push_str("</code></pre>\n"),
                 }
             }
@@ -466,7 +545,11 @@ impl Writer {
                 self.close("</li>");
             }
             TagEnd::FootnoteDefinition => {
-                self.stack.pop();
+                let backrefs = match self.stack.pop() {
+                    Some(Frame::Definition { backrefs }) => backrefs,
+                    _ => String::new(),
+                };
+                self.write_backrefs(&backrefs);
                 self.close("</div>");
             }
             TagEnd::Table => {
@@ -491,8 +574,12 @@ impl Writer {
             TagEnd::Emphasis => self.inline("</em>"),
             TagEnd::Strong => self.inline("</strong>"),
             TagEnd::Strikethrough => self.inline("</del>"),
-            TagEnd::Link | TagEnd::WikiLink => self.inline("</a>"),
-            TagEnd::Image => self.image(to),
+            TagEnd::Link => self.inline("</a>"),
+            TagEnd::WikiLink => {
+                let resolved = self.wikilinks.pop().unwrap_or(false);
+                self.inline(if resolved { "</a>" } else { "</span>" });
+            }
+            TagEnd::Image => self.image(&into.to),
         }
     }
 
@@ -579,6 +666,27 @@ impl Writer {
         }
     }
 
+    /// Puts the way back to a footnote's references at the end of its definition.
+    ///
+    /// Inside the definition's last paragraph when it has one, which is where GitHub
+    /// and Obsidian both put it and what keeps the arrow on the same line as the
+    /// sentence it belongs to. A definition that ends in something else — a list, a
+    /// code block — gets a line of its own instead, because putting an arrow inside
+    /// one of those would change what it is.
+    fn write_backrefs(&mut self, backrefs: &str) {
+        let start = self.definition.take().unwrap_or(0);
+        if backrefs.is_empty() {
+            return;
+        }
+        let paragraph = self.out[start..]
+            .ends_with("</p>\n")
+            .then(|| self.out.len() - "</p>\n".len());
+        match paragraph {
+            Some(at) => self.out.insert_str(at, backrefs),
+            None => self.close(&format!("<p class=\"footnote-backrefs\">{backrefs}</p>")),
+        }
+    }
+
     /// The id of the next heading, as an attribute. Empty when the heading had
     /// nothing to make an anchor out of.
     fn heading_id(&mut self) -> String {
@@ -639,8 +747,25 @@ impl Writer {
 
     /// Records the anchor of a top-level block and returns its attribute. Nested
     /// blocks get neither.
+    ///
+    /// Neither does a block the engine moved. The anchor map is in document order with
+    /// strictly increasing lines, and everything that navigates a document rides on
+    /// that (invariant 3): `place.js` walks the blocks in the order they are on screen
+    /// and stops at the first one past the line it wants. A block whose source is
+    /// *above* the block before it would end that walk early and land the reader
+    /// somewhere they never were — so it is written without a line rather than with a
+    /// misleading one. GFM footnote definitions are the case that makes this real:
+    /// they are collected to the foot of the document in the order they are first
+    /// referred to, which is not the order they were written in.
     fn anchor(&mut self, span: &Span) -> String {
         if !self.stack.is_empty() || !self.alt.is_empty() {
+            return String::new();
+        }
+        if self
+            .anchors
+            .last()
+            .is_some_and(|last| last.line >= span.line)
+        {
             return String::new();
         }
         self.anchors.push(Anchor {
@@ -726,7 +851,7 @@ fn data_uri(picture: &Picture) -> String {
 
 /// Base64 as RFC 4648 §4 defines it: standard alphabet, padded, no line breaks —
 /// which is the only spelling a `data:` URI accepts.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -755,6 +880,31 @@ fn highlight_or_escape(language: Option<&str>, code: &str) -> String {
     escaped
 }
 
+/// A task list item's opening markup: the box, and — on screen — the click that
+/// toggles it.
+///
+/// The box is a link because a rendered document cannot run a script: pressing it is a
+/// navigation, the app's own policy reads it as the one request it is
+/// ([`Request::ToggleTask`]), and the offset it carries is where the parser said the
+/// marker was. Two identical items are therefore two different links, and nothing
+/// anywhere searches the document's text for the line to change (invariant 3).
+///
+/// In a file there is no app to answer, so the box is what it has always been: a
+/// disabled checkbox saying what the author wrote.
+fn task_checkbox(task: &Task, to: &Destination<'_>) -> String {
+    let checked = if task.checked { " checked" } else { "" };
+    match to {
+        Destination::Screen => format!(
+            "<li class=\"task-list-item\">\
+             <a class=\"task-toggle\" href=\"{}\"><input type=\"checkbox\"{checked}></a> ",
+            escape_attribute(&Request::ToggleTask(task.marker).uri()),
+        ),
+        Destination::File(_) => {
+            format!("<li class=\"task-list-item\"><input type=\"checkbox\" disabled{checked}> ")
+        }
+    }
+}
+
 fn title_attribute(title: &str) -> String {
     if title.is_empty() {
         return String::new();
@@ -771,30 +921,34 @@ fn align_name(alignment: Alignment) -> &'static str {
     }
 }
 
-fn callout_kind(kind: CalloutKind) -> &'static str {
-    match kind {
-        CalloutKind::Note => "note",
-        CalloutKind::Tip => "tip",
-        CalloutKind::Important => "important",
-        CalloutKind::Warning => "warning",
-        CalloutKind::Caution => "caution",
-    }
-}
-
-fn callout_title(kind: CalloutKind) -> &'static str {
-    match kind {
-        CalloutKind::Note => "Note",
-        CalloutKind::Tip => "Tip",
-        CalloutKind::Important => "Important",
-        CalloutKind::Warning => "Warning",
-        CalloutKind::Caution => "Caution",
-    }
-}
-
 /// A heading's words as one line of them: a setext heading spans two source lines and
 /// a long one is often wrapped, and an outline entry is a single row either way.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<&str>>().join(" ")
+}
+
+/// The way back from a definition to every reference that points at it.
+///
+/// One arrow per reference, numbered from the second onwards: a footnote cited three
+/// times has three ways back, and a reader who followed the second one is taken to
+/// where they were rather than to where the first reader was.
+fn backrefs(id: &str, defined: Option<(usize, usize)>) -> String {
+    let Some((_, references)) = defined else {
+        return String::new();
+    };
+    (1..=references)
+        .map(|nth| {
+            let counted = if nth == 1 {
+                String::new()
+            } else {
+                format!("<sup>{nth}</sup>")
+            };
+            format!(
+                " <a class=\"footnote-backref\" href=\"#fnref-{id}-{nth}\" \
+                 title=\"Back to the text\">\u{21a9}{counted}</a>"
+            )
+        })
+        .collect()
 }
 
 /// The document-unique id a footnote reference links to.

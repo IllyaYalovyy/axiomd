@@ -121,28 +121,83 @@ fn a_document_cannot_introduce_an_input_that_is_not_a_checkbox() {
     assert!(!body.contains("secret"), "{body}");
 }
 
+/// A foldable callout is a `<details>`, so the sanitiser had to start letting one
+/// through. What it lets through is the element and the one boolean attribute that
+/// says whether it starts open — and nothing else a document might hang on it.
+#[test]
+fn a_details_element_keeps_only_what_folding_needs() {
+    let html = render(
+        "<details open onclick=\"steal()\" style=\"position:fixed\" data-x=\"y\">\n\n\
+         <summary onmouseover=\"steal()\">Title</summary>\n\n</details>\n",
+    )
+    .html()
+    .to_string();
+    let body = body_of(&html);
+
+    assert!(body.contains("<details open"), "{body}");
+    assert!(body.contains("<summary>Title</summary>"), "{body}");
+    for forbidden in [
+        "onclick",
+        "onmouseover",
+        "steal",
+        "position:fixed",
+        "data-x",
+    ] {
+        assert!(!body.contains(forbidden), "{forbidden} survived:\n{body}");
+    }
+}
+
 /// The bundled stylesheet is bundled: rendering a document must not pull a font, an
 /// image or another sheet off the network.
 ///
-/// Every way CSS can name something to go and get: another sheet, or any value the
-/// browser resolves as a URL. A `url()` of any kind fails here — even a relative one,
-/// which would be an asset beside the sheet rather than inside it — so the rule is
-/// "the stylesheet asks for nothing", not "the stylesheet asks for nothing remote".
+/// Two rules, and the second is what the callout icons made necessary. The sheet may
+/// not `@import` anything at all, and every URL it resolves must be an `axiomd://`
+/// asset the application itself answers for — checked by asking for the bytes, so a
+/// rule naming a file that was never bundled fails here rather than showing the reader
+/// a callout with a hole in it. A relative URL fails too: it would be a file beside the
+/// sheet, and there is no such place.
 ///
-/// A scheme written inside an attribute selector is not one of those:
+/// A scheme written inside an attribute selector is not a fetch:
 /// `a[href^="https://"]` is a test the browser runs against the document's own links,
 /// and matching one fetches nothing. Those brackets — the only place in this sheet a
-/// scheme may appear — are stood aside before the search, rather than the search
-/// being loosened.
+/// scheme may appear outside a `url()` — are stood aside before the search, rather
+/// than the search being loosened.
 #[test]
-fn the_stylesheet_fetches_nothing() {
+fn the_stylesheet_fetches_nothing_the_application_does_not_carry() {
     let stylesheet = without_attribute_selectors(axiomd_render::stylesheet());
-    for forbidden in ["@import", "url(", "://"] {
+    assert!(
+        !stylesheet.contains("@import"),
+        "the stylesheet imports another sheet"
+    );
+
+    let mut named = 0;
+    let mut rest = stylesheet.as_str();
+    while let Some(at) = rest.find("url(") {
+        rest = &rest[at + "url(".len()..];
+        let end = rest.find(')').unwrap_or(rest.len());
+        let uri = rest[..end].trim().trim_matches(['"', '\'']).to_owned();
+        rest = &rest[end..];
+        named += 1;
+
+        let path = uri.strip_prefix("axiomd://assets").unwrap_or_else(|| {
+            panic!("the stylesheet fetches {uri}, which is not a bundled asset")
+        });
         assert!(
-            !stylesheet.contains(forbidden),
-            "the stylesheet references {forbidden}"
+            axiomd_render::asset(path).is_some(),
+            "the stylesheet names {uri}, and nothing is served there",
         );
     }
+    assert!(
+        named >= 13,
+        "only {named} assets are named by the stylesheet; the callout icons are missing",
+    );
+
+    // And nothing else in it speaks of anywhere at all.
+    let without_assets = stylesheet.replace("axiomd://assets", "");
+    assert!(
+        !without_assets.contains("://"),
+        "the stylesheet references somewhere outside the application",
+    );
 }
 
 /// `css` with every `[…]` taken out.

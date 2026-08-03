@@ -19,10 +19,18 @@
     --axiomd-surface-strong: rgb(255 255 255 / 10%);
 
     --axiomd-note: #62a0ea;
+    --axiomd-abstract: #33d1d1;
+    --axiomd-info: #62a0ea;
+    --axiomd-todo: #78aeed;
     --axiomd-tip: #57e389;
-    --axiomd-important: #dc8add;
+    --axiomd-success: #8ff0a4;
+    --axiomd-question: #f9d67a;
     --axiomd-warning: #f8e45c;
-    --axiomd-caution: #ff7b63;
+    --axiomd-failure: #ff7b63;
+    --axiomd-danger: #ff938c;
+    --axiomd-bug: #f66151;
+    --axiomd-example: #dc8add;
+    --axiomd-quote: #c0bfbc;
 
     /* A search highlight has to carry the reader's eye without blinding it: the light
        palette's yellow on a dark page does the second and not the first. */

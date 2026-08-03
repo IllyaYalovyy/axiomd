@@ -33,9 +33,10 @@
 
 mod boundary;
 mod comrak_engine;
+mod obsidian;
 
 pub use boundary::{
-    Alignment, Callout, CalloutKind, EngineId, Event, Extension, Extensions, MarkdownEngine,
-    Parsed, Span, SpannedEvent, Tag, TagEnd,
+    Alignment, Callout, EngineId, Event, Extension, Extensions, MarkdownEngine, Parsed, Span,
+    SpannedEvent, Tag, TagEnd, Task,
 };
 pub use comrak_engine::ComrakEngine;
