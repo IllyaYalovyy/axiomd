@@ -99,6 +99,23 @@ pub struct Outline {
     pub notice: String,
 }
 
+/// The search bar as one moment of searching leaves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Search {
+    /// Whether the bar is up at all.
+    pub shown: bool,
+    /// What the reader has typed into it.
+    pub query: String,
+    /// The counter beside the entry — `3 of 12`, `No results`, or empty while there is
+    /// nothing to count.
+    pub counter: String,
+    /// What the bar says about having just carried the reader past an end of the
+    /// document, or an empty string when the last step did not.
+    pub wrap: String,
+    /// Whether the case toggle is pressed.
+    pub cased: bool,
+}
+
 /// The settings store one or more launches share.
 ///
 /// Preferences outlive the application that changed them, so a test about them needs
@@ -597,6 +614,51 @@ impl App {
     /// section it passed — and this is the only place that promise is visible.
     pub fn section_reports(&self) -> u32 {
         self.property("section-reports").parse().expect("a count")
+    }
+
+    /// The search bar of the addressed window, as the reader sees it.
+    ///
+    /// One question rather than five, because the five are only ever meaningful
+    /// together: a counter beside a bar nobody can see counts nothing, and what it says
+    /// is about the words in the entry beside it.
+    pub fn search(&self) -> Search {
+        Search {
+            shown: self.property("find-shown") == "true",
+            query: self.property("find-query"),
+            counter: self.property("find-counter"),
+            wrap: self.property("find-wrap"),
+            cased: self.property("find-cased") == "true",
+        }
+    }
+
+    /// Types `text` into the search bar, exactly as pressing the keys does. The bar has
+    /// to be open, exactly as it does for the reader.
+    pub fn search_for(&self, text: &str) {
+        self.command("find", text);
+    }
+
+    /// Waits until the counter beside the search entry reads `wanted`, and fails saying
+    /// what it reads instead.
+    ///
+    /// The count of a rendered document comes back from the web process, and the entry
+    /// waits for the reader to stop typing before it searches at all, so a test that
+    /// read the counter once would be racing both.
+    pub fn wait_until_counter(&self, wanted: &str) {
+        self.settle(&format!("the search to count {wanted:?}"), || {
+            Ok(self.try_command("window", "find-counter")? == wanted)
+        });
+    }
+
+    /// What the source in the editor is showing highlighted, in order, with the match
+    /// the reader is on prefixed by `>`.
+    ///
+    /// The editing half of reading `mark.axiomd-find` out of the rendered page.
+    pub fn source_highlights(&self) -> Vec<String> {
+        let highlighted = self.property("find-highlights");
+        if highlighted.is_empty() {
+            return Vec::new();
+        }
+        highlighted.lines().map(str::to_owned).collect()
     }
 
     /// Resizes the addressed window, as dragging its edge or tiling it does.

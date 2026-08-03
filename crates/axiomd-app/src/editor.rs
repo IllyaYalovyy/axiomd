@@ -14,18 +14,38 @@
 //! span map. Switching modes maps a source line to a rendered anchor and back
 //! (`window.rs`), and these two are the end of that mapping that a caret has.
 //!
+//! # Searching the source
+//!
+//! The editor is the other surface the search bar drives ([`crate::find`]), and what it
+//! searches is the source as the reader wrote it — markup included, because in edit
+//! mode the markup is what they are looking at and what they came to change. Matches
+//! are two text tags over the buffer, so nothing is re-parsed and the text itself is
+//! never touched; the tags' colours follow the reader's colour scheme, which is the one
+//! thing a text tag cannot get from a stylesheet.
+//!
 //! # What is not here yet
 //!
 //! Syntax highlighting and spell checking. Both need GtkSourceView 5 and libspelling,
 //! whose development packages are not installable in this environment; the rest of the
 //! editor — the buffer, undo, the caret, the modified state — is the same either way,
-//! and this module is the only place that changes when they arrive.
+//! and this module is the only place that changes when they arrive. The search is
+//! written over `GtkTextBuffer` for the same reason: a `GtkSourceSearchContext` is not
+//! reachable from this build, and the rule it would apply is stated once in
+//! [`crate::find::Query::matches`] and shared with the rendered page (issue #8, and
+//! reported to the owner).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use adw::prelude::*;
 use gtk::glib;
-use gtk::prelude::*;
+
+use crate::find::{Counted, Query, Searchable};
+
+/// The two things a search does to the source: every match marked, and the one the
+/// reader is on marked differently.
+const MATCH: &str = "axiomd-find";
+const CURRENT_MATCH: &str = "axiomd-find-current";
 
 /// One window's editing surface.
 pub(crate) struct Editor {
@@ -38,6 +58,27 @@ pub(crate) struct Editor {
     /// following the file, taking the version on disk. Those are not the reader typing
     /// and must not mark the document modified or start an autosave.
     filling: Rc<Cell<bool>>,
+    /// The search the source is showing, or `None` when the reader is not searching.
+    finding: RefCell<Option<Finding>>,
+    /// Where its matches are, in characters, so that walking them costs no more than
+    /// moving one tag. Emptied whenever the text changes, which is the only thing that
+    /// can make them wrong.
+    found: RefCell<Vec<(usize, usize)>>,
+    /// Which scheduled re-search is the current one. Every keystroke supersedes the one
+    /// before it, so a burst of typing is one search at the end rather than one per key.
+    researching: Cell<u64>,
+    /// This surface's subscription to the reader's colour scheme, which ends with the
+    /// window rather than outliving it on a store that belongs to the application
+    /// (invariant 7).
+    recolouring: RefCell<Option<glib::SignalHandlerId>>,
+}
+
+/// A search the source is showing.
+struct Finding {
+    looking_for: Query,
+    /// Which match is the current one, counting from zero in source order.
+    nth: usize,
+    counted: Counted,
 }
 
 /// What the window does when the caret lands on another line.
@@ -64,6 +105,12 @@ impl Editor {
             .vexpand(true)
             .build();
 
+        // Created here and once, in this order, so that the current match's colours win
+        // over the ones every match gets: a tag added later to the same table has the
+        // higher priority.
+        buffer.create_tag(Some(MATCH), &[]);
+        buffer.create_tag(Some(CURRENT_MATCH), &[]);
+
         let editor = Rc::new(Self {
             scroller,
             view,
@@ -71,7 +118,24 @@ impl Editor {
             changed: RefCell::new(None),
             moved: RefCell::new(None),
             filling: Rc::new(Cell::new(false)),
+            finding: RefCell::new(None),
+            found: RefCell::new(Vec::new()),
+            researching: Cell::new(0),
+            recolouring: RefCell::new(None),
         });
+        editor.recolour_matches();
+
+        // The highlight follows the reader's colour scheme, because a text tag carries
+        // colours rather than a style class and nothing else would restyle it. Live,
+        // and without the buffer being touched: the same rule the rendered document is
+        // held to (invariant 9).
+        let recolouring = Rc::downgrade(&editor);
+        *editor.recolouring.borrow_mut() =
+            Some(adw::StyleManager::default().connect_dark_notify(move |_| {
+                if let Some(editor) = recolouring.upgrade() {
+                    editor.recolour_matches();
+                }
+            }));
 
         // The editing end of "which section is the reader in": the caret moving is
         // the editor's answer to the page's scroll (issue #7). It costs an integer
@@ -92,6 +156,12 @@ impl Editor {
             let Some(editor) = typed.upgrade() else {
                 return;
             };
+            // Whatever changed the text — the reader, or the application putting a
+            // document in the buffer — the matches found in the old text are no longer
+            // where they were, so the search is run again over what is there now. Once
+            // they stop, not once per key: see `search_again`.
+            editor.found.borrow_mut().clear();
+            editor.search_again();
             if editor.filling.get() {
                 return;
             }
@@ -202,6 +272,197 @@ impl Editor {
     /// start typing.
     pub(crate) fn take_the_keyboard(&self) {
         self.view.grab_focus();
+    }
+
+    /// What the reader can see highlighted in the source, in order, with the match they
+    /// are on marked out from the rest.
+    ///
+    /// The editing half of reading `mark.axiomd-find` out of the rendered page: the
+    /// only way to ask what a search actually did to the text in front of the reader.
+    pub(crate) fn highlighted(&self) -> Vec<String> {
+        let found = self.found.borrow().clone();
+        if found.is_empty() {
+            return Vec::new();
+        }
+        let current = self
+            .finding
+            .borrow()
+            .as_ref()
+            .map(|finding| finding.nth % found.len());
+        found
+            .iter()
+            .enumerate()
+            .map(|(index, (from, to))| {
+                let text = self.slice(*from, *to);
+                if Some(index) == current {
+                    format!(">{text}")
+                } else {
+                    text
+                }
+            })
+            .collect()
+    }
+
+    /// Runs the search again once the reader stops typing.
+    ///
+    /// Searching a document is work proportional to the document, and a keystroke must
+    /// never pay for it (issue #18: typing costs a keystroke, whatever the document
+    /// costs). So a burst of keys is one search at the end rather than one per key —
+    /// the same quiet period and the same reason as the re-render the window schedules.
+    /// In between, the marks the reader can see move with the text they are typing in,
+    /// because that is what a text tag does.
+    fn search_again(self: &Rc<Self>) {
+        if self.finding.borrow().is_none() {
+            return;
+        }
+        let mine = self.researching.get() + 1;
+        self.researching.set(mine);
+        let editor = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            glib::timeout_future(crate::watch::QUIET).await;
+            if let Some(editor) = editor.upgrade()
+                && editor.researching.get() == mine
+            {
+                editor.mark_matches(false);
+            }
+        });
+    }
+
+    /// Runs the search the bar has given this surface over the text as it stands.
+    ///
+    /// `bring` is whether the reader asked to be taken to the current match: they did
+    /// when they typed or pressed Next, and they did not when the document changed
+    /// under them — a live reload must not move a caret they left somewhere.
+    fn mark_matches(&self, bring: bool) {
+        let Some((looking_for, nth, counted)) = self.finding.borrow().as_ref().map(|finding| {
+            (
+                finding.looking_for.clone(),
+                finding.nth,
+                finding.counted.clone(),
+            )
+        }) else {
+            return;
+        };
+
+        if self.found.borrow().is_empty() {
+            let text: Vec<char> = self.text().chars().collect();
+            *self.found.borrow_mut() = looking_for.matches(&text);
+        }
+        let found = self.found.borrow().clone();
+
+        self.unmark();
+        for (from, to) in &found {
+            self.buffer
+                .apply_tag_by_name(MATCH, &self.at(*from), &self.at(*to));
+        }
+
+        if !found.is_empty() {
+            let (from, to) = found[nth % found.len()];
+            self.buffer
+                .apply_tag_by_name(CURRENT_MATCH, &self.at(from), &self.at(to));
+            if bring {
+                // The caret goes with the reader: pressing Escape leaves them at the
+                // word they searched for rather than back where they started.
+                self.buffer.place_cursor(&self.at(from));
+                self.reveal_the_caret();
+            }
+        }
+        counted(&looking_for, found.len());
+    }
+
+    /// Takes the marks off the source, leaving the text untouched.
+    fn unmark(&self) {
+        let (start, end) = (self.buffer.start_iter(), self.buffer.end_iter());
+        self.buffer.remove_tag_by_name(MATCH, &start, &end);
+        self.buffer.remove_tag_by_name(CURRENT_MATCH, &start, &end);
+    }
+
+    /// Brings the caret into the middle of the editor — where a reader who was taken
+    /// somewhere by a search expects to find what they searched for.
+    ///
+    /// On the next turn of the loop, and through the caret's own mark: an iterator is
+    /// invalidated by any change to the buffer, and a view that has only just been
+    /// given its size has nowhere to scroll to yet.
+    fn reveal_the_caret(&self) {
+        let view = self.view.clone();
+        let buffer = self.buffer.clone();
+        glib::idle_add_local_once(move || {
+            view.scroll_to_mark(&buffer.get_insert(), 0.0, true, 0.0, 0.5);
+        });
+    }
+
+    fn at(&self, offset: usize) -> gtk::TextIter {
+        self.buffer
+            .iter_at_offset(i32::try_from(offset).unwrap_or(i32::MAX))
+    }
+
+    fn slice(&self, from: usize, to: usize) -> String {
+        self.buffer
+            .text(&self.at(from), &self.at(to), true)
+            .to_string()
+    }
+
+    /// The colours a search marks the source with, under the scheme the reader is
+    /// reading in.
+    ///
+    /// The same two colours the rendered page uses (`axiomd.css`), so a match looks
+    /// like a match whichever surface the reader is on.
+    fn recolour_matches(&self) {
+        let dark = adw::StyleManager::default().is_dark();
+        let table = self.buffer.tag_table();
+        for (name, background, foreground) in [
+            (MATCH, if dark { "#7a5c00" } else { "#f9f06b" }, ink(dark)),
+            (
+                CURRENT_MATCH,
+                if dark { "#c64600" } else { "#ff7800" },
+                ink(dark),
+            ),
+        ] {
+            if let Some(tag) = table.lookup(name) {
+                tag.set_background(Some(background));
+                tag.set_foreground(Some(foreground));
+            }
+        }
+    }
+}
+
+/// What is legible on both of those, which is not the same colour on both.
+fn ink(dark: bool) -> &'static str {
+    if dark { "#ffffff" } else { "#241f31" }
+}
+
+impl Searchable for Editor {
+    /// The source, searched as the reader wrote it: the markup counts, because in edit
+    /// mode the markup is what they are looking at and what they came to change.
+    fn show_matches(&self, looking_for: &Query, nth: usize, bring: bool, counted: Counted) {
+        let changed = self
+            .finding
+            .borrow()
+            .as_ref()
+            .is_none_or(|finding| finding.looking_for != *looking_for);
+        if changed {
+            self.found.borrow_mut().clear();
+        }
+        *self.finding.borrow_mut() = Some(Finding {
+            looking_for: looking_for.clone(),
+            nth,
+            counted,
+        });
+        self.mark_matches(bring);
+    }
+
+    fn hide_matches(&self) {
+        self.finding.borrow_mut().take();
+        self.found.borrow_mut().clear();
+        self.unmark();
+    }
+}
+
+impl Drop for Editor {
+    fn drop(&mut self) {
+        if let Some(handler) = self.recolouring.borrow_mut().take() {
+            adw::StyleManager::default().disconnect(handler);
+        }
     }
 }
 

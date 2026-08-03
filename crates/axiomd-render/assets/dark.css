@@ -23,5 +23,11 @@
     --axiomd-important: #dc8add;
     --axiomd-warning: #f8e45c;
     --axiomd-caution: #ff7b63;
+
+    /* A search highlight has to carry the reader's eye without blinding it: the light
+       palette's yellow on a dark page does the second and not the first. */
+    --axiomd-find: #7a5c00;
+    --axiomd-find-current: #c64600;
+    --axiomd-find-ink: #ffffff;
   }
 }

@@ -4,6 +4,7 @@ mod control;
 mod document;
 mod editor;
 mod export;
+mod find;
 mod links;
 mod outline;
 mod remote;

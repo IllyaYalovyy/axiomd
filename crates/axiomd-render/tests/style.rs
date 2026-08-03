@@ -74,3 +74,47 @@ fn the_reader_stylesheet_says_nothing_the_reader_did_not_ask_for() {
         "more than the reading width is set: {sheet}"
     );
 }
+
+/// The reader's search never reaches paper (issue #8).
+///
+/// A print job and an exported PDF are paginated from the very page on screen
+/// (`export.rs`), marks and all, so the only thing keeping a search off the printed
+/// document is where its colours are written: inside a `screen` block, and neutralised
+/// again inside the `print` one. Without both, a reader who pressed Ctrl+P with the bar
+/// open would get every occurrence of their word highlighted on paper — in the
+/// browser's own yellow, which is the UA default a `<mark>` falls back to.
+#[test]
+fn a_search_highlight_is_screen_only_and_neutralised_on_paper() {
+    let stylesheet = axiomd_render::stylesheet();
+    // The rule rather than the words: the stylesheet talks about the search in prose
+    // above it, and prose is not what paints anything.
+    let painted = stylesheet
+        .find(".markdown mark.axiomd-find {")
+        .expect("the stylesheet paints the search highlight");
+    let screen = stylesheet[..painted]
+        .rfind("@media screen")
+        .expect("the search highlight is inside a screen-only block");
+    assert!(
+        stylesheet[screen..painted].find("@media print").is_none(),
+        "the search highlight is painted from inside the print block",
+    );
+
+    let print = stylesheet
+        .find("@media print")
+        .expect("the stylesheet has a print block");
+    let on_paper = declarations_for(&stylesheet[print..], ".markdown mark.axiomd-find {")
+        .expect("the print block says nothing about a search highlight");
+    assert!(
+        on_paper.contains("background: none"),
+        "a search highlight keeps a background on paper: {on_paper}",
+    );
+}
+
+/// The declarations of the first rule in `stylesheet` whose selector mentions
+/// `selector`.
+fn declarations_for<'a>(stylesheet: &'a str, selector: &str) -> Option<&'a str> {
+    let at = stylesheet.find(selector)?;
+    let open = stylesheet[at..].find('{')? + at;
+    let close = stylesheet[open..].find('}')? + open;
+    Some(&stylesheet[open + 1..close])
+}

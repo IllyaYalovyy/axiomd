@@ -53,6 +53,16 @@ const WINDOW_SHORTCUTS: &[(&str, &str)] = &[
     (crate::window::FORWARD, "<Alt>Right"),
     (crate::window::MODE, "<Control>e"),
     (crate::window::OUTLINE, "F9"),
+    (crate::find::FIND, "<Control>f"),
+    (crate::find::FIND_NEXT, "<Control>g"),
+    (crate::find::FIND_PREVIOUS, "<Shift><Control>g"),
+    // Escape, and only while the bar is up: the action is disabled the rest of the
+    // time (`find.rs`), and a shortcut whose action is disabled does not fire — probed
+    // on GTK 4.20.4, where `gtk_shortcut_action_activate` on a `GtkNamedAction` naming
+    // a disabled action answers FALSE and answers TRUE the moment it is enabled. A
+    // shortcut that did not activate does not consume the key, so Escape goes on
+    // meaning whatever else it means in this window.
+    (crate::find::FIND_CLOSE, "Escape"),
     (crate::window::SAVE, "<Control>s"),
     // Ctrl+Shift+S, spelled the way GTK normalises it — `accels_for_action`
     // answers in this order, so writing it the other way round would make the table
@@ -421,6 +431,10 @@ mod tests {
             ("win.redo", "<Control>y"),
             ("win.print", "<Control>p"),
             ("win.export", "<Shift><Control>e"),
+            ("win.find", "<Control>f"),
+            ("win.find-next", "<Control>g"),
+            ("win.find-previous", "<Shift><Control>g"),
+            ("win.find-close", "Escape"),
         ] {
             assert_eq!(
                 app.accels_for_action(action),

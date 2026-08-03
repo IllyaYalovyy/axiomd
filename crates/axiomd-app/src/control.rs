@@ -220,6 +220,19 @@ impl Session {
                 window.type_text(payload);
                 Ok(String::new())
             }
+            // Typing into the search bar, as the reader does: what follows — the
+            // entry's own delay, the search, the counter — is the application's path
+            // and nothing here. The bar has to be open, exactly as it does for them.
+            "find" => {
+                let window = self.target(shell)?;
+                if window.search("find-shown").as_deref() != Some("true") {
+                    return Err("the search bar is not open, so there is nowhere \
+                                to type"
+                        .to_owned());
+                }
+                window.search_for(payload);
+                Ok(String::new())
+            }
             // Clicking into a line, as the reader does with the pointer: the same
             // call the mode switch makes to put them where they were reading.
             "caret" => {
@@ -319,6 +332,12 @@ impl Session {
         // lists, which section is highlighted, and how often the page has said where
         // the reader is.
         if let Some(answer) = window.outline(name) {
+            return Ok(answer);
+        }
+        // The search bar, as the reader sees it: whether it is up, what is in it, what
+        // the counter says, whether the last step wrapped, and what the source shows
+        // highlighted.
+        if let Some(answer) = window.search(name) {
             return Ok(answer);
         }
         match name {

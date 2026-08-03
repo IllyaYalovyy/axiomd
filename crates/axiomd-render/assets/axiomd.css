@@ -35,6 +35,10 @@
   --axiomd-important: #9141ac;
   --axiomd-warning: #e5a50a;
   --axiomd-caution: #e01b24;
+
+  --axiomd-find: #f9f06b;
+  --axiomd-find-current: #ff7800;
+  --axiomd-find-ink: #241f31;
 }
 
 html {
@@ -402,6 +406,31 @@ body {
   text-align: center;
 }
 
+/* The reader's search (issue #8), marked into the document by the app rather than
+ * written into it by the pipeline — `mark.axiomd-find` only ever exists while the
+ * search bar is open, and `find.js` takes every one of them back out when it closes.
+ *
+ * Screen only, and for the same reason the dark palette is: a printed page and an
+ * exported PDF are paginated from the very page on screen (`export.rs`), so without
+ * this a reader who printed with the bar open would get their search on paper — in the
+ * browser's own yellow, which is not a colour this document has anywhere else. */
+@media screen {
+  .markdown mark.axiomd-find {
+    padding: 0 0.05em;
+    border-radius: 3px;
+    background: var(--axiomd-find);
+    color: var(--axiomd-find-ink);
+  }
+
+  /* The one the counter is counting: a different colour, and a ring, so that it is
+     told from the others at a glance and from across the page. */
+  .markdown mark.axiomd-find.current {
+    background: var(--axiomd-find-current);
+    color: var(--axiomd-find-ink);
+    box-shadow: 0 0 0 2px var(--axiomd-find-current);
+  }
+}
+
 /* Print: the page is the document, without app chrome or dark surfaces.
  *
  * The same block is what an exported PDF is made of, because a PDF is a print job
@@ -535,6 +564,15 @@ body {
   .markdown .remote-banner,
   .markdown .remote-image-action {
     display: none;
+  }
+
+  /* And so is a search. The reader may have the bar open when they press Print, and
+     what they asked for is the document — not the browser's default yellow over every
+     occurrence of a word they were looking at on screen. */
+  .markdown mark.axiomd-find {
+    background: none;
+    color: inherit;
+    box-shadow: none;
   }
 
   .markdown a.remote-image {
