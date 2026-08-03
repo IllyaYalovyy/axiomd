@@ -106,6 +106,16 @@ impl Renderer {
     }
 }
 
+/// The engines a document can be read with, in the order preferences offer them.
+///
+/// One so far: the boundary exists precisely so that the second (#17) changes this
+/// list and nothing else. The reader's chosen engine is a setting already, so an
+/// engine that is not here is one the dialog can never show and [`compose`] can never
+/// be asked for.
+pub(crate) fn engines() -> [axiomd_engine::EngineId; 1] {
+    [ComrakEngine::new().id()]
+}
+
 /// Reads, parses and renders `path`, giving up as soon as `superseded` says the
 /// result is no longer wanted.
 fn compose(path: &Path, superseded: &dyn Fn() -> bool) -> Option<Page> {

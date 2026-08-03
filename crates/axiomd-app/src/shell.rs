@@ -26,6 +26,7 @@ use gtk::glib;
 
 use crate::document::FileId;
 use crate::scheme::Scheme;
+use crate::settings::{Settings, Watch};
 use crate::window::DocumentWindow;
 
 /// Owner-chosen application id (2026-08-02). Also the D-Bus well-known name and
@@ -39,6 +40,7 @@ const APP_ID: &str = "io.github.etf.axiomd";
 const SHORTCUTS: &[(&str, &str)] = &[
     ("app.new", "<Control>n"),
     ("app.open", "<Control>o"),
+    ("app.preferences", "<Control>comma"),
     ("app.close-window", "<Control>w"),
     ("app.quit", "<Control>q"),
 ];
@@ -77,6 +79,12 @@ pub(crate) struct Shell {
     /// webview asks for a document.
     context: OnceCell<webkit6::WebContext>,
     windows: RefCell<Vec<Rc<DocumentWindow>>>,
+    /// What the reader has asked for. One store for the application: a preference is
+    /// the same in every window, and every window is told when it changes.
+    settings: Rc<Settings>,
+    /// The application's own subscription — the colour scheme, which belongs to the
+    /// application rather than to any window. Lives as long as the shell.
+    theme: OnceCell<Watch>,
 }
 
 impl Shell {
@@ -85,7 +93,15 @@ impl Shell {
             scheme: Rc::new(Scheme::new()),
             context: OnceCell::new(),
             windows: RefCell::new(Vec::new()),
+            settings: Settings::new(),
+            theme: OnceCell::new(),
         }
+    }
+
+    /// Runs the application under the colour scheme the reader chose, and keeps it
+    /// there when they change their mind.
+    fn follow_the_chosen_theme(&self) {
+        let _ = self.theme.set(self.settings.follow_theme());
     }
 
     /// Puts `file` on screen.
@@ -155,7 +171,7 @@ impl Shell {
     }
 
     fn new_window(self: &Rc<Self>, app: &adw::Application) -> Rc<DocumentWindow> {
-        let window = DocumentWindow::new(app, self.context(), &self.scheme);
+        let window = DocumentWindow::new(app, self.context(), &self.scheme, &self.settings);
         self.windows.borrow_mut().push(window.clone());
 
         // Forgetting the window here is what frees it: with the shell's reference
@@ -206,7 +222,12 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     // appears. Does nothing at all unless a test launched this process.
     app.connect_startup({
         let shell = shell.clone();
-        move |app| crate::control::arm(app, &shell)
+        move |app| {
+            // Before any window: a reader who overrode the colour scheme sees their
+            // own from the first frame rather than a flash of the desktop's.
+            shell.follow_the_chosen_theme();
+            crate::control::arm(app, &shell);
+        }
     });
 
     app.connect_activate({
@@ -236,6 +257,17 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     add_action(&app, "open", {
         let shell = shell.clone();
         move |app| ask_for_a_document(&shell, app)
+    });
+    // Ctrl+comma. A dialog the reader asked for, which is the only kind axiomd has
+    // (`ux_decisions.md`): every row in it applies as it is turned, so there is
+    // nothing to confirm and nothing to restart.
+    add_action(&app, "preferences", {
+        let shell = shell.clone();
+        move |app| {
+            if let Some(window) = app.active_window() {
+                shell.settings.present_dialog(&window);
+            }
+        }
     });
     add_action(&app, "close-window", |app| {
         if let Some(window) = app.active_window() {
@@ -338,6 +370,7 @@ mod tests {
         for (accelerator, action) in [
             ("<Control>n", "app.new"),
             ("<Control>o", "app.open"),
+            ("<Control>comma", "app.preferences"),
             ("<Control>w", "app.close-window"),
             ("<Control>q", "app.quit"),
         ] {

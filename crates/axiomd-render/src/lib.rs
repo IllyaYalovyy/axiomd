@@ -148,6 +148,25 @@ pub fn render(parsed: &Parsed<'_>) -> Rendered {
     }
 }
 
+/// The stylesheet that puts the reader's own layout choices over [`stylesheet`].
+///
+/// `reading_width` is the measure a document's text is held to, in rem, or `None` for
+/// a document that fills the window.
+///
+/// It is meant to be installed as a *user* stylesheet on the view rather than folded
+/// into the document, which is what makes a change to it free: the page on screen
+/// restyles in place, and nothing is re-parsed, re-rendered or reloaded to change how
+/// wide a document is. `!important` is not decoration — under the cascade (CSS
+/// Cascading and Inheritance Level 5, §6.2) a normal user declaration loses to the
+/// document's own author one, and only an important user declaration outranks it.
+pub fn reader_stylesheet(reading_width: Option<u32>) -> String {
+    let measure = match reading_width {
+        Some(rem) => format!("{rem}rem"),
+        None => "none".to_owned(),
+    };
+    format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n")
+}
+
 /// The default stylesheet, light and dark palettes included.
 ///
 /// It is built once per process: the document typography plus the two code palettes

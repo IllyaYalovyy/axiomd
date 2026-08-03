@@ -78,6 +78,26 @@ accepted, except for small discovery spikes that are explicitly throwaway.
 - Dependencies need a documented purpose, maintenance status, and test impact.
 - Avoid hidden global state. If unavoidable, document lifecycle and test impact.
 
+## Preferences
+
+Owner rule (2026-08-02, issue #20): **every behaviour the reader can choose
+is a preference, and it applies live.** A feature with a knob lands its own
+row in the preferences dialog in the same change as the feature, with an
+exit criterion for that row — never "settings later".
+
+Concretely, for any behaviour knob:
+
+- Its key goes in `data/io.github.etf.axiomd.gschema.xml` and is named once
+  in `crates/axiomd-app/src/settings.rs`; the two are held together by the
+  completeness tests there, so a key in one and not the other fails the gate.
+- Its row goes in `crates/axiomd-app/src/settings/dialog.rs`, bound to the
+  key in both directions.
+- Changing it takes effect where the reader is — no restart, no reopen, and
+  for anything about how a document looks, no re-parse (invariant 9).
+- It is tested through the running application the way the reader uses it:
+  open the dialog, turn the row, assert what the document shows and what the
+  store holds (`crates/axiomd-app/tests/preferences.rs`).
+
 ## Testing Requirements
 
 Every behavior change needs regression coverage unless the RFC or PR explains why

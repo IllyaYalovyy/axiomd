@@ -5,6 +5,7 @@ mod document;
 mod links;
 mod remote;
 mod scheme;
+mod settings;
 mod shell;
 #[cfg(test)]
 mod testing;

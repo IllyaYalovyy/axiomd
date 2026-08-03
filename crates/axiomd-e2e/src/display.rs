@@ -26,9 +26,11 @@
 //! # Determinism
 //!
 //! The display is only half of it. The application is also given a private set of
-//! XDG directories, an in-memory settings backend and a pinned font configuration, so
-//! a rendered document does not change because the developer running the suite
-//! prefers a different theme, text scale or hinting. See [`Environment`].
+//! XDG directories, settings of its own and a pinned font configuration, so a
+//! rendered document does not change because the developer running the suite prefers
+//! a different theme, text scale or hinting. Those settings live in memory and die
+//! with the launch, unless the test is *about* preferences and gives it a store that
+//! outlives it. See [`Environment`].
 
 use std::io::ErrorKind;
 use std::net::Shutdown;
@@ -162,8 +164,14 @@ pub(crate) struct Environment {
 impl Environment {
     /// Builds the private world an application under test lives in, writing the
     /// configuration files it names into `scratch`.
-    pub(crate) fn pin(scratch: &Path) -> Environment {
-        let config = scratch.join("config");
+    ///
+    /// `settings` is the store the application keeps the reader's preferences in, for
+    /// a test that changes one or launches twice over the same one. Without it the
+    /// application gets settings that live in memory and die with it, which is what
+    /// every other test wants: a rendered document must not depend on what the last
+    /// test preferred.
+    pub(crate) fn pin(scratch: &Path, settings: Option<&Path>) -> Environment {
+        let config = settings.map_or_else(|| scratch.join("config"), Path::to_path_buf);
         let fonts = scratch.join("fonts.conf");
         let font_cache = scratch.join("fontcache");
         make_private_dir(&config.join("gtk-4.0"));
@@ -223,8 +231,18 @@ impl Environment {
                 ("XDG_CACHE_HOME", cache),
                 ("XDG_STATE_HOME", state),
                 ("FONTCONFIG_FILE", fonts),
-                // No dconf: the desktop's colour scheme and text scale stay outside.
-                ("GSETTINGS_BACKEND", PathBuf::from("memory")),
+                // No dconf either way: the desktop's colour scheme and text scale stay
+                // outside. A test that gave a settings store gets the keyfile backend,
+                // which keeps the reader's preferences in a file under the pinned
+                // configuration directory — so they outlive the application, exactly
+                // as they must on a real desktop.
+                (
+                    "GSETTINGS_BACKEND",
+                    PathBuf::from(match settings {
+                        Some(_) => "keyfile",
+                        None => "memory",
+                    }),
+                ),
                 ("GDK_BACKEND", PathBuf::from("wayland")),
                 // Nothing here needs the accessibility bus, and asking for one that
                 // is not there is a warning on every launch.

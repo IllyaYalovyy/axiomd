@@ -199,6 +199,30 @@ impl DocumentView {
         self.navigations.get()
     }
 
+    /// Restyles whatever this view is showing, and everything it shows afterwards,
+    /// with `stylesheet`.
+    ///
+    /// How a preference the reader just changed reaches the document: as a *user*
+    /// stylesheet on the view rather than as an edit to the page. Nothing is parsed,
+    /// rendered, patched or loaded again — the page on screen simply restyles, and a
+    /// document loaded later is already styled at its first paint rather than
+    /// reflowing after it (probed on WebKitGTK 2.52.5, both directions).
+    pub(crate) fn restyle(&self, stylesheet: &str) {
+        let Some(content) = self.webview.user_content_manager() else {
+            return;
+        };
+        content.remove_all_style_sheets();
+        content.add_style_sheet(&webkit6::UserStyleSheet::new(
+            stylesheet,
+            // The document is the whole of what this view shows; there are no frames
+            // in it, and a rendered document cannot make one.
+            webkit6::UserContentInjectedFrames::TopFrame,
+            webkit6::UserStyleLevel::User,
+            &[],
+            &[],
+        ));
+    }
+
     /// The network session this view's fetches go through — the app's only one.
     pub(crate) fn network_session(&self) -> Option<webkit6::NetworkSession> {
         self.webview.network_session()
@@ -358,6 +382,9 @@ fn build_webview(context: &webkit6::WebContext) -> webkit6::WebView {
     let webview = webkit6::WebView::builder()
         .web_context(context)
         .settings(&document_settings())
+        // This window's own, so the reader's styling of one document cannot reach
+        // another window's (invariant 7) and dies with this one.
+        .user_content_manager(&webkit6::UserContentManager::new())
         .vexpand(true)
         .hexpand(true)
         .build();
