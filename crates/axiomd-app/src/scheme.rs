@@ -50,6 +50,13 @@ const ASSETS_HOST: &str = "assets";
 /// The host prefix each published document gets, followed by its number.
 const DOCUMENT_HOST_PREFIX: &str = "doc-";
 
+/// The host prefix a document's loaded remote images get, followed by its number.
+///
+/// A host of their own rather than a reserved path under the document's, because the
+/// document's host is a directory: any path there could be a file the reader has, and
+/// a reserved one would be a name they are quietly not allowed to use.
+const IMAGE_HOST_PREFIX: &str = "img-";
+
 /// The bundled assets, by the path they are requested under. Compiled in, so an
 /// asset request can neither miss nor escape onto the filesystem.
 fn asset(path: &str) -> Option<(Vec<u8>, &'static str)> {
@@ -66,11 +73,23 @@ pub(crate) struct Scheme {
     next: Cell<u64>,
 }
 
-/// One document as the webview sees it: where its relative references resolve, and
-/// the page currently rendered for it.
+/// One document as the webview sees it: where its relative references resolve, the
+/// page currently rendered for it, and the remote images its reader has asked for.
 struct Document {
     root: PathBuf,
     html: Option<String>,
+    /// The images fetched for this document, in the order they were asked for. They
+    /// live here, and only here, so closing the window frees them with everything
+    /// else it held (invariant 7) and no other document can reach them.
+    images: Vec<Image>,
+}
+
+/// One remote image the reader pressed the button for, held as the bytes that came
+/// back rather than as the URL they came from: nothing in the document can name it
+/// again, and nothing about it is fetched twice.
+struct Image {
+    body: Vec<u8>,
+    content_type: String,
 }
 
 /// The answer to one request.
@@ -78,7 +97,7 @@ struct Document {
 enum Served {
     Bytes {
         body: Vec<u8>,
-        content_type: &'static str,
+        content_type: String,
     },
     /// Nothing is published at this URI.
     Missing,
@@ -105,13 +124,13 @@ impl Scheme {
             let uri = request.uri().unwrap_or_default();
             let (status, body, content_type) = match serve(&documents, &uri) {
                 Served::Bytes { body, content_type } => (200, body, content_type),
-                Served::Missing => (404, Vec::new(), "text/plain"),
-                Served::Refused => (403, Vec::new(), "text/plain"),
+                Served::Missing => (404, Vec::new(), "text/plain".to_owned()),
+                Served::Refused => (403, Vec::new(), "text/plain".to_owned()),
             };
             let length = body.len() as i64;
             let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(body));
             let response = webkit6::URISchemeResponse::new(&stream, length);
-            response.set_content_type(content_type);
+            response.set_content_type(&content_type);
             response.set_status(status, None);
             request.finish_with_response(&response);
         });
@@ -127,9 +146,14 @@ impl Scheme {
         self.next.set(id + 1);
         let root = file.parent().unwrap_or(Path::new("."));
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        self.documents
-            .borrow_mut()
-            .insert(id, Document { root, html: None });
+        self.documents.borrow_mut().insert(
+            id,
+            Document {
+                root,
+                html: None,
+                images: Vec::new(),
+            },
+        );
         Publication {
             documents: self.documents.clone(),
             id,
@@ -161,6 +185,34 @@ impl Publication {
             document.html = Some(html);
         }
     }
+
+    /// Puts a remote image the reader asked for where this document's view can see
+    /// it, and answers with the URI to point at it.
+    ///
+    /// The bytes are served from this document's own host, so the reader's image
+    /// arrives through the same origin as the rest of their document — the page's
+    /// `img-src axiomd:` policy needs no exception, and no other window can reach it.
+    pub(crate) fn attach_image(&self, body: Vec<u8>, content_type: String) -> String {
+        let mut documents = self.documents.borrow_mut();
+        let Some(document) = documents.get_mut(&self.id) else {
+            return String::new();
+        };
+        document.images.push(Image { body, content_type });
+        format!(
+            "{SCHEME}://{IMAGE_HOST_PREFIX}{}/{}",
+            self.id,
+            document.images.len() - 1
+        )
+    }
+
+    /// The directory this document's relative references resolve under.
+    pub(crate) fn root(&self) -> PathBuf {
+        self.documents
+            .borrow()
+            .get(&self.id)
+            .map(|document| document.root.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for Publication {
@@ -182,15 +234,29 @@ fn serve(documents: &RefCell<HashMap<u64, Document>>, uri: &str) -> Served {
 
     if host == ASSETS_HOST {
         return match asset(&path) {
-            Some((body, content_type)) => Served::Bytes { body, content_type },
+            Some((body, content_type)) => Served::Bytes {
+                body,
+                content_type: content_type.to_owned(),
+            },
             None => Served::Missing,
         };
     }
 
-    let Some(id) = host
-        .strip_prefix(DOCUMENT_HOST_PREFIX)
-        .and_then(|number| number.parse::<u64>().ok())
-    else {
+    if let Some(id) = number_after(&host, IMAGE_HOST_PREFIX) {
+        return match documents
+            .borrow()
+            .get(&id)
+            .and_then(|document| document.images.get(index_of(&path)?))
+        {
+            Some(image) => Served::Bytes {
+                body: image.body.clone(),
+                content_type: image.content_type.clone(),
+            },
+            None => Served::Missing,
+        };
+    }
+
+    let Some(id) = number_after(&host, DOCUMENT_HOST_PREFIX) else {
         return Served::Refused;
     };
     let documents = documents.borrow();
@@ -202,7 +268,7 @@ fn serve(documents: &RefCell<HashMap<u64, Document>>, uri: &str) -> Served {
         return match &document.html {
             Some(html) => Served::Bytes {
                 body: html.clone().into_bytes(),
-                content_type: "text/html",
+                content_type: "text/html".to_owned(),
             },
             None => Served::Missing,
         };
@@ -210,30 +276,55 @@ fn serve(documents: &RefCell<HashMap<u64, Document>>, uri: &str) -> Served {
     file_under(&document.root, &path)
 }
 
-/// Reads the file `request` names under `root`, refusing anything that leaves it.
-fn file_under(root: &Path, request: &str) -> Served {
+/// The number a host carries after `prefix`, when it is that kind of host at all.
+fn number_after(host: &str, prefix: &str) -> Option<u64> {
+    host.strip_prefix(prefix)?.parse().ok()
+}
+
+/// Which of a document's loaded images `/3` names.
+fn index_of(path: &str) -> Option<usize> {
+    path.strip_prefix('/')?.parse().ok()
+}
+
+/// The file `request` names under `root`, or `None` when it names something outside
+/// it — however the escape is spelled, and whether it is spelled at all.
+///
+/// This is the containment rule itself, and the same one applies wherever a document
+/// reaches for a path: the bytes the scheme will serve it, and the links it may
+/// follow (`links.rs`). A returned path is inside the directory; it is not a promise
+/// that anything is there.
+pub(crate) fn path_under(root: &Path, request: &str) -> Option<PathBuf> {
     let mut target = root.to_path_buf();
     for component in Path::new(request).components() {
         match component {
             Component::Normal(name) => target.push(name),
             Component::RootDir | Component::CurDir => {}
-            Component::ParentDir | Component::Prefix(_) => return Served::Refused,
+            // The request naming anything above the root, before a filesystem is
+            // even consulted.
+            Component::ParentDir | Component::Prefix(_) => return None,
         }
     }
-
-    let Ok(resolved) = target.canonicalize() else {
-        return Served::Missing;
-    };
-    let Ok(root) = root.canonicalize() else {
-        return Served::Refused;
-    };
-    if !resolved.starts_with(&root) {
-        return Served::Refused;
+    // And a symlink inside the directory leading out of it, which the check above
+    // cannot see. Only meaningful for a path that exists; one that does not is a
+    // broken link, and saying so is the window's job rather than this rule's.
+    if let Ok(resolved) = target.canonicalize() {
+        if !resolved.starts_with(root.canonicalize().ok()?) {
+            return None;
+        }
+        return Some(resolved);
     }
+    Some(target)
+}
+
+/// Reads the file `request` names under `root`, refusing anything that leaves it.
+fn file_under(root: &Path, request: &str) -> Served {
+    let Some(resolved) = path_under(root, request) else {
+        return Served::Refused;
+    };
     match std::fs::read(&resolved) {
         Ok(body) => Served::Bytes {
             body,
-            content_type: content_type(&resolved),
+            content_type: content_type(&resolved).to_owned(),
         },
         Err(_) => Served::Missing,
     }
@@ -271,7 +362,7 @@ mod tests {
     /// rather than on a text file wearing a `.png` name.
     const PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
-    fn served_bytes(served: Served) -> (Vec<u8>, &'static str) {
+    fn served_bytes(served: Served) -> (Vec<u8>, String) {
         match served {
             Served::Bytes { body, content_type } => (body, content_type),
             other => panic!("expected bytes, got {other:?}"),
@@ -468,11 +559,64 @@ mod tests {
         publication.show("<h1>Notes</h1>".to_owned());
         let page = publication.uri().to_owned();
         let image = format!("{page}logo.png");
+        let loaded = publication.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
 
         drop(publication);
 
         assert_eq!(serve(&scheme.documents, &page), Served::Missing);
         assert_eq!(serve(&scheme.documents, &image), Served::Missing);
+        assert_eq!(serve(&scheme.documents, &loaded), Served::Missing);
         assert!(scheme.documents.borrow().is_empty());
+    }
+
+    /// An image the reader asked for comes back through the document's own origin,
+    /// which is what lets it be displayed without loosening the page's policy.
+    #[test]
+    fn an_image_the_reader_loaded_is_served_from_the_documents_own_origin() {
+        let scratch = ScratchDir::new("scheme-loaded");
+        let file = scratch.write("notes.md", "# Notes\n");
+        let scheme = Scheme::new();
+        let publication = scheme.publish(&file);
+
+        let first = publication.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
+        let second = publication.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());
+
+        assert!(first.starts_with("axiomd://img-"), "{first}");
+        assert_ne!(first, second, "two images shared one URI");
+        assert_eq!(
+            served_bytes(serve(&scheme.documents, &first)),
+            (PIXEL_PNG.to_vec(), "image/png".to_owned()),
+        );
+        assert_eq!(
+            served_bytes(serve(&scheme.documents, &second)),
+            (b"GIF89a".to_vec(), "image/gif".to_owned()),
+        );
+        assert_eq!(
+            serve(&scheme.documents, &format!("{first}9")),
+            Served::Missing,
+            "an image nobody loaded was answered",
+        );
+    }
+
+    /// One window's loaded image is not another window's, however the URI is spelled.
+    #[test]
+    fn a_loaded_image_belongs_to_the_document_that_loaded_it() {
+        let first_dir = ScratchDir::new("scheme-img-first");
+        let second_dir = ScratchDir::new("scheme-img-second");
+        let scheme = Scheme::new();
+        let first = scheme.publish(&first_dir.write("a.md", "# A\n"));
+        let second = scheme.publish(&second_dir.write("b.md", "# B\n"));
+
+        let mine = first.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
+        let theirs = second.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());
+
+        assert_ne!(mine, theirs);
+        drop(first);
+        assert_eq!(serve(&scheme.documents, &mine), Served::Missing);
+        assert_eq!(
+            served_bytes(serve(&scheme.documents, &theirs)).0,
+            b"GIF89a",
+            "closing one window took another window's image with it",
+        );
     }
 }

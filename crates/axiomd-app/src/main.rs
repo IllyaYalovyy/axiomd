@@ -2,6 +2,8 @@
 
 mod control;
 mod document;
+mod links;
+mod remote;
 mod scheme;
 mod shell;
 #[cfg(test)]

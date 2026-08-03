@@ -8,15 +8,16 @@
 </head>
 <body>
 <article class="markdown">
-<h1 data-line="1">Malicious</h1>
+<div class="remote-banner"><span class="remote-banner-text">This document links 2 images from the internet. Nothing has been loaded.</span><a class="remote-banner-action" href="axiomd://request/image?all" rel="noopener noreferrer">Load all</a></div>
+<h1 id="malicious" data-line="1">Malicious</h1>
 <span class="source-anchor" data-line="3"></span>
 
 <span class="source-anchor" data-line="5"></span>
 <img src="x">
 <p data-line="7"><a rel="noopener noreferrer">a javascript link</a></p>
 <p data-line="9"><a rel="noopener noreferrer">a javascript markdown link</a></p>
-<p data-line="11"><img class="remote-image" data-remote-src="data:image/svg+xml;base64,PHN2Zy8+" alt="a data-uri image"></p>
-<p data-line="13"><img class="remote-image" data-remote-src="https://evil.example/tracker.png" alt="a remote image"></p>
+<p data-line="11"><a class="remote-image" href="axiomd://request/image?src=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2Zy8%2B" data-remote-src="data:image/svg+xml;base64,PHN2Zy8+" rel="noopener noreferrer"><span class="remote-image-label">a data-uri image</span><span class="remote-image-origin">data:</span><span class="remote-image-action">Load image</span></a></p>
+<p data-line="13"><a class="remote-image" href="axiomd://request/image?src=https%3A%2F%2Fevil.example%2Ftracker.png" data-remote-src="https://evil.example/tracker.png" rel="noopener noreferrer"><span class="remote-image-label">a remote image</span><span class="remote-image-origin">evil.example</span><span class="remote-image-action">Load image</span></a></p>
 <span class="source-anchor" data-line="15"></span>
 
 <span class="source-anchor" data-line="17"></span>

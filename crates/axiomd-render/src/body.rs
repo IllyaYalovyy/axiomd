@@ -15,16 +15,44 @@
 
 use axiomd_engine::{Alignment, CalloutKind, Event, Parsed, Span, SpannedEvent, Tag, TagEnd};
 
+use crate::request::{Request, origin_of};
 use crate::sanitize::is_remote;
-use crate::{Anchor, highlight};
+use crate::{Anchor, highlight, slug};
 
-/// Renders one parse into unsanitised body markup and its anchor map.
-pub(crate) fn render(parsed: &Parsed<'_>) -> (String, Vec<Anchor>) {
-    let mut writer = Writer::default();
+/// Renders one parse into unsanitised body markup, its anchor map, and the remote
+/// images standing behind placeholders in it.
+pub(crate) fn render(parsed: &Parsed<'_>) -> (String, Vec<Anchor>, Vec<String>) {
+    let mut writer = Writer {
+        headings: slug::heading_ids(parsed),
+        ..Writer::default()
+    };
     for SpannedEvent { event, span } in parsed.events() {
         writer.event(event, span);
     }
-    (writer.out, writer.anchors)
+    let mut out = writer.out;
+    if !writer.remote_images.is_empty() {
+        out.insert_str(0, &load_all_banner(writer.remote_images.len()));
+    }
+    (out, writer.anchors, writer.remote_images)
+}
+
+/// The one affordance a document with remote images carries: inline, above the
+/// document, and never a dialog (`ux_decisions.md`). The app hides it once no
+/// placeholder is left.
+fn load_all_banner(images: usize) -> String {
+    let images = if images == 1 {
+        "1 image".to_owned()
+    } else {
+        format!("{images} images")
+    };
+    format!(
+        "<div class=\"remote-banner\">\
+         <span class=\"remote-banner-text\">This document links {images} from the internet. \
+         Nothing has been loaded.</span>\
+         <a class=\"remote-banner-action\" href=\"{}\">Load all</a>\
+         </div>\n",
+        Request::LoadAllImages.uri(),
+    )
 }
 
 /// One open block container, carrying whatever its children need to know about it.
@@ -71,6 +99,14 @@ struct Writer {
     alt: Vec<Image>,
     /// The open code block's language, once removed from its info string.
     code: Option<Option<String>>,
+    /// The anchor id of each heading, in document order, and how many have been
+    /// written. Computed ahead of the walk because a heading's id comes from text
+    /// that only arrives after its opening tag has to be written.
+    headings: Vec<String>,
+    headings_written: usize,
+    /// The source of every placeholder standing in for an image the reader has not
+    /// asked for, in document order.
+    remote_images: Vec<String>,
 }
 
 impl Writer {
@@ -146,7 +182,8 @@ impl Writer {
             }
             Tag::Heading { level } => {
                 let anchor = self.anchor(span);
-                self.block(&format!("<h{level}{anchor}>"));
+                let id = self.heading_id();
+                self.block(&format!("<h{level}{id}{anchor}>"));
                 self.stack.push(Frame::Other);
             }
             Tag::BlockQuote { callout } => {
@@ -338,9 +375,10 @@ impl Writer {
     /// Closes an image, writing its tag — or, when the image was itself inside
     /// another image's label, contributing its alt text to that label.
     ///
-    /// A remote source is never written as `src`: it moves to `data-remote-src`, so
-    /// that displaying the document fetches nothing and the one-click load
-    /// affordance still knows what it would load.
+    /// A remote source never becomes an `<img>`: displaying the document would fetch
+    /// it, and nothing a document says may cause a request (`design_decisions.md`).
+    /// It becomes the placeholder card instead — the D4 ruling, where the card *is*
+    /// the one-click load button rather than something that opens a question.
     fn image(&mut self) {
         let Some(image) = self.alt.pop() else {
             return;
@@ -349,19 +387,32 @@ impl Writer {
             outer.alt.push_str(&image.alt);
             return;
         }
-        let source = if is_remote(&image.url) {
-            format!(
-                " class=\"remote-image\" data-remote-src=\"{}\"",
-                escape_attribute(&image.url)
-            )
-        } else {
-            format!(" src=\"{}\"", escape_attribute(&image.url))
-        };
+        if is_remote(&image.url) {
+            self.remote_images.push(image.url.clone());
+            self.out.push_str(&remote_placeholder(&image));
+            return;
+        }
         self.out.push_str(&format!(
-            "<img{source} alt=\"{}\"{}>",
+            "<img src=\"{}\" alt=\"{}\"{}>",
+            escape_attribute(&image.url),
             escape_attribute(&image.alt),
             title_attribute(&image.title)
         ));
+    }
+
+    /// The id of the next heading, as an attribute. Empty when the heading had
+    /// nothing to make an anchor out of.
+    fn heading_id(&mut self) -> String {
+        let id = self
+            .headings
+            .get(self.headings_written)
+            .map(String::as_str)
+            .unwrap_or_default();
+        self.headings_written += 1;
+        if id.is_empty() {
+            return String::new();
+        }
+        format!(" id=\"{}\"", escape_attribute(id))
     }
 
     /// Writes text, or collects it when an image label is open.
@@ -405,6 +456,31 @@ impl Writer {
         });
         format!(" data-line=\"{}\"", span.line)
     }
+}
+
+/// The card a remote image renders as: what the reader would be loading, where it
+/// would come from, and — because the card is itself the link — one click to load it.
+///
+/// It keeps `data-remote-src` so that the app can find this exact placeholder again
+/// when the image arrives, and after a live reload has rebuilt the block around it.
+fn remote_placeholder(image: &Image) -> String {
+    let label = if image.alt.trim().is_empty() {
+        "Remote image"
+    } else {
+        &image.alt
+    };
+    format!(
+        "<a class=\"remote-image\" href=\"{href}\" data-remote-src=\"{source}\"{title}>\
+         <span class=\"remote-image-label\">{label}</span>\
+         <span class=\"remote-image-origin\">{origin}</span>\
+         <span class=\"remote-image-action\">Load image</span>\
+         </a>",
+        href = escape_attribute(&Request::LoadImage(image.url.clone()).uri()),
+        source = escape_attribute(&image.url),
+        title = title_attribute(&image.title),
+        label = escape_text(label),
+        origin = escape_text(origin_of(&image.url)),
+    )
 }
 
 fn highlight_or_escape(language: Option<&str>, code: &str) -> String {

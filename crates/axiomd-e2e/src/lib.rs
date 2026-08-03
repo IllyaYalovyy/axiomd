@@ -219,6 +219,38 @@ impl App {
         text
     }
 
+    /// Clicks the first element matching `selector`, as the reader would.
+    ///
+    /// A real activation of a real element: it goes through the document's own
+    /// default action, so a link click reaches the app's navigation policy exactly as
+    /// a pointer press does.
+    pub fn click(&self, selector: &str) {
+        let script = format!(
+            "(() => {{ const found = document.querySelector({selector:?}); \
+             if (found === null) {{ return 'missing'; }} found.click(); return 'clicked'; }})()"
+        );
+        assert_eq!(
+            self.dom(&script),
+            "clicked",
+            "nothing matching {selector} to click in the rendered document",
+        );
+    }
+
+    /// Everything axiomd has handed to this launch's desktop — the addresses it sent
+    /// to the browser, and the files it sent to their default handler — in order.
+    ///
+    /// Read from the far side: the desktop's default handler for this launch is a
+    /// recorder of the test's own (see `display.rs`), so this is what a browser would
+    /// have been started with rather than what axiomd meant to start one with. Where
+    /// it goes after that is the platform's contract (`docs/TESTING.md`, category 2).
+    pub fn handed_over(&self) -> Vec<String> {
+        std::fs::read_to_string(display::handed_over_log(self.scratch.path()))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// Waits until `javascript` evaluates to something truthy in the document.
     ///
     /// The way to wait for anything the DOM shows, and the reason no test here
@@ -233,6 +265,22 @@ impl App {
     /// How many document windows are open.
     pub fn window_count(&self) -> usize {
         self.property("count").parse().expect("a window count")
+    }
+
+    /// Waits until `condition` holds, failing with `what` if it never does.
+    ///
+    /// For the things a test can see from outside the application — a server having
+    /// been asked for something — rather than in its DOM. Like every wait here it is
+    /// a condition with a deadline, never a sleep.
+    pub fn wait_for(&self, what: &str, condition: impl Fn() -> bool) {
+        self.settle(what, || Ok(condition()));
+    }
+
+    /// Waits until `wanted` things have reached this launch's desktop.
+    pub fn wait_for_handed_over(&self, wanted: usize) {
+        self.settle(&format!("{wanted} things handed to the desktop"), || {
+            Ok(self.handed_over().len() == wanted)
+        });
     }
 
     /// Waits until exactly `wanted` windows are open.

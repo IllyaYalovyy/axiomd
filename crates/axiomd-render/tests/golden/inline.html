@@ -8,13 +8,14 @@
 </head>
 <body>
 <article class="markdown">
+<div class="remote-banner"><span class="remote-banner-text">This document links 2 images from the internet. Nothing has been loaded.</span><a class="remote-banner-action" href="axiomd://request/image?all" rel="noopener noreferrer">Load all</a></div>
 <p data-line="1"><em>Emphasis</em>, <strong>strong</strong>, <em><strong>both</strong></em>, <del>struck</del>, <code>inline code</code>, and A &amp; B &lt; C.</p>
 <p data-line="3">An <a href="docs/guide.md" title="Guide" rel="noopener noreferrer">inline link</a>, a <a href="reference/target.md" title="Reference title" rel="noopener noreferrer">reference link</a>, an autolink
 <a href="https://example.com/path" rel="noopener noreferrer">https://example.com/path</a>, and a bare <a href="http://www.example.com" rel="noopener noreferrer">www.example.com</a> link.</p>
 <p data-line="6">An escaped *asterisk* and an entity &amp; and ©.</p>
 <p data-line="8">A local image: <img src="assets/diagram.png" alt="a local diagram" title="Diagram"></p>
-<p data-line="10">A remote image: <img class="remote-image" data-remote-src="https://example.com/remote.png" alt="remote"></p>
-<p data-line="12">A protocol-relative image: <img class="remote-image" data-remote-src="//example.com/relative.png" alt="scheme relative"></p>
+<p data-line="10">A remote image: <a class="remote-image" href="axiomd://request/image?src=https%3A%2F%2Fexample.com%2Fremote.png" data-remote-src="https://example.com/remote.png" rel="noopener noreferrer"><span class="remote-image-label">remote</span><span class="remote-image-origin">example.com</span><span class="remote-image-action">Load image</span></a></p>
+<p data-line="12">A protocol-relative image: <a class="remote-image" href="axiomd://request/image?src=%2F%2Fexample.com%2Frelative.png" data-remote-src="//example.com/relative.png" rel="noopener noreferrer"><span class="remote-image-label">scheme relative</span><span class="remote-image-origin">example.com</span><span class="remote-image-action">Load image</span></a></p>
 <p data-line="14">An image whose label has markup: <img src="assets/x.png" alt="bold and code"></p>
 <p data-line="16">A line ending in two spaces<br>forces a hard break.</p>
 <p data-line="19">Some <em>inline html</em> and a <span class="x">span</span>.</p>

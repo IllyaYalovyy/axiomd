@@ -156,17 +156,79 @@ body {
   height: auto;
 }
 
-/* A remote image is not loaded until the reader asks for it; until then it is a
-   quiet placeholder carrying its own alt text. */
-.markdown img.remote-image {
-  display: inline-block;
-  min-width: 12rem;
-  min-height: 3rem;
-  padding: 0.75rem 1rem;
+/* A remote image is never loaded until the reader asks for it. Until then the card
+   below stands in its place, and the card IS the button: the whole of it is the
+   link that loads this one image, so there is nothing to hunt for and nothing to
+   dismiss. */
+.markdown a.remote-image {
+  display: flex;
+  gap: 0.25rem 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  box-sizing: border-box;
+  max-width: 100%;
+  margin: 0.5rem 0;
+  padding: 0.85rem 1rem;
   border: 1px dashed var(--axiomd-border);
-  border-radius: 8px;
+  border-radius: 12px;
+  background: var(--axiomd-surface);
   color: var(--axiomd-fg-dim);
   font-size: 0.9em;
+  text-decoration: none;
+}
+
+.markdown a.remote-image:hover {
+  border-style: solid;
+  background: var(--axiomd-surface-strong);
+}
+
+.markdown a.remote-image > .remote-image-label {
+  flex: 1 1 auto;
+  color: var(--axiomd-fg);
+  overflow-wrap: anywhere;
+}
+
+.markdown a.remote-image > .remote-image-origin {
+  font-family: var(--axiomd-font-mono);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.markdown a.remote-image > .remote-image-action {
+  color: var(--axiomd-accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* The one thing the app says about a document's remote images, said inside the
+   document and never in a dialog. It goes away by itself once no placeholder is
+   left. */
+.markdown .remote-banner {
+  display: flex;
+  gap: 0.5rem 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin: 0 0 1.5rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--axiomd-border);
+  border-radius: 12px;
+  background: var(--axiomd-surface);
+  font-size: 0.9em;
+}
+
+.markdown .remote-banner[hidden] {
+  display: none;
+}
+
+.markdown .remote-banner > .remote-banner-text {
+  flex: 1 1 auto;
+  color: var(--axiomd-fg-dim);
+}
+
+.markdown .remote-banner > .remote-banner-action {
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 /* Lists */

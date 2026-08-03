@@ -12,12 +12,11 @@
 //! # What the webview is allowed to do
 //!
 //! Almost nothing. [`document_settings`] turns off JavaScript, media capture, storage
-//! and every other capability a reading surface has no use for, and
-//! [`navigation_stays_in_document`] keeps the view on the document it was given, so a
-//! link in a document cannot make the app fetch anything. Together with the rendered
-//! document's own content-security policy and the sanitiser upstream, the `axiomd://`
-//! scheme is the complete set of bytes a document can reach. There is no `file://`
-//! grant anywhere.
+//! and every other capability a reading surface has no use for, and the policy below
+//! keeps the view on the document it was given, so nothing a document contains can
+//! make the app fetch anything by itself. Together with the rendered document's own
+//! content-security policy and the sanitiser upstream, the `axiomd://` scheme is the
+//! complete set of bytes a document can reach. There is no `file://` grant anywhere.
 //!
 //! # Patching a document that cannot run scripts
 //!
@@ -29,14 +28,25 @@
 //! channel reads documents the same way (`control.rs`), and the live-reload e2e suite
 //! asserts both halves of the result: the document changes, and a `<script>` inside it
 //! still cannot run.
+//!
+//! # Where a click goes
+//!
+//! A document cannot run a script, so every link in it arrives here as a navigation
+//! the view is about to make, and none of them are its to make: [`crate::links`]
+//! decides what each one is and the window does it. All the view keeps is the one
+//! thing only it knows — which document it is showing — and the state that belongs to
+//! the page rather than to the file: the remote images the reader has asked for, and
+//! which of those did not arrive.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use axiomd_render::Rendered;
 use gtk::glib;
 use webkit6::prelude::*;
 
+use crate::links::{Follow, follow};
 use crate::scheme::Publication;
 
 /// The JavaScript world the app updates a document from — never the document's own.
@@ -44,6 +54,9 @@ const WORLD: &str = "axiomd-view";
 
 /// The patch: new blocks in, changed blocks replaced, the reader left where they were.
 const PATCH: &str = include_str!("patch.js");
+
+/// The remote images the reader has asked for, put back into the page.
+const REMOTE: &str = include_str!("remote.js");
 
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
@@ -64,6 +77,30 @@ pub(crate) struct DocumentView {
     /// the window (`design_decisions.md`). Counted here because only the view knows,
     /// and read back through the test-control channel.
     navigations: Cell<u32>,
+    /// The directory the document on screen lives in — the whole of what its links
+    /// may reach.
+    root: RefCell<PathBuf>,
+    /// What the window does about a link the view will not follow itself.
+    followed: RefCell<Option<Followed>>,
+    /// The remote images of the document on screen: every one the reader has asked
+    /// for, and every one that did not arrive. Cleared when the view is sent to
+    /// another document, because it describes this page and no other.
+    images: RefCell<RemoteImages>,
+}
+
+/// The window's answer to a link the view refused, held so that a click can reach it.
+type Followed = Rc<dyn Fn(Follow)>;
+
+/// The remote images of one page, as the reader has left them.
+#[derive(Default)]
+struct RemoteImages {
+    /// Every remote image in the document, in document order — what "load all" is a
+    /// list of.
+    sources: Vec<String>,
+    /// Source URL to the `axiomd://` URI its bytes are served from.
+    loaded: Vec<(String, String)>,
+    /// Source URL to what to tell the reader beside its placeholder.
+    failed: Vec<(String, String)>,
 }
 
 impl DocumentView {
@@ -74,6 +111,9 @@ impl DocumentView {
             ready: Cell::new(false),
             pending: RefCell::new(None),
             navigations: Cell::new(0),
+            root: RefCell::new(PathBuf::new()),
+            followed: RefCell::new(None),
+            images: RefCell::new(RemoteImages::default()),
         });
 
         let watched = Rc::downgrade(&view);
@@ -88,13 +128,59 @@ impl DocumentView {
                 webkit6::LoadEvent::Finished => {
                     view.ready.set(true);
                     let waiting = view.pending.borrow_mut().take();
-                    if let Some(body) = waiting {
-                        view.patch(&body);
-                    }
+                    view.update(waiting.as_deref());
                 }
                 _ => {}
             }
         });
+
+        // A document is not a browser tab: what it may do to the view is decided
+        // here, and everything else it asks for is the window's to do or to refuse.
+        let deciding = Rc::downgrade(&view);
+        view.webview
+            .connect_decide_policy(move |webview, decision, kind| match kind {
+                webkit6::PolicyDecisionType::NavigationAction => {
+                    let Some(view) = deciding.upgrade() else {
+                        return false;
+                    };
+                    let Some(decision) =
+                        decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
+                    else {
+                        return false;
+                    };
+                    let action = decision.navigation_action();
+                    let target = action
+                        .as_ref()
+                        .and_then(|action| action.request())
+                        .and_then(|request| request.uri())
+                        .unwrap_or_default();
+                    // Only a link the reader activated may do anything but stay: a
+                    // redirect, a reload or anything else the engine started is not
+                    // somebody asking for it.
+                    let clicked = action.as_ref().is_some_and(|action| {
+                        action.navigation_type() == webkit6::NavigationType::LinkClicked
+                    });
+                    let here = webview.uri().unwrap_or_default();
+
+                    match follow(&here, &view.root.borrow(), &target, clicked) {
+                        Follow::Stay => decision.use_(),
+                        elsewhere => {
+                            decision.ignore();
+                            let handler = view.followed.borrow().clone();
+                            if let Some(handler) = handler {
+                                handler(elsewhere);
+                            }
+                        }
+                    }
+                    true
+                }
+                webkit6::PolicyDecisionType::NewWindowAction => {
+                    decision.ignore();
+                    true
+                }
+                _ => false,
+            });
+
         view
     }
 
@@ -102,47 +188,142 @@ impl DocumentView {
         &self.webview
     }
 
+    /// Hands `handler` everything the view will not do itself: another document, a
+    /// file for the desktop, a link for the browser, a request the document is making.
+    pub(crate) fn connect_follow(&self, handler: impl Fn(Follow) + 'static) {
+        *self.followed.borrow_mut() = Some(Rc::new(handler));
+    }
+
     /// How many loads this view has committed since it was built.
     pub(crate) fn navigations(&self) -> u32 {
         self.navigations.get()
     }
 
-    /// Puts `rendered` on screen as the current state of `publication`'s document.
+    /// The network session this view's fetches go through — the app's only one.
+    pub(crate) fn network_session(&self) -> Option<webkit6::NetworkSession> {
+        self.webview.network_session()
+    }
+
+    /// Puts `rendered` on screen as the current state of `publication`'s document,
+    /// at `fragment` when the reader asked for a section of it.
     ///
     /// The first render of a document is loaded; every render after it is patched into
     /// the page already showing, keeping the reader's place and the view's navigation
     /// count.
-    pub(crate) fn show(&self, publication: &Publication, rendered: &Rendered) {
+    pub(crate) fn show(&self, publication: &Publication, rendered: &Rendered, fragment: &str) {
         // Whatever happens to the page in front of the reader, the origin behind it
         // serves the document they are looking at.
         publication.show(rendered.html().to_owned());
 
-        if self.loaded.borrow().as_deref() != Some(publication.uri()) {
+        let arriving = self.loaded.borrow().as_deref() != Some(publication.uri());
+        if arriving {
             *self.loaded.borrow_mut() = Some(publication.uri().to_owned());
+            *self.root.borrow_mut() = publication.root();
+            // The images belonged to the document being left, not to this one.
+            *self.images.borrow_mut() = RemoteImages::default();
+        }
+        self.images.borrow_mut().sources = rendered.remote_images().to_vec();
+
+        if arriving {
             self.ready.set(false);
             *self.pending.borrow_mut() = None;
-            self.webview.load_uri(publication.uri());
+            self.webview.load_uri(&match fragment {
+                "" => publication.uri().to_owned(),
+                fragment => format!("{}#{fragment}", publication.uri()),
+            });
         } else if self.ready.get() {
-            self.patch(rendered.body());
+            self.update(Some(rendered.body()));
         } else {
             *self.pending.borrow_mut() = Some(rendered.body().to_owned());
         }
     }
 
-    /// Makes the document on screen into the one `body` describes, without leaving it.
-    fn patch(&self, body: &str) {
-        let script = format!("({PATCH})({})", as_js_string(body));
+    /// The remote images of the document on screen that nobody has asked for yet.
+    pub(crate) fn unloaded_images(&self) -> Vec<String> {
+        let images = self.images.borrow();
+        images
+            .sources
+            .iter()
+            .filter(|source| !images.loaded.iter().any(|(url, _)| url == *source))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the reader has already asked for `source` and got it.
+    pub(crate) fn has_image(&self, source: &str) -> bool {
+        self.images
+            .borrow()
+            .loaded
+            .iter()
+            .any(|(url, _)| url == source)
+    }
+
+    /// Puts an image the reader asked for into the page, at every placeholder that
+    /// stands for it.
+    pub(crate) fn image_arrived(&self, source: &str, uri: String) {
+        {
+            let mut images = self.images.borrow_mut();
+            images.failed.retain(|(url, _)| url != source);
+            images.loaded.push((source.to_owned(), uri));
+        }
+        self.update(None);
+    }
+
+    /// Says beside the placeholder why the image is not there — inline, and still one
+    /// click away from being tried again.
+    pub(crate) fn image_failed(&self, source: &str, complaint: String) {
+        self.images
+            .borrow_mut()
+            .failed
+            .retain(|(url, _)| url != source);
+        self.images
+            .borrow_mut()
+            .failed
+            .push((source.to_owned(), complaint));
+        self.update(None);
+    }
+
+    /// Brings the page up to date: the blocks that changed, and then the remote
+    /// images the reader has asked for, which the patch has just rebuilt back into
+    /// placeholders.
+    ///
+    /// Both in one task, in that order, because two tasks would race and the reader
+    /// would sometimes be left looking at the placeholder for an image they already
+    /// loaded.
+    fn update(&self, body: Option<&str>) {
+        if !self.ready.get() {
+            return;
+        }
+        let patch = body.map(|body| format!("({PATCH})({})", as_js_string(body)));
+        let remote = format!("({REMOTE})({})", self.remote_state());
         let webview = self.webview.clone();
         glib::spawn_future_local(async move {
             // Returns at once and finishes on the main loop: patching a large document
             // must not be something the window waits for (invariant 4).
-            if let Err(error) = webview
-                .evaluate_javascript_future(&script, Some(WORLD), None)
-                .await
+            if let Some(patch) = patch
+                && let Err(error) = webview
+                    .evaluate_javascript_future(&patch, Some(WORLD), None)
+                    .await
             {
                 eprintln!("axiomd: the document could not be updated in place: {error}");
             }
+            if let Err(error) = webview
+                .evaluate_javascript_future(&remote, Some(WORLD), None)
+                .await
+            {
+                eprintln!("axiomd: the loaded images could not be shown: {error}");
+            }
         });
+    }
+
+    /// The remote images of this page as the object `remote.js` is called with.
+    fn remote_state(&self) -> String {
+        let images = self.images.borrow();
+        format!(
+            "{{loaded:{},failed:{}}}",
+            as_js_object(&images.loaded),
+            as_js_object(&images.failed),
+        )
     }
 }
 
@@ -190,35 +371,6 @@ fn build_webview(context: &webkit6::WebContext) -> webkit6::WebView {
     webview.connect_query_permission_state(|_, query| {
         query.finish(webkit6::PermissionState::Denied);
         true
-    });
-
-    // A document is not a browser tab: it cannot navigate the view somewhere else,
-    // and it cannot open a window. Following links to other documents and to the
-    // browser is issue #6; until then the view stays where it was put.
-    webview.connect_decide_policy(|webview, decision, kind| match kind {
-        webkit6::PolicyDecisionType::NavigationAction => {
-            let Some(decision) = decision.downcast_ref::<webkit6::NavigationPolicyDecision>()
-            else {
-                return false;
-            };
-            let target = decision
-                .navigation_action()
-                .and_then(|action| action.request())
-                .and_then(|request| request.uri())
-                .unwrap_or_default();
-            let here = webview.uri().unwrap_or_default();
-            if navigation_stays_in_document(&here, &target) {
-                decision.use_();
-            } else {
-                decision.ignore();
-            }
-            true
-        }
-        webkit6::PolicyDecisionType::NewWindowAction => {
-            decision.ignore();
-            true
-        }
-        _ => false,
     });
 
     webview.connect_context_menu(|_, menu, _| {
@@ -276,20 +428,22 @@ fn document_settings() -> webkit6::Settings {
     settings
 }
 
-/// Whether the view showing `here` may follow `target`.
+/// `pairs` as a JavaScript object literal, keys and values alike carried as data.
 ///
-/// Only the document itself and its own fragments qualify. An `http` link, a
-/// `file://` path, another window's document: all refused, so no click can turn into
-/// a network request or a filesystem read.
-fn navigation_stays_in_document(here: &str, target: &str) -> bool {
-    if here.is_empty() {
-        // The document's own first load, before the view has a URI of its own.
-        return target.starts_with("axiomd://");
+/// Both halves come from a document — an image's source is whatever the author
+/// wrote — so neither may arrive at the parser as syntax.
+fn as_js_object(pairs: &[(String, String)]) -> String {
+    let mut object = String::from("{");
+    for (key, value) in pairs {
+        if object.len() > 1 {
+            object.push(',');
+        }
+        object.push_str(&as_js_string(key));
+        object.push(':');
+        object.push_str(&as_js_string(value));
     }
-    target == here
-        || target
-            .strip_prefix(here)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('#'))
+    object.push('}');
+    object
 }
 
 /// Whether a context-menu entry belongs in a reading surface. Everything a viewer
@@ -348,39 +502,9 @@ mod tests {
         assert!(with_webkit(document_settings).is_auto_load_images());
     }
 
-    #[test]
-    fn the_view_follows_nothing_outside_the_document_it_shows() {
-        let here = "axiomd://doc-3/";
-
-        assert!(navigation_stays_in_document(here, here));
-        assert!(navigation_stays_in_document(
-            here,
-            "axiomd://doc-3/#heading"
-        ));
-
-        for elsewhere in [
-            "https://example.com/",
-            "http://example.com/tracker.gif",
-            "file:///etc/passwd",
-            "axiomd://doc-4/",
-            "data:text/html,<h1>hi</h1>",
-            "axiomd://doc-3/../../etc/passwd",
-        ] {
-            assert!(
-                !navigation_stays_in_document(here, elsewhere),
-                "{elsewhere} was allowed",
-            );
-        }
-    }
-
-    /// The very first load has no current URI to compare against, and must still be
-    /// allowed — otherwise no document would ever appear.
-    #[test]
-    fn the_documents_own_first_load_is_allowed() {
-        assert!(navigation_stays_in_document("", "axiomd://doc-0/"));
-        assert!(!navigation_stays_in_document("", "https://example.com/"));
-    }
-
+    /// Where the view may and may not go is decided by `links.rs`, and tested there
+    /// against every class of link a document can hold.
+    ///
     /// A document is text the app did not write, and it is handed to a JavaScript
     /// parser. Everything that could end the string early, or end the line early, is
     /// data by the time it gets there.
@@ -400,5 +524,27 @@ mod tests {
         // The escape a naive one would add and this one must not: a document's own
         // apostrophes stay exactly as the reader wrote them.
         assert_eq!(as_js_string("it's"), "\"it's\"");
+    }
+
+    /// An image's source is whatever the document's author wrote, and it is a *key*
+    /// in what the page is handed. A key is as much syntax as a value is.
+    #[test]
+    fn the_remote_image_state_carries_a_documents_own_urls_as_data() {
+        assert_eq!(as_js_object(&[]), "{}");
+        assert_eq!(
+            as_js_object(&[
+                (
+                    "https://example.com/a.png".to_owned(),
+                    "axiomd://img-1/0".to_owned()
+                ),
+                ("https://example.com/b.png".to_owned(), "".to_owned()),
+            ]),
+            "{\"https://example.com/a.png\":\"axiomd://img-1/0\",\
+             \"https://example.com/b.png\":\"\"}",
+        );
+        assert_eq!(
+            as_js_object(&[("\"},alert(1),{\"x".to_owned(), "y".to_owned())]),
+            "{\"\\\"},alert(1),{\\\"x\":\"y\"}",
+        );
     }
 }

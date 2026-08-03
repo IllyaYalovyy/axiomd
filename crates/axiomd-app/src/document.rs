@@ -242,7 +242,10 @@ mod tests {
 
         assert_eq!(shown.len(), 1);
         let html = html_of(&shown[0].0);
-        assert!(html.contains("<h1 data-line=\"1\">Title</h1>"), "{html}");
+        assert!(
+            html.contains("<h1 id=\"title\" data-line=\"1\">Title</h1>"),
+            "{html}"
+        );
         assert!(html.contains("Body text."), "{html}");
     }
 
