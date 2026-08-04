@@ -136,7 +136,9 @@ fn answer(mut connection: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
 
 /// A real PNG, encoded rather than pasted: a hand-written blob that turned out not to
 /// decode would make "the image is displayed" pass on a broken image.
-fn png() -> Vec<u8> {
+///
+/// 40×20, which is the size every test that asserts a picture arrived reads back.
+pub fn png() -> Vec<u8> {
     use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
 
     let pixbuf = Pixbuf::new(Colorspace::Rgb, false, 8, 40, 20).expect("allocate a picture");

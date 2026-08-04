@@ -27,12 +27,20 @@
 #   devices=dri      hardware rendering for the webview. Without it WebKit falls back
 #                    to software compositing on a machine that has a GPU.
 #
-#   filesystems=     absent, and this is the point. axiomd sees no host filesystem:
-#                    not `host`, not `home`, not one `xdg-` directory. A document
-#                    arrives through the document portal, which grants that one file.
-#                    Widening this is not a packaging detail — it is the sandbox — so
-#                    it is a decision for the project owner (issue #14).
+#   filesystems=     host:ro, and nothing else, ever. The owner ruled this on
+#                    2026-08-03 (issue #23) after a document opened from Files showed
+#                    broken images: under the portal alone a document arrives in a
+#                    directory holding that one file, so the pictures the author kept
+#                    beside it are unreachable and there is no portal that would hand
+#                    them over. `:ro` is the whole of the ruling — axiomd may *read*
+#                    what the reader can read, and may write nothing but the one
+#                    document the portal granted it, which is still how every save
+#                    goes out. `host` without the suffix, `home`, or an `xdg-`
+#                    directory are each a further widening and each fails the gate.
+#                    This is the one sanctioned entry here; the pin exists to catch
+#                    the next one, in the manifest or by a local `flatpak override`.
 [Context]
 shared=network;ipc;
 sockets=x11;wayland;fallback-x11;
 devices=dri;
+filesystems=host:ro;

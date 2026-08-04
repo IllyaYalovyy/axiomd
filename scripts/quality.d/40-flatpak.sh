@@ -111,7 +111,7 @@ grep -qE '^test result: ok\.' <<<"${summary}" ||
 # A probe that was filtered out is a probe nobody ran, and the gate would otherwise
 # report a clean run of nothing at all.
 ran=$(sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' <<<"${summary}")
-[[ "${ran}" -ge 5 ]] ||
+[[ "${ran}" -ge 8 ]] ||
     fail "only ${ran} probe(s) ran against the installed flatpak. Every #[ignore]d test
   in the packaging target is one of these probes and every one of them must run."
 
