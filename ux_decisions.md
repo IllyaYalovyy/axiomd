@@ -92,6 +92,14 @@ the sidebar (issue #26).
 Yes (owner ruling 2026-08-03): drag the divider; width persists across
 sessions as window state, not a preferences entry (issue #27).
 
+## Why is the app name lowercase "axiomd"?
+
+Intentional branding, matching the owner's project naming (axiotask). The
+HIG preference for header-capitalized names ("Axiomd") is knowingly not
+followed; the desktop entry, metainfo, and About dialog all use "axiomd".
+Recorded 2026-08-03 after UX review flagged it — this is a decision, not
+an oversight.
+
 ## Do controls reflect state?
 
 A control that toggles state shows where it takes you: the read/edit
