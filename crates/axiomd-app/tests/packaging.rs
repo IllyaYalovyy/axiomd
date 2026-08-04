@@ -1373,10 +1373,137 @@ fn the_installed_flatpak_renders_a_document_opened_through_the_document_portal()
             "{name} opened through the portal is showing its own Markdown source",
         );
 
+        // Issue #24: the window said `/run/user/1000/doc/d8ded700` about a document the
+        // reader keeps somewhere else entirely. The whole of the resolution runs here —
+        // a sandboxed axiomd, a document it can only reach by the portal's fuse path,
+        // and the desktop asked over the session bus — and what it must produce is the
+        // folder this test wrote the file into.
+        let header = app.header();
+        assert_eq!(
+            header.title, name,
+            "the header is not naming the document the reader opened",
+        );
+        assert_eq!(
+            header.where_it_lives,
+            document
+                .parent()
+                .expect("the document has a folder")
+                .display()
+                .to_string(),
+            "the sandbox did not resolve the portal's document back to the reader's \
+             own folder",
+        );
+        assert_eq!(
+            header.in_full,
+            document.display().to_string(),
+            "hovering the title does not give the reader their own path in full",
+        );
+        for said in [&header.title, &header.where_it_lives, &header.in_full] {
+            assert!(
+                !said.contains("/run/user") && !said.contains("/doc/"),
+                "the window is showing the reader a portal path: {said:?}",
+            );
+        }
+
         assert!(
             app.close().is_empty(),
             "the sandboxed launch left something running",
         );
+    }
+}
+
+/// The mechanism issue #24 rests on, asked of the desktop's own document portal rather
+/// than described: a document exported to the portal resolves back to the path the
+/// reader keeps it at.
+///
+/// `flatpak document-export` puts a real file into the portal exactly as opening it
+/// from Files does, and prints the fuse path the portal answers with. What is asserted
+/// is that `Home` turns that path back into the one this test wrote — through
+/// `org.freedesktop.portal.Documents.GetHostPaths`, over the session bus, with nothing
+/// mocked and nothing assumed about the shape of the answer.
+///
+/// It is a probe rather than an ordinary test because it needs the desktop it is
+/// probing: a document portal on the session bus, and `flatpak` to put something in it.
+/// `scripts/quality.d/40-flatpak.sh` is where that is guaranteed.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_document_portal_says_where_a_forwarded_document_really_lives() {
+    use axiomd_doc::Home;
+
+    let fixture = Fixture::new("portal-host-path");
+    let document = fixture.write("article.medium.md", "# Through the portal\n");
+    let exported = Exported::of(&document);
+
+    assert!(
+        exported.fuse.starts_with("/run/user/"),
+        "the portal did not answer with a path of its own, so this probe proves \
+         nothing: {:?}",
+        exported.fuse,
+    );
+
+    let home = Home::of(&exported.fuse);
+
+    assert_eq!(
+        home.path(),
+        exported.fuse,
+        "the path axiomd has to open the document by was lost",
+    );
+    assert_eq!(
+        home.full(),
+        document.display().to_string(),
+        "the portal's document was not resolved back to the reader's own file",
+    );
+    assert_eq!(
+        home.folder(),
+        document.parent(),
+        "a picture beside the document would resolve against the portal's folder",
+    );
+    for said in [home.shown(), home.full()] {
+        assert!(
+            !said.contains("/run/user"),
+            "a window would show the reader a portal path: {said:?}",
+        );
+    }
+}
+
+/// A file put into the document portal for as long as one test needs it, and taken out
+/// again afterwards — the portal's registry outlives the process, and a suite that grew
+/// it every run would be leaving the reader's desktop worse than it found it.
+struct Exported {
+    fuse: PathBuf,
+    document: PathBuf,
+}
+
+impl Exported {
+    fn of(document: &Path) -> Exported {
+        let exported = tool("flatpak", "sudo dnf install flatpak")
+            .args(["document-export", "--app"])
+            .arg(APP_ID)
+            .arg(document)
+            .output()
+            .expect("run flatpak document-export");
+        assert!(
+            exported.status.success(),
+            "flatpak document-export refused {document:?}: {}",
+            String::from_utf8_lossy(&exported.stderr),
+        );
+        Exported {
+            fuse: PathBuf::from(
+                String::from_utf8(exported.stdout)
+                    .expect("flatpak prints utf-8")
+                    .trim(),
+            ),
+            document: document.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for Exported {
+    fn drop(&mut self) {
+        let _ = Command::new("flatpak")
+            .arg("document-unexport")
+            .arg(&self.document)
+            .status();
     }
 }
 

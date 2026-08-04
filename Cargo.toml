@@ -26,3 +26,8 @@ sourceview5 = "0.11.2"
 # libspelling, over the same source buffer: the editor's spell checking, which is
 # the reader's to switch off (issue #21, and the `spellcheck` key of #20).
 libspelling = "0.5.0"
+# GIO on its own, for the one crate that needs the desktop without needing a toolkit:
+# the document model asks the Documents portal where a document really is (issue #24),
+# which is a session-bus call and nothing more. The same GIO `gtk` already brings, so
+# this adds no code to the build — it only says which crates may talk to the desktop.
+gio = "0.22"

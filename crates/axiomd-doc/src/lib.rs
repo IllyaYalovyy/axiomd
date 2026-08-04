@@ -9,6 +9,7 @@
 //!
 //! let mut document = Document::untitled();
 //! assert!(document.needs_a_name(), "an untitled document has nowhere to be saved");
+//! assert!(document.home().is_none(), "and so it is nowhere");
 //!
 //! document.edited();
 //! document.holds("# Notes\n".to_owned());
@@ -34,6 +35,13 @@
 //! either happens or does not. Symbolic links are resolved first, so saving through a
 //! link updates what it points at rather than replacing the link with a file.
 //!
+//! # Where a document is
+//!
+//! One answer, resolved once when a window is given a document, and read by everything
+//! that needs it: [`Home`]. A document reached through the desktop's document portal
+//! has a path axiomd opens it by and a folder the reader keeps it in, and they are not
+//! the same path — see that module for why, and for what the portal was asked.
+//!
 //! # What a change under the document means
 //!
 //! [`Document::reconcile`] is the whole of the external-change matrix
@@ -46,14 +54,18 @@
 
 #![deny(missing_docs)]
 
+mod home;
+
 use std::fs::File;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+pub use home::Home;
 
 /// The text a window owns, and everything true about it that is not the text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
-    file: Option<PathBuf>,
+    home: Option<Home>,
     text: String,
     modified: bool,
     /// The identity of the file as this document last read or wrote it. `None` for a
@@ -138,7 +150,7 @@ impl Document {
     /// `Ctrl+N`.
     pub fn untitled() -> Document {
         Document {
-            file: None,
+            home: None,
             text: String::new(),
             modified: false,
             stamp: None,
@@ -146,10 +158,14 @@ impl Document {
         }
     }
 
-    /// The document `file` holds, read now.
+    /// The document at `home` holds, read now.
     ///
     /// Blocking: meant for a worker, never for the main loop (invariant 4).
-    pub fn read(file: &Path) -> Result<Document, Trouble> {
+    ///
+    /// It takes a resolved [`Home`] rather than a path so that where a document is is
+    /// settled once, by whoever opened it, instead of once per reload.
+    pub fn read(home: &Home) -> Result<Document, Trouble> {
+        let file = home.path();
         let name = name_of(file);
         // Taken before the read rather than after it, so a write that lands between
         // the two is a change this document has not seen rather than one it thinks it
@@ -164,7 +180,7 @@ impl Document {
             detail: "This file is not UTF-8 text, so it is not a Markdown document.".to_owned(),
         })?;
         Ok(Document {
-            file: Some(file.to_path_buf()),
+            home: Some(home.clone()),
             text,
             modified: false,
             stamp,
@@ -172,15 +188,16 @@ impl Document {
         })
     }
 
-    /// The file this document is saved to, or `None` while it has never had one.
-    pub fn file(&self) -> Option<&Path> {
-        self.file.as_deref()
+    /// Where this document is — the path it is reached by and the place the reader
+    /// keeps it — or `None` while it has never been anywhere.
+    pub fn home(&self) -> Option<&Home> {
+        self.home.as_ref()
     }
 
     /// What the reader calls this document: its file name, or `Untitled`.
     pub fn name(&self) -> String {
-        match &self.file {
-            Some(file) => name_of(file),
+        match &self.home {
+            Some(home) => name_of(home.path()),
             None => UNTITLED.to_owned(),
         }
     }
@@ -198,7 +215,7 @@ impl Document {
     /// Whether saving has to ask for a name first — the reader's first `Ctrl+S` on a
     /// document that has never been anywhere.
     pub fn needs_a_name(&self) -> bool {
-        self.file.is_none()
+        self.home.is_none()
     }
 
     /// The reader changed the buffer.
@@ -221,7 +238,7 @@ impl Document {
     /// The document must have a name; [`Document::needs_a_name`] is how a caller knows
     /// to ask for one first.
     pub fn save(&mut self) -> Result<(), Trouble> {
-        let Some(file) = self.file.clone() else {
+        let Some(file) = self.home.as_ref().map(|home| home.path().to_path_buf()) else {
             return Err(Trouble {
                 title: format!("Could not save {UNTITLED}"),
                 detail: "This document has never been saved, so it has no file yet.".to_owned(),
@@ -230,11 +247,12 @@ impl Document {
         self.write(&file)
     }
 
-    /// The same, to a file the reader has just chosen. The document is that file's
-    /// from now on.
-    pub fn save_as(&mut self, file: &Path) -> Result<(), Trouble> {
-        self.write(file)?;
-        self.file = Some(file.to_path_buf());
+    /// The same, to a place the reader has just chosen. The document lives there from
+    /// now on — including when the chooser was the desktop's, and what came back is a
+    /// portal path rather than the one the reader picked.
+    pub fn save_as(&mut self, home: &Home) -> Result<(), Trouble> {
+        self.write(home.path())?;
+        self.home = Some(home.clone());
         Ok(())
     }
 
@@ -357,6 +375,8 @@ fn write_atomically(file: &Path, text: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     /// A directory that exists for one test and goes away with it.
@@ -402,6 +422,12 @@ mod tests {
         std::fs::read_to_string(file).expect("read the file back")
     }
 
+    /// Where a scratch file is. An ordinary path is already the answer, so nothing here
+    /// asks the desktop anything — the portal's own half is tested in `home.rs`.
+    fn at(file: &Path) -> Home {
+        Home::of(file)
+    }
+
     /// Everything left beside the document after a save. A temporary file that
     /// survives is a file the reader has to explain to themselves.
     fn leftovers(directory: &Path) -> Vec<String> {
@@ -419,11 +445,11 @@ mod tests {
         let scratch = Scratch::new("read");
         let file = scratch.write("notes.md", "# Notes\n\nBody.\n");
 
-        let document = Document::read(&file).expect("read the document");
+        let document = Document::read(&at(&file)).expect("read the document");
 
         assert_eq!(document.text(), "# Notes\n\nBody.\n");
         assert_eq!(document.name(), "notes.md");
-        assert_eq!(document.file(), Some(file.as_path()));
+        assert_eq!(document.home().map(Home::path), Some(file.as_path()));
         assert!(!document.is_modified());
         assert!(!document.needs_a_name());
     }
@@ -434,7 +460,7 @@ mod tests {
         let file = scratch.path().join("image.md");
         std::fs::write(&file, [0xffu8, 0xfe, 0x00, 0x9f]).expect("write bytes");
 
-        let trouble = Document::read(&file).expect_err("bytes are not a document");
+        let trouble = Document::read(&at(&file)).expect_err("bytes are not a document");
 
         assert!(trouble.title().contains("image.md"), "{}", trouble.title());
         assert!(trouble.detail().contains("UTF-8"), "{}", trouble.detail());
@@ -443,8 +469,8 @@ mod tests {
     #[test]
     fn a_file_that_is_not_there_is_refused_by_name() {
         let scratch = Scratch::new("read-missing");
-        let trouble =
-            Document::read(&scratch.path().join("gone.md")).expect_err("there is no such file");
+        let trouble = Document::read(&at(&scratch.path().join("gone.md")))
+            .expect_err("there is no such file");
 
         assert!(trouble.title().contains("gone.md"), "{}", trouble.title());
         assert!(!trouble.detail().is_empty(), "the reason was left blank");
@@ -464,7 +490,7 @@ mod tests {
         document.edited();
         document.holds("# First\n".to_owned());
         let file = scratch.path().join("first.md");
-        document.save_as(&file).expect("save the document");
+        document.save_as(&at(&file)).expect("save the document");
 
         assert_eq!(read(&file), "# First\n");
         assert_eq!(document.name(), "first.md");
@@ -476,7 +502,7 @@ mod tests {
     fn a_document_is_modified_from_the_first_keystroke_until_it_is_saved() {
         let scratch = Scratch::new("dirty");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
         assert!(!document.is_modified());
 
         document.edited();
@@ -501,7 +527,7 @@ mod tests {
     fn a_save_leaves_the_document_whole_and_nothing_else_behind() {
         let scratch = Scratch::new("atomic");
         let file = scratch.write("notes.md", "old\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.holds("new\n".to_owned());
         document.save().expect("save the document");
@@ -520,7 +546,7 @@ mod tests {
     fn a_save_that_cannot_complete_leaves_the_previous_version_intact() {
         let scratch = Scratch::new("atomic-fail");
         let file = scratch.write("notes.md", "the version on disk\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
         document.edited();
         document.holds("the version that will not land\n".to_owned());
 
@@ -560,7 +586,7 @@ mod tests {
         let link = scratch.path().join("link.md");
         std::os::unix::fs::symlink(&target, &link).expect("create a symlink");
 
-        let mut document = Document::read(&link).expect("read through the link");
+        let mut document = Document::read(&at(&link)).expect("read through the link");
         document.holds("new\n".to_owned());
         document.save().expect("save the document");
 
@@ -583,7 +609,7 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
             .expect("make the document private");
 
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
         document.holds("new\n".to_owned());
         document.save().expect("save the document");
 
@@ -602,13 +628,16 @@ mod tests {
     fn a_documents_own_save_is_not_a_change_under_it() {
         let scratch = Scratch::new("self-write");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.edited();
         document.holds("one\ntwo\n".to_owned());
         document.save().expect("save the document");
 
-        assert_eq!(document.reconcile(Document::read(&file)), External::Nothing);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Nothing
+        );
         assert_eq!(document.text(), "one\ntwo\n");
         assert!(!document.is_modified());
 
@@ -616,7 +645,10 @@ mod tests {
         // earlier save, is not mistaken for somebody else's work.
         document.edited();
         document.holds("one\ntwo\nthree\n".to_owned());
-        assert_eq!(document.reconcile(Document::read(&file)), External::Nothing);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Nothing
+        );
         assert!(
             document.is_modified(),
             "the unsaved edit was thrown away by the document's own earlier save",
@@ -630,12 +662,12 @@ mod tests {
     fn a_clean_document_follows_the_file_silently() {
         let scratch = Scratch::new("follow");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         std::fs::write(&file, "two\n").expect("save over the document");
 
         assert_eq!(
-            document.reconcile(Document::read(&file)),
+            document.reconcile(Document::read(&at(&file))),
             External::Followed
         );
         assert_eq!(document.text(), "two\n");
@@ -649,13 +681,13 @@ mod tests {
     fn a_clean_document_follows_a_file_that_was_replaced_by_a_rename() {
         let scratch = Scratch::new("follow-rename");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         let replacement = scratch.write("notes.md.new", "two\n");
         std::fs::rename(&replacement, &file).expect("rename over the document");
 
         assert_eq!(
-            document.reconcile(Document::read(&file)),
+            document.reconcile(Document::read(&at(&file))),
             External::Followed
         );
         assert_eq!(document.text(), "two\n");
@@ -667,14 +699,14 @@ mod tests {
     fn a_modified_document_meeting_a_changed_file_asks_the_reader_and_loses_nothing() {
         let scratch = Scratch::new("conflict");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.edited();
         document.holds("mine\n".to_owned());
         std::fs::write(&file, "theirs\n").expect("save over the document");
 
         assert_eq!(
-            document.reconcile(Document::read(&file)),
+            document.reconcile(Document::read(&at(&file))),
             External::Conflict
         );
         assert_eq!(
@@ -700,13 +732,13 @@ mod tests {
     fn a_reader_who_takes_the_file_version_gets_it_and_a_clean_document() {
         let scratch = Scratch::new("conflict-theirs");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.edited();
         document.holds("mine\n".to_owned());
         std::fs::write(&file, "theirs\n").expect("save over the document");
         assert_eq!(
-            document.reconcile(Document::read(&file)),
+            document.reconcile(Document::read(&at(&file))),
             External::Conflict
         );
 
@@ -716,7 +748,10 @@ mod tests {
         assert!(!document.is_modified());
         assert!(!document.is_conflicted());
         // And the document is on that version now: the same file is no longer a change.
-        assert_eq!(document.reconcile(Document::read(&file)), External::Nothing);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Nothing
+        );
     }
 
     /// A modified buffer that the file catches up with is not a conflict: there is
@@ -725,13 +760,16 @@ mod tests {
     fn a_file_that_comes_to_agree_with_the_buffer_settles_the_document() {
         let scratch = Scratch::new("agree");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.edited();
         document.holds("agreed\n".to_owned());
         std::fs::write(&file, "agreed\n").expect("save the same text over the document");
 
-        assert_eq!(document.reconcile(Document::read(&file)), External::Nothing);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Nothing
+        );
         assert!(!document.is_modified());
         assert!(!document.is_conflicted());
     }
@@ -741,18 +779,21 @@ mod tests {
     fn a_deleted_file_leaves_the_reader_every_word_they_had() {
         let scratch = Scratch::new("deleted");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         std::fs::remove_file(&file).expect("delete the document");
 
-        assert_eq!(document.reconcile(Document::read(&file)), External::Gone);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Gone
+        );
         assert_eq!(document.text(), "one\n");
-        assert_eq!(document.file(), Some(file.as_path()));
+        assert_eq!(document.home().map(Home::path), Some(file.as_path()));
 
         // And when it comes back, the document follows it again.
         std::fs::write(&file, "two\n").expect("bring the document back");
         assert_eq!(
-            document.reconcile(Document::read(&file)),
+            document.reconcile(Document::read(&at(&file))),
             External::Followed
         );
         assert_eq!(document.text(), "two\n");
@@ -764,11 +805,14 @@ mod tests {
     fn a_file_renamed_away_leaves_the_reader_every_word_they_had() {
         let scratch = Scratch::new("renamed-away");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         std::fs::rename(&file, scratch.path().join("elsewhere.md")).expect("rename it away");
 
-        assert_eq!(document.reconcile(Document::read(&file)), External::Gone);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Gone
+        );
         assert_eq!(document.text(), "one\n");
     }
 
@@ -778,13 +822,16 @@ mod tests {
     fn a_modified_document_whose_file_is_deleted_can_be_saved_back() {
         let scratch = Scratch::new("deleted-dirty");
         let file = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&file).expect("read the document");
+        let mut document = Document::read(&at(&file)).expect("read the document");
 
         document.edited();
         document.holds("mine\n".to_owned());
         std::fs::remove_file(&file).expect("delete the document");
 
-        assert_eq!(document.reconcile(Document::read(&file)), External::Gone);
+        assert_eq!(
+            document.reconcile(Document::read(&at(&file))),
+            External::Gone
+        );
         assert!(!document.is_conflicted());
 
         document.save().expect("save the document back");
@@ -798,12 +845,12 @@ mod tests {
     fn save_as_moves_the_document_to_the_file_the_reader_chose() {
         let scratch = Scratch::new("save-as");
         let original = scratch.write("notes.md", "one\n");
-        let mut document = Document::read(&original).expect("read the document");
+        let mut document = Document::read(&at(&original)).expect("read the document");
 
         document.edited();
         document.holds("two\n".to_owned());
         let chosen = scratch.path().join("copy.md");
-        document.save_as(&chosen).expect("save the document");
+        document.save_as(&at(&chosen)).expect("save the document");
 
         assert_eq!(read(&chosen), "two\n");
         assert_eq!(
@@ -811,11 +858,11 @@ mod tests {
             "one\n",
             "Save As rewrote the original file"
         );
-        assert_eq!(document.file(), Some(chosen.as_path()));
+        assert_eq!(document.home().map(Home::path), Some(chosen.as_path()));
         assert!(!document.is_modified());
         // The document follows its new file, and no longer the one it came from.
         assert_eq!(
-            document.reconcile(Document::read(&chosen)),
+            document.reconcile(Document::read(&at(&chosen))),
             External::Nothing
         );
     }
