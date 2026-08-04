@@ -511,6 +511,26 @@ pub fn launch_installed_flatpak(document: &Path) -> App {
     app
 }
 
+/// The same, launched the way the desktop launches it: through the **document
+/// portal** (issue #22).
+///
+/// The difference from [`launch_installed_flatpak`] is the whole point of it. That one
+/// hands the sandbox the folder the document is in, so the application opens an
+/// ordinary path in a directory it can read. This one hands the sandbox nothing:
+/// `--file-forwarding` is the flag the exported desktop entry carries, so flatpak
+/// exports the document to the portal itself and the application is launched with the
+/// fuse path the portal answers with — a name under `/run/user/<uid>/doc/<id>`, in a
+/// directory holding that one file and nothing else, on a filesystem that is not the
+/// reader's.
+///
+/// That is the route a double-click in Files takes into a packaged axiomd, and it is
+/// the only route a package with no filesystem permission has.
+pub fn launch_installed_flatpak_from_the_desktop(document: &Path) -> App {
+    let app = App::start_under(Under::PortalFlatpak, Some(document), None, None);
+    app.wait_for_a_rendered_document();
+    app
+}
+
 /// Starts the axiomd **installed into `prefix`** by `scripts/install.sh` showing
 /// `document` — the copy a reader who ran `install.sh --user` has, run from where it
 /// was installed (issue #25).
@@ -628,7 +648,7 @@ impl App {
                 );
                 command
             }
-            Under::InstalledFlatpak => {
+            Under::InstalledFlatpak | Under::PortalFlatpak => {
                 let sandbox = environment.sandbox_arguments(
                     display
                         .wayland_in_a_sandbox()
@@ -636,17 +656,28 @@ impl App {
                         .map(|(name, value)| (name.to_owned(), value))
                         .chain(control_variable),
                 );
-                sandboxed_command(
-                    sandbox,
-                    [Some(scratch.path()), document].into_iter().flatten(),
-                )
+                let through_the_portal = matches!(under, Under::PortalFlatpak);
+                // Through the portal the document's folder is deliberately *not* shown
+                // to the sandbox: the portal is what the application reaches it by.
+                let visible = [
+                    Some(scratch.path()),
+                    document.filter(|_| !through_the_portal),
+                ];
+                sandboxed_command(sandbox, visible.into_iter().flatten(), through_the_portal)
             }
         };
         if let Some(engine) = engine {
             command.arg(format!("--engine={engine}"));
         }
         if let Some(document) = document {
-            command.arg(document);
+            // `@@ … @@` is how a `--file-forwarding` launch says "these arguments are
+            // documents": flatpak exports each to the portal and the application is
+            // started with the fuse path, exactly as the exported desktop entry does.
+            if matches!(under, Under::PortalFlatpak) {
+                command.arg("@@").arg(document).arg("@@");
+            } else {
+                command.arg(document);
+            }
         }
         let mut axiomd = command
             .stdin(Stdio::null())
@@ -1698,6 +1729,9 @@ enum Under {
     Installed(PathBuf),
     /// The flatpak installed on this machine, in its own sandbox.
     InstalledFlatpak,
+    /// The same, given its document through the document portal instead of through a
+    /// filesystem grant — the route a double-click in Files takes (issue #22).
+    PortalFlatpak,
 }
 
 impl std::fmt::Display for Under {
@@ -1708,6 +1742,9 @@ impl std::fmt::Display for Under {
                 write!(out, "the axiomd installed in {}", prefix.display())
             }
             Under::InstalledFlatpak => write!(out, "the installed flatpak {APP_ID}"),
+            Under::PortalFlatpak => {
+                write!(out, "the installed flatpak {APP_ID}, through the portal")
+            }
         }
     }
 }
@@ -1730,6 +1767,7 @@ fn installed_binary(prefix: &Path) -> PathBuf {
 fn sandboxed_command<'a>(
     environment: Vec<String>,
     visible: impl IntoIterator<Item = &'a Path>,
+    forwarding_files: bool,
 ) -> Command {
     assert!(
         Command::new("flatpak")
@@ -1755,6 +1793,9 @@ fn sandboxed_command<'a>(
         command.arg(format!("--filesystem={}", directory.display()));
     }
     command.arg("--nosocket=session-bus");
+    if forwarding_files {
+        command.arg("--file-forwarding");
+    }
     command.args(environment);
     command.arg(APP_ID);
     command
