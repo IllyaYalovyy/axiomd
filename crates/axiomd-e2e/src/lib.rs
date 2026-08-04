@@ -141,6 +141,49 @@ pub struct ModeSwitch {
     pub pressed: bool,
 }
 
+/// The main menu as the reader meets it.
+///
+/// One question rather than two, because a menu offering something nobody can open is
+/// not offering it: what is in it and whether it is open are the same moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Menu {
+    /// Whether the menu is open in front of the reader.
+    pub open: bool,
+    /// Everything it offers, in order, as the words on it and the action pressing it
+    /// fires — a submenu by its own words and an empty action. The zoom row is a
+    /// widget rather than an item and is not among them.
+    pub items: Vec<(String, String)>,
+}
+
+impl Menu {
+    /// What the menu offers, as pairs a test can spell out.
+    pub fn offers(&self) -> Vec<(&str, &str)> {
+        self.items
+            .iter()
+            .map(|(label, action)| (label.as_str(), action.as_str()))
+            .collect()
+    }
+}
+
+/// What the About dialog says about the build the reader is running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct About {
+    /// The application's name, as it is shown.
+    pub name: String,
+    /// Who it says wrote it.
+    pub developer: String,
+    /// The version of the binary that is running.
+    pub version: String,
+    /// The licence it says it is under, by GTK's own name for it — `Gpl30` is the GNU
+    /// GPL version 3 or later, and `Unknown` is a dialog that would tell the reader
+    /// nothing.
+    pub license: String,
+    /// Where its "Website" link goes.
+    pub website: String,
+    /// Where its "Report an Issue" link goes.
+    pub issues: String,
+}
+
 /// Where one part of a window is drawn, in window coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -827,6 +870,65 @@ impl App {
         self.settle(&format!("a dialog saying {wanted:?}"), || {
             Ok(self.try_command("window", "dialog")?.contains(wanted))
         });
+    }
+
+    /// The main menu of the addressed window: what it offers, and whether it is open.
+    pub fn menu(&self) -> Menu {
+        let shown = self.property("menu");
+        Menu {
+            open: shown.lines().any(|line| line == "open true"),
+            items: shown
+                .lines()
+                .filter_map(|line| line.strip_prefix("item\t"))
+                .map(|item| match item.split_once('\t') {
+                    Some((label, action)) => (label.to_owned(), action.to_owned()),
+                    None => (item.to_owned(), String::new()),
+                })
+                .collect(),
+        }
+    }
+
+    /// Presses `accelerator` — spelled the way GTK does, `<Control>n` — in the
+    /// addressed window, and answers whether the key did anything.
+    ///
+    /// The key has to be one this window has something on; a key bound to nothing is a
+    /// failure rather than a quiet `false`, because a test asserting that a key does
+    /// nothing must not pass on a key that was never installed.
+    pub fn press_key(&self, accelerator: &str) -> bool {
+        self.command("key", accelerator) == "true"
+    }
+
+    /// What the About dialog in front of the reader says, or a dialog of empty fields
+    /// when the window is not showing one.
+    pub fn about(&self) -> About {
+        let said = self.property("about");
+        let field = |name: &str| {
+            said.lines()
+                .find_map(|line| line.strip_prefix(&format!("{name} ")))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        About {
+            name: field("name"),
+            developer: field("developer"),
+            version: field("version"),
+            license: field("license"),
+            website: field("website"),
+            issues: field("issues"),
+        }
+    }
+
+    /// Every row the keyboard-shortcuts dialog is showing the reader: what each one is
+    /// called and the keys it lists, spelled the way GTK spells an accelerator and
+    /// separated by spaces where a shortcut is on more than one key.
+    ///
+    /// Empty while the window is not showing the dialog.
+    pub fn shortcuts(&self) -> Vec<(String, String)> {
+        self.property("shortcuts")
+            .lines()
+            .filter_map(|row| row.split_once('\t'))
+            .map(|(title, keys)| (title.to_owned(), keys.to_owned()))
+            .collect()
     }
 
     /// The outline sidebar of the addressed window, as the reader sees it.

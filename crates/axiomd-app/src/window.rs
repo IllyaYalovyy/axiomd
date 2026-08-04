@@ -149,6 +149,9 @@ pub(crate) struct DocumentWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
     header: adw::HeaderBar,
+    /// The main menu, kept because what it offers is part of what the window shows —
+    /// and because `F10` opening it is only observable through it.
+    menu: gtk::MenuButton,
     switch: ModeSwitch,
     notice: Notice,
     view: Rc<DocumentView>,
@@ -375,7 +378,8 @@ impl DocumentWindow {
         header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
         header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
         header.pack_start(&open_button());
-        header.pack_end(&primary_menu_button(&zoom));
+        let menu = primary_menu_button(&zoom);
+        header.pack_end(&menu);
         header.pack_end(switch.widget());
 
         // The search bar holds both surfaces and asks whichever one the reader is
@@ -409,6 +413,7 @@ impl DocumentWindow {
             window,
             title,
             header,
+            menu,
             switch,
             notice,
             view,
@@ -766,6 +771,78 @@ impl DocumentWindow {
     /// reads as pressed.
     pub(crate) fn mode_switch(&self) -> String {
         self.switch.shown()
+    }
+
+    /// The main menu as the reader meets it: whether it is open, and everything it
+    /// offers, in the order it offers it.
+    ///
+    /// A menu item is a thing with words on it, so that is what is listed: the label
+    /// the reader reads and the action pressing it fires, with a submenu listed by its
+    /// own words and not descended into. The zoom row is not listed at all — it is a
+    /// widget the popover puts in a slot rather than something to press.
+    pub(crate) fn menu(&self, of: &str) -> Option<String> {
+        if of != "menu" {
+            return None;
+        }
+        let mut said = vec![format!(
+            "open {}",
+            self.menu
+                .popover()
+                .is_some_and(|popover| popover.is_visible())
+        )];
+        if let Some(model) = self.menu.menu_model() {
+            offered(&model, &mut said);
+        }
+        Some(said.join("\n"))
+    }
+
+    /// Presses `accelerator` in this window and answers whether anything happened, or
+    /// `None` when this window has nothing on that key.
+    ///
+    /// Through the window's own shortcuts, which is where the keys a reader presses
+    /// arrive: `gtk_application_set_accels_for_action` installs each one as a shortcut
+    /// on every application window, and a primary menu button installs `F10` the same
+    /// way (both probed on GTK 4.20.4). A headless compositor has no keyboard to press
+    /// and GTK 4 offers no way to synthesise one, so this activates the very shortcut
+    /// the key press would — the same shape as the window's scroll and pinch, which
+    /// call what the gesture calls.
+    pub(crate) fn press_key(&self, accelerator: &str) -> Option<bool> {
+        let controllers = self.window.observe_controllers();
+        let mut fired = None;
+        for at in 0..controllers.n_items() {
+            let Some(shortcuts) = controllers
+                .item(at)
+                .and_downcast::<gtk::ShortcutController>()
+            else {
+                continue;
+            };
+            for index in 0..shortcuts.n_items() {
+                let Some(shortcut) = shortcuts.item(index).and_downcast::<gtk::Shortcut>() else {
+                    continue;
+                };
+                // One shortcut can be on several keys, and GTK writes those as one
+                // trigger with the alternatives separated by a bar.
+                let on_this_key = shortcut.trigger().is_some_and(|trigger| {
+                    trigger.to_str().split('|').any(|key| key == accelerator)
+                });
+                if !on_this_key {
+                    continue;
+                }
+                let Some(action) = shortcut.action() else {
+                    continue;
+                };
+                // A shortcut whose action is disabled answers false and does not
+                // consume the key, which is the difference between a key that does
+                // nothing and a key that is not bound at all.
+                let ran = action.activate(
+                    gtk::ShortcutActionFlags::empty(),
+                    self.window.upcast_ref::<gtk::Widget>(),
+                    None,
+                );
+                fired = Some(fired.unwrap_or(false) || ran);
+            }
+        }
+        fired
     }
 
     /// What the window is saying beside the document, or an empty string when it has
@@ -2061,6 +2138,32 @@ impl ModeSwitch {
     }
 }
 
+/// Everything `model` offers, appended to `said` as `item<TAB>label<TAB>action`.
+///
+/// Sections are flattened, because a reader reads one menu rather than the boxes it is
+/// drawn in; a submenu is the words on it, because that is all they see until they
+/// point at it.
+fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
+    for index in 0..model.n_items() {
+        if let Some(section) = model.item_link(index, gio::MENU_LINK_SECTION) {
+            offered(&section, said);
+            continue;
+        }
+        let Some(label) = model
+            .item_attribute_value(index, gio::MENU_ATTRIBUTE_LABEL, None)
+            .and_then(|label| label.get::<String>())
+        else {
+            continue;
+        };
+        let action = model
+            .item_attribute_value(index, gio::MENU_ATTRIBUTE_ACTION, None)
+            .and_then(|action| action.get::<String>())
+            .unwrap_or_default();
+        // Without the mnemonic marks: the reader sees "New Window", not "_New Window".
+        said.push(format!("item\t{}\t{action}", label.replace('_', "")));
+    }
+}
+
 fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
     let documents = gio::Menu::new();
     documents.append(Some("_New Window"), Some("app.new"));
@@ -2097,10 +2200,15 @@ fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
     leaving.append(Some("_Print…"), Some(PRINT));
     leaving.append(Some("E_xport…"), Some(EXPORT));
 
+    // What the HIG puts at the end of every primary menu, and nothing else: closing the
+    // window and quitting are keys (`Ctrl+W`, `Ctrl+Q`) and the window's own controls,
+    // not menu items — the shortcuts dialog beside them is where a reader finds those
+    // keys now (issue #29).
     let application = gio::Menu::new();
     application.append(Some("_Preferences"), Some("app.preferences"));
-    application.append(Some("_Close Window"), Some("app.close-window"));
-    application.append(Some("_Quit"), Some("app.quit"));
+    application.append(Some("_Keyboard Shortcuts"), Some(crate::chrome::KEYS));
+    // Lowercase on purpose, here as everywhere (`ux_decisions.md`).
+    application.append(Some("_About axiomd"), Some(crate::chrome::ABOUT));
 
     let menu = gio::Menu::new();
     menu.append_section(None, &documents);
@@ -2110,10 +2218,16 @@ fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
     menu.append_section(None, &leaving);
     menu.append_section(None, &application);
 
+    // Primary: that is what puts this menu on `F10`, the key GNOME opens an
+    // application's main menu with from the keyboard (issue #29). GTK installs a
+    // shortcut for it on the window itself — probed on GTK 4.20.4, where a window
+    // holding a primary menu button carries an `F10` shortcut whose action opens this
+    // button's popover.
     let button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .tooltip_text("Main menu")
         .menu_model(&menu)
+        .primary(true)
         .build();
     // Setting the model builds the popover, so the slot can be filled straight away
     // (probed on GTK 4.20.4: the popover is a `GtkPopoverMenu` and `add_child` answers

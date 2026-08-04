@@ -253,6 +253,16 @@ impl Session {
             // Pressing a button the window is showing — in an inline notice or in a
             // dialog — by the words on it, which is all the reader has to go on.
             "press" => press(&self.target(shell)?, payload),
+            // Pressing a key, spelled the way the application installs it. Answers
+            // whether the key did anything, so a key bound to a disabled action is
+            // told apart from one that ran.
+            "key" => {
+                let window = self.target(shell)?;
+                match window.press_key(payload) {
+                    Some(fired) => Ok(fired.to_string()),
+                    None => Err(format!("this window has nothing on {payload}")),
+                }
+            }
             // The far side of the Save As chooser: the path the reader picked. This
             // lands in the very call the chooser's own callback makes, so everything
             // after the choice — the atomic write, the window following its new file,
@@ -424,6 +434,15 @@ impl Session {
         // And how the source itself is drawn in edit mode: what a given piece of it is
         // coloured, and which of its words are underlined as misspelled.
         if let Some(answer) = window.editing(name) {
+            return Ok(answer);
+        }
+        // The main menu: what it offers, and whether it is open.
+        if let Some(answer) = window.menu(name) {
+            return Ok(answer);
+        }
+        // And the two dialogs that say what the application is and what its keys do,
+        // each empty while the window is not showing it.
+        if let Some(answer) = crate::chrome::showing(window.window(), name) {
             return Ok(answer);
         }
         match name {

@@ -1,5 +1,6 @@
 //! axiomd — a fast, beautiful Markdown editor and viewer for modern GNOME.
 
+mod chrome;
 mod control;
 mod document;
 mod editor;

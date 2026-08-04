@@ -33,61 +33,6 @@ use crate::window::DocumentWindow;
 /// the base name of the desktop file, so it cannot change casually.
 const APP_ID: &str = "io.github.etf.axiomd";
 
-/// Every keyboard shortcut the application installs, and the action each one runs.
-///
-/// The two halves are asserted together: a shortcut naming an action that does not
-/// exist is a key that silently does nothing. An action may be on more than one key,
-/// because some of them are on more than one key on a real keyboard — zooming in is
-/// `Ctrl+plus`, and `Ctrl+equal` is the same key without the shift a plus needs.
-const SHORTCUTS: &[(&str, &[&str])] = &[
-    ("app.new", &["<Control>n"]),
-    ("app.open", &["<Control>o"]),
-    ("app.preferences", &["<Control>comma"]),
-    ("app.close-window", &["<Control>w"]),
-    ("app.quit", &["<Control>q"]),
-];
-
-/// The same, for the actions that belong to a window rather than to the application:
-/// where the reader has been in that window, which of the two ways of looking at the
-/// document they are in, and what happens to their work (`window.rs`).
-const WINDOW_SHORTCUTS: &[(&str, &[&str])] = &[
-    (crate::window::BACK, &["<Alt>Left"]),
-    (crate::window::FORWARD, &["<Alt>Right"]),
-    (crate::window::MODE, &["<Control>e"]),
-    (crate::window::OUTLINE, &["F9"]),
-    // How big the document is (UT-011). `Ctrl+equal` beside `Ctrl+plus` and
-    // `Ctrl+KP_Add` beside both: a plus needs shift on most layouts and lives on the
-    // keypad on none of them, and every desktop browser and editor accepts all three.
-    (
-        crate::zoom::IN,
-        &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
-    ),
-    (
-        crate::zoom::OUT,
-        &["<Control>minus", "<Control>KP_Subtract"],
-    ),
-    (crate::zoom::RESET, &["<Control>0", "<Control>KP_0"]),
-    (crate::find::FIND, &["<Control>f"]),
-    (crate::find::FIND_NEXT, &["<Control>g"]),
-    (crate::find::FIND_PREVIOUS, &["<Shift><Control>g"]),
-    // Escape, and only while the bar is up: the action is disabled the rest of the
-    // time (`find.rs`), and a shortcut whose action is disabled does not fire — probed
-    // on GTK 4.20.4, where `gtk_shortcut_action_activate` on a `GtkNamedAction` naming
-    // a disabled action answers FALSE and answers TRUE the moment it is enabled. A
-    // shortcut that did not activate does not consume the key, so Escape goes on
-    // meaning whatever else it means in this window.
-    (crate::find::FIND_CLOSE, &["Escape"]),
-    (crate::window::SAVE, &["<Control>s"]),
-    // Ctrl+Shift+S, spelled the way GTK normalises it — `accels_for_action`
-    // answers in this order, so writing it the other way round would make the table
-    // and the running application disagree.
-    (crate::window::SAVE_AS, &["<Shift><Control>s"]),
-    (crate::window::UNDO, &["<Control>z"]),
-    (crate::window::REDO, &["<Control>y"]),
-    (crate::window::PRINT, &["<Control>p"]),
-    (crate::window::EXPORT, &["<Shift><Control>e"]),
-];
-
 /// The command line's name for the engine documents are read with — a testing flag,
 /// so that a suite can drive the real application on an engine other than the reader's
 /// preference without writing to their settings (issue #17).
@@ -386,9 +331,9 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     });
     add_action(&app, "quit", |app| app.quit());
 
-    for (action, accelerators) in SHORTCUTS.iter().chain(WINDOW_SHORTCUTS) {
-        app.set_accels_for_action(action, accelerators);
-    }
+    // Every keyboard shortcut, and the two dialogs that say what the application is and
+    // what its keys do. One call, because they are one table (`chrome.rs`).
+    crate::chrome::arm(&app);
 
     app
 }
@@ -481,6 +426,9 @@ mod tests {
             ("<Control>n", "app.new"),
             ("<Control>o", "app.open"),
             ("<Control>comma", "app.preferences"),
+            // Ctrl+? — the key every GNOME application shows its shortcuts on
+            // (issue #29).
+            ("<Control>question", "app.shortcuts"),
             ("<Control>w", "app.close-window"),
             ("<Control>q", "app.quit"),
         ] {
@@ -495,6 +443,64 @@ mod tests {
                 "{action} has no action behind it",
             );
         }
+    }
+
+    /// The two the primary menu ends with. About is on no key at all — it is a menu
+    /// item and nothing else — so the loop above cannot reach it.
+    #[test]
+    fn the_application_can_say_what_it_is_and_what_its_keys_do() {
+        let app = application();
+
+        for action in ["about", "shortcuts"] {
+            assert!(
+                app.lookup_action(action).is_some(),
+                "app.{action} has no action behind it",
+            );
+        }
+    }
+
+    /// Every key this application installs, and no others.
+    ///
+    /// Asked of the running application rather than of the table it was filled from,
+    /// which is the point: a shortcut set anywhere but that table would be a key the
+    /// reader can press and the shortcuts dialog never lists (issue #29).
+    #[test]
+    fn every_key_the_application_installs_is_one_the_shortcuts_dialog_lists() {
+        let mut installed: Vec<String> = application()
+            .list_action_descriptions()
+            .iter()
+            .map(|action| action.to_string())
+            .collect();
+        installed.sort();
+
+        assert_eq!(
+            installed,
+            [
+                "app.close-window",
+                "app.new",
+                "app.open",
+                "app.preferences",
+                "app.quit",
+                "app.shortcuts",
+                "win.back",
+                "win.export",
+                "win.find",
+                "win.find-close",
+                "win.find-next",
+                "win.find-previous",
+                "win.forward",
+                "win.mode",
+                "win.outline",
+                "win.print",
+                "win.redo",
+                "win.save",
+                "win.save-as",
+                "win.undo",
+                "win.zoom-in",
+                "win.zoom-out",
+                "win.zoom-reset",
+            ],
+        );
     }
 
     /// The window's own actions, which belong to a window rather than to the
@@ -513,7 +519,9 @@ mod tests {
             ("win.save", &["<Control>s"]),
             ("win.save-as", &["<Shift><Control>s"]),
             ("win.undo", &["<Control>z"]),
-            ("win.redo", &["<Control>y"]),
+            // Both, in this order: the desktop's own redo first, and the one readers
+            // arriving from elsewhere press beside it (issue #29).
+            ("win.redo", &["<Shift><Control>z", "<Control>y"]),
             ("win.print", &["<Control>p"]),
             ("win.export", &["<Shift><Control>e"]),
             ("win.find", &["<Control>f"]),
