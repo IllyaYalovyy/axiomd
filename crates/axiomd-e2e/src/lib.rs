@@ -701,6 +701,15 @@ impl App {
         self.property("source")
     }
 
+    /// How the editor draws the first occurrence of `text` in the source, in the words
+    /// a reader would use for it — `colour=#1c71d8 weight=bold`, and an empty string
+    /// when they see it in the editor's ordinary ink.
+    ///
+    /// The editing half of reading a rendered block's computed style out of the page.
+    pub fn source_style(&self, text: &str) -> String {
+        self.property(&format!("drawn {text}"))
+    }
+
     /// Answers the Save As chooser with `file`, as the reader picking it does.
     ///
     /// The chooser itself is a native dialog outside the window's widget tree; this is
@@ -820,6 +829,16 @@ impl App {
             return Vec::new();
         }
         highlighted.lines().map(str::to_owned).collect()
+    }
+
+    /// The words the editor is showing the reader underlined as misspelled, in the
+    /// order they are written.
+    pub fn misspelled(&self) -> Vec<String> {
+        let marked = self.property("misspelled");
+        if marked.is_empty() {
+            return Vec::new();
+        }
+        marked.lines().map(str::to_owned).collect()
     }
 
     /// Resizes the addressed window, as dragging its edge or tiling it does.

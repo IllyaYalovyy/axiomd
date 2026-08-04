@@ -18,3 +18,11 @@ gtk = { package = "gtk4", version = "0.11.4", features = ["v4_20"] }
 # shell uses predates it, so the build works on any runtime the GNOME 49
 # platform or a distro ships. Raise a `v2_xx` gate only for an API that needs it.
 webkit6 = "0.6.1"
+# GtkSourceView 5: the editor's buffer and view, its Markdown language definition
+# and its Adwaita style schemes (issue #21). Left at the bindings' 5.0 baseline for
+# the same reason as WebKit above — every API `editor.rs` uses predates 5.2, so the
+# build works on any runtime the GNOME 49 platform or a distro ships.
+sourceview5 = "0.11.2"
+# libspelling, over the same source buffer: the editor's spell checking, which is
+# the reader's to switch off (issue #21, and the `spellcheck` key of #20).
+libspelling = "0.5.0"

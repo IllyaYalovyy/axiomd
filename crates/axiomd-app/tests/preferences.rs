@@ -139,10 +139,9 @@ fn the_theme_override_recolours_the_document_without_rendering_it_again() {
 /// Every row the dialog offers, turned and read back, and the setting behind it
 /// written down where the next launch will find it.
 ///
-/// The one row whose feature has not landed yet — spelling — is here for exactly that
-/// reason: what it does today is remember, and #18 reads what it remembered. The plugin
-/// switch and the engine row are not: what they write is read by the very next render
-/// (`plugins.rs`, `engines.rs`).
+/// Only what the dialog writes down is asserted here. What each row then *does* is
+/// asserted where that behaviour lives — the plugin switch and the engine row in
+/// `plugins.rs` and `engines.rs`, spelling in `editor.rs`'s own suite (#21).
 #[test]
 fn every_row_the_dialog_offers_turns_and_is_written_down() {
     let fixture = Fixture::new("preferences-rows");

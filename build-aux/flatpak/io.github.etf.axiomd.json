@@ -28,6 +28,24 @@
     },
     "modules": [
         {
+            "x-comment": "The one library axiomd links that the GNOME 49 runtime does not ship. Probed on org.gnome.Platform//49 and org.gnome.Sdk//49 (2026-08-03): gtksourceview-5 5.18.0 and enchant-2 2.8.2 are both there, libspelling is not. Built here at the version the development machine has, with everything that is not the library itself switched off.",
+            "name": "libspelling",
+            "buildsystem": "meson",
+            "config-opts": [
+                "-Ddocs=false",
+                "-Dsysprof=false",
+                "-Dvapi=false",
+                "-Dintrospection=disabled"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://download.gnome.org/sources/libspelling/0.4/libspelling-0.4.9.tar.xz",
+                    "sha256": "d093fd35ae0f1c98fb58876505287fc0a885e47da9d2411d6d7cd595f34d4ebf"
+                }
+            ]
+        },
+        {
             "name": "axiomd",
             "buildsystem": "simple",
             "build-commands": [

@@ -15,6 +15,8 @@ path = "src/main.rs"
 adw.workspace = true
 gtk.workspace = true
 webkit6.workspace = true
+sourceview5.workspace = true
+libspelling.workspace = true
 axiomd-doc = { path = "../axiomd-doc" }
 axiomd-engine = { path = "../axiomd-engine" }
 axiomd-render = { path = "../axiomd-render" }

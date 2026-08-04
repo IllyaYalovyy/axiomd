@@ -168,6 +168,8 @@ pub(crate) struct DocumentWindow {
     /// render rather than a restyle — a plugin changes what the document is — and the
     /// page on screen is patched, never reloaded.
     capabilities: OnceCell<Watch>,
+    /// And for whether the editor marks the reader's spelling.
+    spelling: OnceCell<Watch>,
     /// How big this window shows its documents. One window's own and nothing that is
     /// written down: it lasts as long as the window and no longer (UT-011).
     zoom: Rc<Zoom>,
@@ -390,6 +392,7 @@ impl DocumentWindow {
             layout: OnceCell::new(),
             sidebar: OnceCell::new(),
             capabilities: OnceCell::new(),
+            spelling: OnceCell::new(),
             zoom,
             engine: Cell::new(engine),
             parser: OnceCell::new(),
@@ -430,6 +433,20 @@ impl DocumentWindow {
             .set(settings.follow_plugins(move || {
                 if let Some(window) = recomposing.upgrade() {
                     window.rerender_now();
+                }
+            }));
+
+        // And for whether the editor marks misspelled words. The editor answers it
+        // while the reader is editing and never while they are reading (`editor.rs`),
+        // so this is the whole of what the window has to do about it: hand the
+        // preference over the moment it changes, with nothing re-read or reloaded for
+        // it (invariant 14).
+        let checking = Rc::downgrade(&document_window);
+        let _ = document_window
+            .spelling
+            .set(settings.follow_spellcheck(move |wanted| {
+                if let Some(window) = checking.upgrade() {
+                    window.editor.check_spelling(wanted);
                 }
             }));
 
@@ -732,6 +749,20 @@ impl DocumentWindow {
             return Some(self.editor.highlighted().join("\n"));
         }
         self.find.showing(of)
+    }
+
+    /// The source as the reader sees it drawn in edit mode: how a given piece of it is
+    /// coloured, and which of its words are marked misspelled.
+    ///
+    /// The editing half of reading a rendered document's own styles out of the page.
+    pub(crate) fn editing(&self, of: &str) -> Option<String> {
+        if let Some(text) = of.strip_prefix("drawn ") {
+            return Some(self.editor.styling(text));
+        }
+        if of == "misspelled" {
+            return Some(self.editor.misspelled().join("\n"));
+        }
+        None
     }
 
     /// Types `text` into the search bar, exactly as pressing the keys does.

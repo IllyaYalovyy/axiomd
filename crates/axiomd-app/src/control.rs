@@ -389,6 +389,11 @@ impl Session {
         if let Some(answer) = window.zoom(name) {
             return Ok(answer);
         }
+        // And how the source itself is drawn in edit mode: what a given piece of it is
+        // coloured, and which of its words are underlined as misspelled.
+        if let Some(answer) = window.editing(name) {
+            return Ok(answer);
+        }
         match name {
             "title" => Ok(window.window().title().unwrap_or_default().to_string()),
             "uri" => Ok(window.webview().uri().unwrap_or_default().to_string()),

@@ -57,15 +57,6 @@ pub(crate) enum Key {
     /// How long after the last edit that happens, in seconds.
     AutosaveDelay,
     /// Whether the editor marks misspelled words.
-    ///
-    /// Not consumed yet: spell checking needs libspelling, whose development package
-    /// is not installable in this environment (#18, reported to the owner). The key
-    /// and its row are here because the behaviour is the reader's to choose the moment
-    /// it can be honoured.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the schema's key for spell checking; see above")
-    )]
     Spellcheck,
     /// The engine documents are read with unless a window says otherwise.
     Engine,
@@ -216,6 +207,21 @@ impl Settings {
         };
         apply();
         self.watch(&[Key::Outline], apply)
+    }
+
+    /// Tells `check` whether the editor marks misspelled words — now, and again every
+    /// time the reader changes their mind.
+    ///
+    /// Like the sidebar and unlike a plugin, this is a way of *drawing* the source:
+    /// turning it reaches the buffer the reader is typing in without anything being
+    /// re-read, re-rendered or reloaded for it (invariants 9 and 14).
+    pub(crate) fn follow_spellcheck(self: &Rc<Self>, check: impl Fn(bool) + 'static) -> Watch {
+        let apply = {
+            let settings = self.clone();
+            move || check(settings.store.boolean(Key::Spellcheck.name()))
+        };
+        apply();
+        self.watch(&[Key::Spellcheck], apply)
     }
 
     /// The optional rendering capabilities the reader is reading with — every plugin

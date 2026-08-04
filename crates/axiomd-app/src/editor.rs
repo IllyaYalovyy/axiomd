@@ -23,22 +23,34 @@
 //! never touched; the tags' colours follow the reader's colour scheme, which is the one
 //! thing a text tag cannot get from a stylesheet.
 //!
-//! # What is not here yet
+//! `GtkSourceSearchContext` is deliberately not used, although the buffer under this
+//! module is now a source buffer that has one. Its case-insensitive matching folds
+//! case the way Unicode does, and axiomd's — stated once in
+//! [`crate::find::Query::matches`] and shared with the rendered page by `find.js` —
+//! compares character by character. Measured on GtkSourceView 5.18.0: searching
+//! `strasse` over `Straße STRASSE strasse` finds three matches there and two here, so
+//! adopting it would make the counter disagree with itself between the two ways of
+//! looking at one document (issue #8's single shared rule, and issue #21's condition
+//! for the migration).
 //!
-//! Syntax highlighting and spell checking. Both need GtkSourceView 5 and libspelling,
-//! whose development packages are not installable in this environment; the rest of the
-//! editor — the buffer, undo, the caret, the modified state — is the same either way,
-//! and this module is the only place that changes when they arrive. The search is
-//! written over `GtkTextBuffer` for the same reason: a `GtkSourceSearchContext` is not
-//! reachable from this build, and the rule it would apply is stated once in
-//! [`crate::find::Query::matches`] and shared with the rendered page (issue #8, and
-//! reported to the owner).
+//! # How the source is drawn
+//!
+//! GtkSourceView's own Markdown definition, as it ships, under the Adwaita scheme that
+//! matches the reader's colour scheme — a heading bold and coloured, an emphasis
+//! slanted, a code span apart from the prose, and nothing else. Deliberately minimal:
+//! live-preview styling was ruled out for #21, and nothing here hides, replaces or
+//! re-renders any part of the markup the reader typed.
+//!
+//! Highlighting and spell checking are both *ways of drawing* the buffer. Neither
+//! changes a byte of it, and switching palette re-draws where the reader stands rather
+//! than reloading anything (invariant 9).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib;
+use sourceview5::prelude::*;
 
 use crate::find::{Counted, Query, Searchable};
 
@@ -47,11 +59,44 @@ use crate::find::{Counted, Query, Searchable};
 const MATCH: &str = "axiomd-find";
 const CURRENT_MATCH: &str = "axiomd-find-current";
 
+/// The language the source is drawn in, and the two schemes it is drawn under — all
+/// three GtkSourceView's own, as it ships them.
+const MARKDOWN: &str = "markdown";
+const LIGHT: &str = "Adwaita";
+const DARK: &str = "Adwaita-dark";
+
+/// The biggest document whose spelling is checked, in characters.
+///
+/// Spell checking is the one thing here whose cost grows with the whole document
+/// rather than with what is on screen, and past a point it is a cost the reader pays
+/// in a main loop that stops answering. Measured on this machine on 2026-08-03, in a
+/// release build, as the longest the application took to answer anything while an edit
+/// reached the screen — the number invariant 4 is stated in:
+///
+/// | document | not checked | checked |
+/// |----------|-------------|---------|
+/// | 64 KB    | 6.2 ms      | 5.7 ms  |
+/// | 256 KB   | 28.2 ms     | 16.4 ms |
+/// | 1 MB     | 69.7 ms     | 53.6 ms |
+/// | 4 MB     | 578.8 ms    | 683.2 ms |
+/// | 7 MB     | 1449.2 ms   | 1800.7 ms |
+/// | 10 MB    | 2648.8 ms   | 3324.9 ms |
+///
+/// Up to a megabyte checking costs nothing measurable; above it the cost is the
+/// document's, and on the perf harness's ten-megabyte budget it was the difference
+/// between 2.8 s and 4.8 s — a stall budget met and a stall budget missed (issue #9,
+/// invariant 8). So a document longer than this is highlighted, edited and searched as
+/// any other, and simply not spell checked.
+///
+/// Nothing tells the reader, which is a decision worth revisiting: an inline note
+/// beside a document too long to check would be the honest version of this.
+const LARGEST_CHECKED_DOCUMENT: i32 = 1_000_000;
+
 /// One window's editing surface.
 pub(crate) struct Editor {
     scroller: gtk::ScrolledWindow,
-    view: gtk::TextView,
-    buffer: gtk::TextBuffer,
+    view: sourceview5::View,
+    buffer: sourceview5::Buffer,
     changed: RefCell<Option<Rc<dyn Fn()>>>,
     moved: RefCell<Option<Moved>>,
     /// Set while the *application* is putting text in the buffer — opening a document,
@@ -67,6 +112,16 @@ pub(crate) struct Editor {
     /// Which scheduled re-search is the current one. Every keystroke supersedes the one
     /// before it, so a burst of typing is one search at the end rather than one per key.
     researching: Cell<u64>,
+    /// What underlines the words this window's reader has misspelled. One per window
+    /// and owned by it, so closing the window ends the checking with it (invariant 7).
+    spelling: libspelling::TextBufferAdapter,
+    /// Whether this surface has been shown to the reader, and so whether the palette
+    /// it is drawn in has been read off disk yet. See [`Editor::dress`].
+    dressed: Cell<bool>,
+    /// Whether the reader has asked for their spelling to be checked at all. What is
+    /// actually checked is that *and* this surface being on screen — see
+    /// [`Editor::check_spelling`].
+    checking: Cell<bool>,
     /// This surface's subscription to the reader's colour scheme, which ends with the
     /// window rather than outliving it on a store that belongs to the application
     /// (invariant 7).
@@ -86,10 +141,15 @@ type Moved = Rc<dyn Fn(u32)>;
 
 impl Editor {
     pub(crate) fn new() -> Rc<Self> {
-        let buffer = gtk::TextBuffer::new(None);
+        let buffer = sourceview5::Buffer::new(None);
         buffer.set_enable_undo(true);
+        buffer.set_highlight_syntax(true);
+        // Off: the pairing rectangle GtkSourceView draws around brackets is a code
+        // editor's habit, and in prose full of parentheses it is a flicker under the
+        // caret with nothing to say (owner ruling on #21: minimal).
+        buffer.set_highlight_matching_brackets(false);
 
-        let view = gtk::TextView::builder()
+        let view = sourceview5::View::builder()
             .buffer(&buffer)
             .monospace(true)
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -111,6 +171,13 @@ impl Editor {
         buffer.create_tag(Some(MATCH), &[]);
         buffer.create_tag(Some(CURRENT_MATCH), &[]);
 
+        // Off until somebody says otherwise: the reader's preference is answered by
+        // the window that owns this editor, and a document being read is not being
+        // spell checked at all.
+        let spelling =
+            libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::default());
+        spelling.set_enabled(false);
+
         let editor = Rc::new(Self {
             scroller,
             view,
@@ -121,9 +188,31 @@ impl Editor {
             finding: RefCell::new(None),
             found: RefCell::new(Vec::new()),
             researching: Cell::new(0),
+            spelling,
+            checking: Cell::new(false),
+            dressed: Cell::new(false),
             recolouring: RefCell::new(None),
         });
-        editor.recolour_matches();
+        editor.repaint();
+
+        // "While they are editing" said in the only terms this module has for it: the
+        // editor is on screen. The stack maps the surface the reader is looking at and
+        // unmaps the other, so a document being read is never spell checked and a
+        // reader who switches to editing is, without the editor having to be told what
+        // a mode is.
+        let shown = Rc::downgrade(&editor);
+        editor.view.connect_map(move |_| {
+            if let Some(editor) = shown.upgrade() {
+                editor.dress();
+                editor.mark_misspellings();
+            }
+        });
+        let hidden = Rc::downgrade(&editor);
+        editor.view.connect_unmap(move |_| {
+            if let Some(editor) = hidden.upgrade() {
+                editor.mark_misspellings();
+            }
+        });
 
         // The highlight follows the reader's colour scheme, because a text tag carries
         // colours rather than a style class and nothing else would restyle it. Live,
@@ -133,7 +222,7 @@ impl Editor {
         *editor.recolouring.borrow_mut() =
             Some(adw::StyleManager::default().connect_dark_notify(move |_| {
                 if let Some(editor) = recolouring.upgrade() {
-                    editor.recolour_matches();
+                    editor.repaint();
                 }
             }));
 
@@ -162,6 +251,11 @@ impl Editor {
             // they stop, not once per key: see `search_again`.
             editor.found.borrow_mut().clear();
             editor.search_again();
+            // And whether this document is one whose spelling is worth checking is a
+            // question about the document, so a new one — or one that has just grown
+            // past the mark — is asked again. Two integers and a comparison, which is
+            // what it may cost on the keystroke path.
+            editor.mark_misspellings();
             if editor.filling.get() {
                 return;
             }
@@ -332,6 +426,114 @@ impl Editor {
             .collect()
     }
 
+    /// How the source draws the first occurrence of `of`, in the words a reader would
+    /// use for it: the colour of the letters, whether they are bold, whether they are
+    /// slanted, and what is behind them.
+    ///
+    /// The editing half of reading a rendered block's computed style out of the page.
+    /// An empty answer means the reader sees that text in the ordinary ink of the
+    /// editor, which is what unhighlighted source looks like.
+    pub(crate) fn styling(&self, of: &str) -> String {
+        let text: Vec<char> = self.text().chars().collect();
+        let needle: Vec<char> = of.chars().collect();
+        if needle.is_empty() || needle.len() > text.len() {
+            return String::new();
+        }
+        let Some(at) = (0..=text.len() - needle.len())
+            .find(|start| text[*start..*start + needle.len()] == needle[..])
+        else {
+            return String::new();
+        };
+        let at = self.at(at);
+        // The same call the view makes for the lines it is about to draw: highlighting
+        // is worked out where it is needed and nowhere else, so asking about a place
+        // has to ask for its line too — an empty range asks for nothing.
+        let (from, to) = line_around(&at);
+        self.buffer.ensure_highlight(&from, &to);
+        drawing(&at)
+    }
+
+    /// Loads what the source is drawn with, the first time there is anybody to draw it
+    /// for.
+    ///
+    /// GtkSourceView reads its language definitions and its style schemes off disk the
+    /// first time either is asked for, and doing that while a window is opening costs
+    /// the reader 52 ms of a cold start that VISION states in milliseconds — measured
+    /// on 2026-08-03: 492 ms with this in [`Editor::new`] against 440 ms without it.
+    /// A reader opening a document to read it never pays for the editor's dressing;
+    /// one who presses Ctrl+E pays for it once, in a window that is already up.
+    ///
+    /// It is a trade and not a free win, so both halves are written down. A buffer
+    /// given its language when it already holds a document is analysed all at once, and
+    /// on the perf harness's ten megabytes that shows up in the very thing this module
+    /// exists to protect: a key press costs 22 ms in the seconds after the switch,
+    /// against 7 ms when the language was set before the text arrived (medians, same
+    /// day, 50 ms budget). The measurement went the other way on the two budgets that
+    /// are about the reader rather than the machine — cold start 446 ms against 495 ms,
+    /// on a 560 ms ceiling — and every launch pays that one while only an enormous
+    /// document being edited pays the other.
+    fn dress(&self) {
+        if self.dressed.replace(true) {
+            return;
+        }
+        // The stock definition, unmodified. A missing one means a GtkSourceView
+        // installed without its language files, which is a source the reader can still
+        // read and edit — plainly — rather than a reason not to open their document.
+        self.buffer.set_language(
+            sourceview5::LanguageManager::default()
+                .language(MARKDOWN)
+                .as_ref(),
+        );
+        self.repaint();
+    }
+
+    /// Whether the reader has asked for their spelling to be checked.
+    ///
+    /// What they asked for is honoured while they are editing and never while they are
+    /// reading: a document on the page is not spell checked, and the words behind it
+    /// are not checked either — checking a ten-megabyte buffer nobody is typing in
+    /// would be work spent on marks nobody can see.
+    pub(crate) fn check_spelling(&self, wanted: bool) {
+        self.checking.set(wanted);
+        self.mark_misspellings();
+    }
+
+    /// Applies that, for whichever of the three things that decide it has just
+    /// changed: the preference, the surface being on screen, or the document.
+    fn mark_misspellings(&self) {
+        let checkable =
+            self.view.is_mapped() && self.buffer.char_count() <= LARGEST_CHECKED_DOCUMENT;
+        self.spelling.set_enabled(self.checking.get() && checkable);
+    }
+
+    /// The words the reader can see underlined as misspelled, in the order they are
+    /// written.
+    ///
+    /// Empty whenever nothing is being checked — which is every moment the reader has
+    /// spell checking switched off, every moment they are reading rather than editing,
+    /// and every document too big to check (see [`LARGEST_CHECKED_DOCUMENT`]).
+    pub(crate) fn misspelled(&self) -> Vec<String> {
+        let Some(marked) = self.spelling.tag() else {
+            return Vec::new();
+        };
+        let mut words = Vec::new();
+        let mut at = self.buffer.start_iter();
+        if !at.starts_tag(Some(&marked)) && !at.forward_to_tag_toggle(Some(&marked)) {
+            return words;
+        }
+        loop {
+            let from = at;
+            if !at.forward_to_tag_toggle(Some(&marked)) {
+                break;
+            }
+            words.push(self.buffer.text(&from, &at, true).to_string());
+            if !at.forward_to_tag_toggle(Some(&marked)) {
+                break;
+            }
+        }
+        words
+    }
+
     /// Runs the search again once the reader stops typing.
     ///
     /// Searching a document is work proportional to the document, and a keystroke must
@@ -431,13 +633,27 @@ impl Editor {
             .to_string()
     }
 
-    /// The colours a search marks the source with, under the scheme the reader is
-    /// reading in.
+    /// Draws the source in the reader's colour scheme: the palette the markup is
+    /// highlighted in, and the two colours a search marks it with.
     ///
-    /// The same two colours the rendered page uses (`axiomd.css`), so a match looks
-    /// like a match whichever surface the reader is on.
-    fn recolour_matches(&self) {
+    /// A repaint and nothing else — no byte of the buffer is read or written, so
+    /// changing scheme costs neither a parse nor a reload (invariant 9). The match
+    /// colours are the two the rendered page uses (`axiomd.css`), so a match looks like
+    /// a match whichever surface the reader is on.
+    ///
+    /// The scheme is only swapped on an editor that has been dressed: reading the
+    /// schemes off disk is what [`Editor::dress`] defers, and a reader who changes
+    /// palette without ever having edited anything must not pay for it either.
+    fn repaint(&self) {
         let dark = adw::StyleManager::default().is_dark();
+        let scheme = if dark { DARK } else { LIGHT };
+        if self.dressed.get() {
+            self.buffer.set_style_scheme(
+                sourceview5::StyleSchemeManager::default()
+                    .scheme(scheme)
+                    .as_ref(),
+            );
+        }
         let table = self.buffer.tag_table();
         for (name, background, foreground) in [
             (MATCH, if dark { "#7a5c00" } else { "#f9f06b" }, ink(dark)),
@@ -458,6 +674,71 @@ impl Editor {
 /// What is legible on both of those, which is not the same colour on both.
 fn ink(dark: bool) -> &'static str {
     if dark { "#ffffff" } else { "#241f31" }
+}
+
+/// From where a reader would call the letters bold, in the numbers Pango weighs them
+/// in (`PANGO_WEIGHT_BOLD`).
+const BOLD: i32 = 700;
+
+/// The whole line `at` is on — the unit highlighting is worked out in.
+fn line_around(at: &gtk::TextIter) -> (gtk::TextIter, gtk::TextIter) {
+    let mut from = *at;
+    from.set_line_offset(0);
+    let mut to = *at;
+    if !to.ends_line() {
+        to.forward_to_line_end();
+    }
+    (from, to)
+}
+
+/// How the letters at `at` are drawn, as everything that has been said about them —
+/// the tags over that place folded in the order they are painted, so what comes out is
+/// what the reader is looking at rather than what some layer underneath asked for.
+fn drawing(at: &gtk::TextIter) -> String {
+    let mut drawn: Vec<(&str, String)> = Vec::new();
+    let mut set = |what: &'static str, how: String| {
+        drawn.retain(|(named, _)| *named != what);
+        drawn.push((what, how));
+    };
+    // In ascending priority, which is the order they are applied in: the last thing
+    // said about a colour is the colour the reader sees.
+    for tag in at.tags() {
+        if tag.is_foreground_set() {
+            set("colour", colour(tag.foreground_rgba()));
+        }
+        if tag.is_background_set() {
+            set("behind", colour(tag.background_rgba()));
+        }
+        if tag.is_weight_set() && tag.weight() >= BOLD {
+            set("weight", "bold".to_owned());
+        }
+        if tag.is_style_set() && tag.style() != gtk::pango::Style::Normal {
+            set("slant", "italic".to_owned());
+        }
+        if tag.is_underline_set() && tag.underline() != gtk::pango::Underline::None {
+            set("underline", "yes".to_owned());
+        }
+    }
+    drawn
+        .iter()
+        .map(|(what, how)| format!("{what}={how}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A colour as it would be written down, so two runs of the same test compare strings
+/// rather than floating-point channels.
+fn colour(rgba: Option<gtk::gdk::RGBA>) -> String {
+    let Some(rgba) = rgba else {
+        return "none".to_owned();
+    };
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        channel(rgba.red()),
+        channel(rgba.green()),
+        channel(rgba.blue())
+    )
 }
 
 impl Searchable for Editor {
