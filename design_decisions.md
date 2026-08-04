@@ -59,6 +59,15 @@ and images) is never a plugin. Priority order from the owner: tables and
 images first-class, diagrams before math, neither math nor diagrams a
 blocker for core quality.
 
+## How is axiomd distributed?
+
+Native installation is PRIMARY (owner ruling, 2026-08-03): flatpak has
+too many integration issues for daily use. `scripts/install.sh` supports
+system-wide (sudo) and per-user (`--user`, no root, `~/.local`) installs
+with full desktop integration and no sandbox (issue #25). The flatpak
+remains as a secondary, optional form; its portal-related defects
+(#22–#24) are tracked but never block native work.
+
 ## What is the network policy?
 
 **Zero implicit network, enforced by tests — not zero capability.** All
@@ -82,9 +91,12 @@ from the far end to prove nothing else uses it. The pinned file is checked
 against both the manifest and the installed application, so widening the
 sandbox — in the manifest or by a local `flatpak override` — fails the gate.
 
-The known cost is recorded as RFC-001 Q3 and is an open owner decision: under
-pure portals a document cannot reach the images *beside* it, so relative
-images do not load in the packaged application.
+Q3 is RULED (owner, 2026-08-03): the sandbox gains **read-only filesystem
+access** (`--filesystem=host:ro`, issue #23) so images beside a document
+render with zero friction — the owner chose working images over the sealed
+sandbox. This is the one sanctioned widening; the pinned-permissions gate
+remains to catch any further drift. Writes still go only through the
+portal-granted document, and zero-implicit-network is unchanged.
 
 ## How is scroll sync / outline tracking mapped?
 

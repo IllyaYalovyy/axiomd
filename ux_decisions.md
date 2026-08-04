@@ -81,6 +81,23 @@ place while editing) is explicitly rejected, not merely deferred.
 Highlighting may never noticeably degrade typing latency; the perf
 budgets police this.
 
+## Where does search live?
+
+Owner ruling (2026-08-03): the search bar belongs to the document pane —
+compact, overlaid on the document view only. It never spans or disturbs
+the sidebar (issue #26).
+
+## Is the sidebar resizable?
+
+Yes (owner ruling 2026-08-03): drag the divider; width persists across
+sessions as window state, not a preferences entry (issue #27).
+
+## Do controls reflect state?
+
+A control that toggles state shows where it takes you: the read/edit
+toggle changes icon and tooltip with the mode (issue #28). The general
+rule: a stateful affordance whose presentation never changes is a defect.
+
 ## Is YAML frontmatter rendered?
 
 No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as
