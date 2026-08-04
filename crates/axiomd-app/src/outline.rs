@@ -88,6 +88,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
+use axiomd_i18n::{gettext, gettext_noop, ngettext};
 use axiomd_render::Heading;
 use gtk::gdk;
 use gtk::gio;
@@ -120,7 +121,7 @@ const HEADINGS: &str = "headings";
 const NOTHING: &str = "nothing";
 
 /// What the sidebar says instead of a list, for a document that has no sections.
-const NO_HEADINGS: &str = "No headings";
+const NO_HEADINGS: &str = gettext_noop("No headings");
 
 /// One window's outline sidebar.
 pub(crate) struct Outline {
@@ -231,8 +232,8 @@ impl Outline {
         // where the headings would be (invariant 12).
         let nothing = adw::StatusPage::builder()
             .icon_name("view-list-symbolic")
-            .title(NO_HEADINGS)
-            .description("This document has no headings to navigate by.")
+            .title(gettext(NO_HEADINGS))
+            .description(gettext("This document has no headings to navigate by."))
             .build();
         nothing.add_css_class("compact");
 
@@ -274,7 +275,9 @@ impl Outline {
         // what it is — the affordance `GtkPaned` gives its own handle.
         let grip = gtk::Box::builder()
             .width_request(GRIP)
-            .tooltip_text("Drag to resize the outline, double-click to reset it")
+            .tooltip_text(gettext(
+                "Drag to resize the outline, double-click to reset it",
+            ))
             .build();
         grip.set_cursor_from_name(Some("col-resize"));
 
@@ -852,11 +855,13 @@ impl Outline {
 /// with no sections — the empty state under it already says so, and saying it twice is
 /// noise.
 fn counted(headings: usize) -> String {
-    match headings {
-        0 => String::new(),
-        1 => "1 heading".to_owned(),
-        many => format!("{many} headings"),
+    if headings == 0 {
+        return String::new();
     }
+    // Two forms in English and not always two elsewhere: which one a number takes is
+    // the reader's language's answer, not ours.
+    let counted = u32::try_from(headings).unwrap_or(u32::MAX);
+    ngettext("{n} heading", "{n} headings", counted).replace("{n}", &headings.to_string())
 }
 
 /// Loads `outline.css` over the theme, once for the display every window is on.

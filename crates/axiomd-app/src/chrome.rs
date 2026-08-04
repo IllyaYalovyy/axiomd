@@ -28,6 +28,7 @@
 //! test below rather than trusted.
 
 use adw::prelude::*;
+use axiomd_i18n::{gettext, gettext_noop};
 use gtk::gio;
 
 /// One row of the keyboard-shortcuts dialog: what the reader calls it, the action it
@@ -52,55 +53,55 @@ struct Shortcut {
 /// finds them (issue #29).
 const SECTIONS: &[(&str, &[Shortcut])] = &[
     (
-        "General",
+        gettext_noop("General"),
         &[
             Shortcut {
-                title: "New Window",
+                title: gettext_noop("New Window"),
                 action: "app.new",
                 keys: &["<Control>n"],
             },
             Shortcut {
-                title: "Open Document",
+                title: gettext_noop("Open Document"),
                 action: "app.open",
                 keys: &["<Control>o"],
             },
             Shortcut {
-                title: "Preferences",
+                title: gettext_noop("Preferences"),
                 action: "app.preferences",
                 keys: &["<Control>comma"],
             },
             Shortcut {
-                title: "Keyboard Shortcuts",
+                title: gettext_noop("Keyboard Shortcuts"),
                 action: KEYS,
                 keys: &["<Control>question"],
             },
             Shortcut {
-                title: "Close Window",
+                title: gettext_noop("Close Window"),
                 action: "app.close-window",
                 keys: &["<Control>w"],
             },
             Shortcut {
-                title: "Quit",
+                title: gettext_noop("Quit"),
                 action: "app.quit",
                 keys: &["<Control>q"],
             },
         ],
     ),
     (
-        "Reading",
+        gettext_noop("Reading"),
         &[
             Shortcut {
-                title: "Back",
+                title: gettext_noop("Back"),
                 action: crate::window::BACK,
                 keys: &["<Alt>Left"],
             },
             Shortcut {
-                title: "Forward",
+                title: gettext_noop("Forward"),
                 action: crate::window::FORWARD,
                 keys: &["<Alt>Right"],
             },
             Shortcut {
-                title: "Outline",
+                title: gettext_noop("Outline"),
                 action: crate::window::OUTLINE,
                 keys: &["F9"],
             },
@@ -109,32 +110,32 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
             // on the keypad on none of them, and every desktop browser and editor
             // accepts all three.
             Shortcut {
-                title: "Zoom In",
+                title: gettext_noop("Zoom In"),
                 action: crate::zoom::IN,
                 keys: &["<Control>plus", "<Control>equal", "<Control>KP_Add"],
             },
             Shortcut {
-                title: "Zoom Out",
+                title: gettext_noop("Zoom Out"),
                 action: crate::zoom::OUT,
                 keys: &["<Control>minus", "<Control>KP_Subtract"],
             },
             Shortcut {
-                title: "Reset Zoom",
+                title: gettext_noop("Reset Zoom"),
                 action: crate::zoom::RESET,
                 keys: &["<Control>0", "<Control>KP_0"],
             },
             Shortcut {
-                title: "Find",
+                title: gettext_noop("Find"),
                 action: crate::find::FIND,
                 keys: &["<Control>f"],
             },
             Shortcut {
-                title: "Find Next",
+                title: gettext_noop("Find Next"),
                 action: crate::find::FIND_NEXT,
                 keys: &["<Control>g"],
             },
             Shortcut {
-                title: "Find Previous",
+                title: gettext_noop("Find Previous"),
                 action: crate::find::FIND_PREVIOUS,
                 keys: &["<Shift><Control>g"],
             },
@@ -146,22 +147,22 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
             // consume the key, so Escape goes on meaning whatever else it means in
             // this window.
             Shortcut {
-                title: "Close Search",
+                title: gettext_noop("Close Search"),
                 action: crate::find::FIND_CLOSE,
                 keys: &["Escape"],
             },
         ],
     ),
     (
-        "Editing",
+        gettext_noop("Editing"),
         &[
             Shortcut {
-                title: "Switch Between Reading and Editing",
+                title: gettext_noop("Switch Between Reading and Editing"),
                 action: crate::window::MODE,
                 keys: &["<Control>e"],
             },
             Shortcut {
-                title: "Save",
+                title: gettext_noop("Save"),
                 action: crate::window::SAVE,
                 keys: &["<Control>s"],
             },
@@ -169,12 +170,12 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
             // answers in this order, so writing it the other way round would make the
             // table and the running application disagree.
             Shortcut {
-                title: "Save As",
+                title: gettext_noop("Save As"),
                 action: crate::window::SAVE_AS,
                 keys: &["<Shift><Control>s"],
             },
             Shortcut {
-                title: "Undo",
+                title: gettext_noop("Undo"),
                 action: crate::window::UNDO,
                 keys: &["<Control>z"],
             },
@@ -182,22 +183,22 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
             // with; Ctrl+Y beside it because the readers who arrive from elsewhere
             // press that one (issue #29).
             Shortcut {
-                title: "Redo",
+                title: gettext_noop("Redo"),
                 action: crate::window::REDO,
                 keys: &["<Shift><Control>z", "<Control>y"],
             },
         ],
     ),
     (
-        "Sharing",
+        gettext_noop("Sharing"),
         &[
             Shortcut {
-                title: "Print",
+                title: gettext_noop("Print"),
                 action: crate::window::PRINT,
                 keys: &["<Control>p"],
             },
             Shortcut {
-                title: "Export",
+                title: gettext_noop("Export"),
                 action: crate::window::EXPORT,
                 keys: &["<Shift><Control>e"],
             },
@@ -371,10 +372,10 @@ fn present(app: &adw::Application, name: &str, raise: impl Fn(&adw::ApplicationW
 fn keyboard_shortcuts() -> adw::ShortcutsDialog {
     let dialog = adw::ShortcutsDialog::new();
     for (title, shortcuts) in SECTIONS {
-        let section = adw::ShortcutsSection::new(Some(title));
+        let section = adw::ShortcutsSection::new(Some(&gettext(title)));
         for shortcut in *shortcuts {
             section.add(adw::ShortcutsItem::from_action(
-                shortcut.title,
+                &gettext(shortcut.title),
                 shortcut.action,
             ));
         }

@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Every word the rendered document says in axiomd's own voice — the card a remote
+# image stands behind, the way back from a footnote, the badge a plugin that could not
+# draw leaves — is a word the reader reads, so it goes through the translation domain
+# like every word in the window around it.
+axiomd-i18n = { path = "../axiomd-i18n" }
 axiomd-engine = { path = "../axiomd-engine" }
 ammonia = "4.1"
 # `default-fancy` is `default-onig` with the pure-Rust regex engine: no oniguruma

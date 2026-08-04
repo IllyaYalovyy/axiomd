@@ -1,15 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Copyright 2026 Illya Yalovyy -->
-<component type="desktop-application">
+<component type="desktop-application"
+           xmlns:its="http://www.w3.org/2005/11/its" its:version="2.0">
   <id>io.github.etf.axiomd</id>
   <name>axiomd</name>
   <summary>Read and write Markdown documents</summary>
+
+  <!--
+    Where the translations of everything above and below come from: the same catalogues
+    the application itself reads, under the same domain (issue #34). A software centre
+    shows this file in the reader's language, and the window it launches says the same
+    words in the same language, because both are `axiomd.mo`.
+  -->
+  <translation type="gettext">axiomd</translation>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
 
   <developer id="io.github.etf">
-    <name>Illya Yalovyy</name>
+    <!-- A person's name, not a word for anyone to translate. -->
+    <name its:translate="no">Illya Yalovyy</name>
   </developer>
 
   <description>

@@ -24,11 +24,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use axiomd_i18n::{gettext, gettext_noop};
 
 use super::{Key, Settings, Watch};
 
 /// What the dialog is called — the title `Ctrl+comma` puts on screen.
-const TITLE: &str = "Preferences";
+const TITLE: &str = gettext_noop("Preferences");
 
 /// The bounds each numeric row offers, which are the bounds its key declares.
 /// `the_numbers_the_dialog_offers_are_the_ones_the_schema_allows` holds the two
@@ -37,11 +38,17 @@ pub(super) const BOUNDS: [(Key, i32, i32); 2] =
     [(Key::ReadingWidth, 20, 200), (Key::AutosaveDelay, 1, 60)];
 
 /// The three answers to "which colour scheme", as the reader reads them.
-const THEMES: [(&str, &str); 3] = [("System", "system"), ("Light", "light"), ("Dark", "dark")];
+const THEMES: [(&str, &str); 3] = [
+    (gettext_noop("System"), "system"),
+    (gettext_noop("Light"), "light"),
+    (gettext_noop("Dark"), "dark"),
+];
 
 /// Puts the preferences dialog on screen over `parent`.
 pub(super) fn present(settings: &Rc<Settings>, parent: &impl IsA<gtk::Widget>) {
-    let dialog = adw::PreferencesDialog::builder().title(TITLE).build();
+    let dialog = adw::PreferencesDialog::builder()
+        .title(gettext(TITLE))
+        .build();
     dialog.add(&appearance(settings));
     dialog.add(&editing(settings));
 
@@ -57,25 +64,33 @@ pub(super) fn present(settings: &Rc<Settings>, parent: &impl IsA<gtk::Widget>) {
 
 /// What a document looks like: the two things a reader changes while reading.
 fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
-    let group = adw::PreferencesGroup::builder().title("Appearance").build();
+    let group = adw::PreferencesGroup::builder()
+        .title(gettext("Appearance"))
+        .build();
+    // Each theme's name is a word of ours; the value beside it is what the store holds
+    // and is nobody's to translate.
+    let themes: Vec<(String, &'static str)> = THEMES
+        .iter()
+        .map(|(name, value)| (gettext(name), *value))
+        .collect();
     group.add(&choice(
         settings,
         Key::Theme,
-        "Theme",
-        "Follow the desktop's colour scheme, or override it.",
-        &THEMES,
+        &gettext("Theme"),
+        &gettext("Follow the desktop's colour scheme, or override it."),
+        &themes,
     ));
     let limit = toggle(
         settings,
         Key::ReadingWidthLimited,
-        "Limit Reading Width",
-        "Hold text to a comfortable measure instead of filling the window.",
+        &gettext("Limit Reading Width"),
+        &gettext("Hold text to a comfortable measure instead of filling the window."),
     );
     let width = number(
         settings,
         Key::ReadingWidth,
-        "Reading Width",
-        "The measure text is held to, in multiples of its own size.",
+        &gettext("Reading Width"),
+        &gettext("The measure text is held to, in multiples of its own size."),
     );
     // A width that cannot apply is not offered: with the limit off, the number below
     // it would be a control the reader can turn that does nothing.
@@ -88,27 +103,33 @@ fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
     group.add(&toggle(
         settings,
         Key::Outline,
-        "Show Outline",
-        "List a document's headings beside it. F9 shows or hides it in one window.",
+        &gettext("Show Outline"),
+        &gettext("List a document's headings beside it. F9 shows or hides it in one window."),
     ));
 
-    page("Appearance", "applications-graphics-symbolic", group)
+    page(
+        &gettext("Appearance"),
+        "applications-graphics-symbolic",
+        group,
+    )
 }
 
 /// What editing does, for the editor #18 brings.
 fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
-    let group = adw::PreferencesGroup::builder().title("Editing").build();
+    let group = adw::PreferencesGroup::builder()
+        .title(gettext("Editing"))
+        .build();
     let autosave = toggle(
         settings,
         Key::Autosave,
-        "Autosave",
-        "Write edits back to the file without being asked.",
+        &gettext("Autosave"),
+        &gettext("Write edits back to the file without being asked."),
     );
     let delay = number(
         settings,
         Key::AutosaveDelay,
-        "Autosave Delay",
-        "Seconds of quiet before an edit is written.",
+        &gettext("Autosave Delay"),
+        &gettext("Seconds of quiet before an edit is written."),
     );
     autosave
         .bind_property("active", &delay, "sensitive")
@@ -120,11 +141,11 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
     group.add(&toggle(
         settings,
         Key::Spellcheck,
-        "Check Spelling",
-        "Mark misspelled words while editing. Reading is never affected.",
+        &gettext("Check Spelling"),
+        &gettext("Mark misspelled words while editing. Reading is never affected."),
     ));
 
-    page("Editing", "document-edit-symbolic", group)
+    page(&gettext("Editing"), "document-edit-symbolic", group)
 }
 
 /// How a document is turned into a page: the engine, and the optional capabilities on
@@ -134,24 +155,30 @@ fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw
     // this file learning anything about it — the same shape the plugin group has. The
     // reader reads the engine's name and the setting keeps its identifier, which is
     // what a stored preference and a menu item's target both are (issue #31).
-    let engines: Vec<(&'static str, &'static str)> = axiomd_engine::engines()
+    let engines: Vec<(String, &'static str)> = axiomd_engine::engines()
         .iter()
-        .map(|engine| (engine.display_name(), engine.id().as_str()))
+        .map(|engine| (engine.display_name().to_owned(), engine.id().as_str()))
         .collect();
 
-    let group = adw::PreferencesGroup::builder().title("Rendering").build();
+    let group = adw::PreferencesGroup::builder()
+        .title(gettext("Rendering"))
+        .build();
     group.add(&choice(
         settings,
         Key::Engine,
-        "Markdown Engine",
-        "The parser documents are read with. One window can be switched to another \
-         from its main menu.",
+        &gettext("Markdown Engine"),
+        &gettext(
+            "The parser documents are read with. One window can be switched to another \
+             from its main menu.",
+        ),
         &engines,
     ));
 
     let plugins = adw::PreferencesGroup::builder()
-        .title("Plugins")
-        .description("Rendering capabilities beyond the core, each one optional.")
+        .title(gettext("Plugins"))
+        .description(gettext(
+            "Rendering capabilities beyond the core, each one optional.",
+        ))
         .build();
     // One switch per plugin this build has, named by the plugin itself: a capability
     // that lands is offered here without this file learning anything about it.
@@ -161,7 +188,7 @@ fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw
         watching.borrow_mut().push(watch);
     }
 
-    let page = page("Rendering", "view-paged-symbolic", group);
+    let page = page(&gettext("Rendering"), "view-paged-symbolic", group);
     page.add(&plugins);
     page
 }
@@ -177,8 +204,8 @@ fn plugin(
     manifest: &'static axiomd_render::Manifest,
 ) -> (adw::SwitchRow, Watch) {
     let row = adw::SwitchRow::builder()
-        .title(manifest.name)
-        .subtitle(manifest.description)
+        .title(gettext(manifest.name))
+        .subtitle(gettext(manifest.description))
         .active(settings.plugin_enabled(manifest.id))
         .build();
     let writing = settings.clone();
@@ -251,9 +278,9 @@ fn choice(
     key: Key,
     title: &str,
     subtitle: &str,
-    options: &[(&'static str, &'static str)],
+    options: &[(String, &'static str)],
 ) -> adw::ComboRow {
-    let labels: Vec<&str> = options.iter().map(|(label, _)| *label).collect();
+    let labels: Vec<&str> = options.iter().map(|(label, _)| label.as_str()).collect();
     let row = adw::ComboRow::builder()
         .title(title)
         .subtitle(subtitle)

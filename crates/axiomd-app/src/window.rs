@@ -82,6 +82,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use axiomd_doc::{Document, External, Home, Trouble};
+use axiomd_i18n::gettext;
 use axiomd_render::{Rendered, Request};
 use gtk::gio;
 use gtk::glib;
@@ -133,10 +134,10 @@ impl Mode {
     /// What going to this mode is called — the words the switch's tooltip and its
     /// accessible name are both made of, so a screen reader and a pointer can never be
     /// told two different things.
-    fn invitation(self) -> &'static str {
+    fn invitation(self) -> String {
         match self {
-            Mode::Edit => "Edit the Source",
-            Mode::Read => "View the Document",
+            Mode::Edit => gettext("Edit the Source"),
+            Mode::Read => gettext("View the Document"),
         }
     }
 }
@@ -350,8 +351,8 @@ impl DocumentWindow {
         let editor = Editor::new();
         let status = adw::StatusPage::builder()
             .icon_name("text-x-generic-symbolic")
-            .title("No document open")
-            .description("Open a Markdown file to start reading.")
+            .title(gettext("No document open"))
+            .description(gettext("Open a Markdown file to start reading."))
             .child(&open_button())
             .build();
 
@@ -398,8 +399,8 @@ impl DocumentWindow {
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let switch = ModeSwitch::new();
         let history = [
-            step_button("go-previous-symbolic", "Back", BACK),
-            step_button("go-next-symbolic", "Forward", FORWARD),
+            step_button("go-previous-symbolic", &gettext("Back"), BACK),
+            step_button("go-next-symbolic", &gettext("Forward"), FORWARD),
         ];
         let open = open_button();
         header.pack_start(&outline_button());
@@ -1231,8 +1232,9 @@ impl DocumentWindow {
         let home = Home::of(file);
         if FileId::of(home.path()).is_none() {
             self.show_unavailable(
-                &format!("Could not open {}", file_name(home.path())),
-                "There is no such file.",
+                &gettext("Could not open {document}")
+                    .replace("{document}", &file_name(home.path())),
+                &gettext("There is no such file."),
             );
             self.retitle_as(&file_name(home.path()), &home);
             return;
@@ -1363,7 +1365,8 @@ impl DocumentWindow {
             External::Gone => {
                 let name = self.document.borrow().name();
                 self.notice.say(
-                    &format!("Could not open {name} — showing the last version read"),
+                    &gettext("Could not open {document} — showing the last version read")
+                        .replace("{document}", &name),
                     Vec::new(),
                 );
             }
@@ -1380,10 +1383,11 @@ impl DocumentWindow {
         let keeping = Rc::downgrade(self);
         let reloading = Rc::downgrade(self);
         self.notice.say(
-            &format!("{name} changed on disk, and you have unsaved changes"),
+            &gettext("{document} changed on disk, and you have unsaved changes")
+                .replace("{document}", &name),
             vec![
                 (
-                    "Keep Mine".to_owned(),
+                    gettext("Keep Mine"),
                     Rc::new(move || {
                         if let Some(window) = keeping.upgrade() {
                             window.document.borrow_mut().keep_mine();
@@ -1393,7 +1397,7 @@ impl DocumentWindow {
                     }) as Rc<dyn Fn()>,
                 ),
                 (
-                    "Reload".to_owned(),
+                    gettext("Reload"),
                     Rc::new(move || {
                         if let Some(window) = reloading.upgrade() {
                             window.document.borrow_mut().take_theirs();
@@ -1569,7 +1573,7 @@ impl DocumentWindow {
         }
         let Some(session) = self.view.network_session() else {
             self.view
-                .image_failed(&source, "This image cannot be requested.".to_owned());
+                .image_failed(&source, gettext("This image cannot be requested."));
             return;
         };
         self.fetching.borrow_mut().push(source.clone());
@@ -1708,10 +1712,7 @@ impl DocumentWindow {
             }
             // A save the reader asked for and did not get is said where they are
             // looking, and stays there until something else happens.
-            Err(trouble) => self.notice.say(
-                &format!("{} — {}", trouble.title(), trouble.detail()),
-                Vec::new(),
-            ),
+            Err(trouble) => self.notice.say(&said_by(&trouble), Vec::new()),
         }
     }
 
@@ -1721,7 +1722,7 @@ impl DocumentWindow {
     /// done without knowing where (`ux_decisions.md`).
     fn save_as(self: &Rc<Self>) {
         let dialog = gtk::FileDialog::builder()
-            .title("Save Document")
+            .title(gettext("Save Document"))
             .modal(true)
             .initial_name(as_a_markdown_name(&self.document.borrow().name()))
             .build();
@@ -1762,10 +1763,7 @@ impl DocumentWindow {
         let home = Home::of(file);
         let written = self.document.borrow_mut().save_as(&home);
         if let Err(trouble) = written {
-            self.notice.say(
-                &format!("{} — {}", trouble.title(), trouble.detail()),
-                Vec::new(),
-            );
+            self.notice.say(&said_by(&trouble), Vec::new());
             return;
         }
         self.history.borrow_mut().restart(Visit {
@@ -1794,7 +1792,7 @@ impl DocumentWindow {
             self.window.upcast_ref::<gtk::Window>(),
             move |outcome| {
                 if let Some(window) = saying.upgrade() {
-                    window.report(outcome, "Printed");
+                    window.report(outcome, Delivery::Printed);
                 }
             },
         );
@@ -1807,11 +1805,11 @@ impl DocumentWindow {
     /// question afterwards and nothing to configure.
     fn export(self: &Rc<Self>) {
         let pdf = gtk::FileFilter::new();
-        pdf.set_name(Some("PDF Document"));
+        pdf.set_name(Some(&gettext("PDF Document")));
         pdf.add_mime_type("application/pdf");
         pdf.add_pattern("*.pdf");
         let page = gtk::FileFilter::new();
-        page.set_name(Some("Web Page"));
+        page.set_name(Some(&gettext("Web Page")));
         page.add_mime_type("text/html");
         page.add_pattern("*.html");
 
@@ -1825,7 +1823,7 @@ impl DocumentWindow {
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or(stem.clone());
         let dialog = gtk::FileDialog::builder()
-            .title("Export Document")
+            .title(gettext("Export Document"))
             .modal(true)
             .filters(&filters)
             .default_filter(&pdf)
@@ -1853,13 +1851,15 @@ impl DocumentWindow {
     /// (invariant 4).
     pub(crate) fn export_to(self: &Rc<Self>, file: &Path) {
         self.pull_text();
-        self.notice
-            .say(&format!("Exporting {}…", file_name(file)), Vec::new());
+        self.notice.say(
+            &gettext("Exporting {document}…").replace("{document}", &file_name(file)),
+            Vec::new(),
+        );
 
         let saying = Rc::downgrade(self);
         crate::export::write(&self.deliverable(), file, move |outcome| {
             if let Some(window) = saying.upgrade() {
-                window.report(outcome, "Exported");
+                window.report(outcome, Delivery::Exported);
             }
         });
     }
@@ -1883,20 +1883,21 @@ impl DocumentWindow {
 
     /// Says how a print or an export ended, beside the document — the only place the
     /// app ever says anything about a document the reader is reading (invariant 12).
-    fn report(&self, outcome: crate::export::Outcome, done: &str) {
+    fn report(&self, outcome: crate::export::Outcome, delivery: Delivery) {
         match outcome {
             crate::export::Outcome::Done(file) => {
                 let what = file
                     .map(|file| file_name(&file))
                     .unwrap_or_else(|| self.document.borrow().name());
-                self.notice.say(&format!("{done} {what}"), Vec::new());
+                self.notice
+                    .say(&delivery.done().replace("{document}", &what), Vec::new());
             }
             // Nothing happened, so nothing is said — and whatever was being said
             // while it was happening stops.
             crate::export::Outcome::Cancelled => self.notice.hide(),
             crate::export::Outcome::Failed(trouble) => self
                 .notice
-                .say(&format!("{done} nothing — {trouble}"), Vec::new()),
+                .say(&delivery.failed().replace("{reason}", &trouble), Vec::new()),
         }
     }
 
@@ -1907,17 +1908,17 @@ impl DocumentWindow {
         // No separate title: `AdwAlertDialog` makes the heading the dialog's title, so
         // what a test reads back is the sentence the reader is looking at.
         let dialog = adw::AlertDialog::builder()
-            .heading(format!(
-                "Save changes to {} before closing?",
-                self.document.borrow().name()
-            ))
-            .body("If you don't save, your changes will be lost.")
+            .heading(
+                gettext("Save changes to {document} before closing?")
+                    .replace("{document}", &self.document.borrow().name()),
+            )
+            .body(gettext("If you don't save, your changes will be lost."))
             .close_response("cancel")
             .default_response("save")
             .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("discard", "Discard");
-        dialog.add_response("save", "Save");
+        dialog.add_response("cancel", &gettext("Cancel"));
+        dialog.add_response("discard", &gettext("Discard"));
+        dialog.add_response("save", &gettext("Save"));
         dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
 
@@ -1997,7 +1998,7 @@ impl DocumentWindow {
     pub(crate) fn show_unavailable(&self, title: &str, detail: &str) {
         if self.showing() == DOCUMENT_PAGE {
             self.notice.say(
-                &format!("{title} — showing the last version read"),
+                &gettext("{trouble} — showing the last version read").replace("{trouble}", title),
                 Vec::new(),
             );
         } else {
@@ -2024,7 +2025,10 @@ impl DocumentWindow {
         drop(document);
         match &home {
             Some(home) => self.retitle_as(&shown, home),
-            None => self.say_where(&shown, "Not saved yet", "Not saved yet"),
+            None => {
+                let nowhere = gettext("Not saved yet");
+                self.say_where(&shown, &nowhere, &nowhere)
+            }
         }
     }
 
@@ -2047,6 +2051,38 @@ impl DocumentWindow {
         self.title.set_subtitle(where_it_lives);
         self.title.set_tooltip_text(Some(in_full));
     }
+}
+
+/// Which of the two ways off the screen a delivery was, so that what it says when it
+/// ends is one whole sentence rather than a word put in front of one: a language that
+/// does not put the verb first has nowhere to put it otherwise.
+#[derive(Clone, Copy)]
+enum Delivery {
+    Printed,
+    Exported,
+}
+
+impl Delivery {
+    fn done(self) -> String {
+        match self {
+            Delivery::Printed => gettext("Printed {document}"),
+            Delivery::Exported => gettext("Exported {document}"),
+        }
+    }
+
+    fn failed(self) -> String {
+        match self {
+            Delivery::Printed => gettext("Printed nothing — {reason}"),
+            Delivery::Exported => gettext("Exported nothing — {reason}"),
+        }
+    }
+}
+
+/// A trouble the model reports, as the one line the window says beside the document.
+fn said_by(trouble: &Trouble) -> String {
+    gettext("{trouble} — {detail}")
+        .replace("{trouble}", trouble.title())
+        .replace("{detail}", trouble.detail())
 }
 
 /// The things a window action can be, so that one closure serves all of them.
@@ -2210,7 +2246,7 @@ fn open_button() -> gtk::Button {
         .icon_name("document-open-symbolic")
         .action_name("app.open")
         .build();
-    crate::chrome::name(&button, "Open Document");
+    crate::chrome::name(&button, &gettext("Open Document"));
     button
 }
 
@@ -2227,7 +2263,7 @@ fn outline_button() -> gtk::ToggleButton {
         .icon_name("view-list-symbolic")
         .action_name(OUTLINE)
         .build();
-    crate::chrome::name(&button, "Outline");
+    crate::chrome::name(&button, &gettext("Outline"));
     button
 }
 
@@ -2265,7 +2301,7 @@ impl ModeSwitch {
         // Named the way every control is named — the words, and the key from the
         // shortcut table (`chrome.rs`) — with the words being the ones this switch is
         // saying now rather than a fixed name.
-        crate::chrome::name(&self.button, offer.invitation());
+        crate::chrome::name(&self.button, &offer.invitation());
     }
 
     /// What the reader — and a screen reader — has in front of them, one line each:
@@ -2417,8 +2453,8 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
 
 fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuButton {
     let documents = gio::Menu::new();
-    documents.append(Some("_New Window"), Some("app.new"));
-    documents.append(Some("_Open…"), Some("app.open"));
+    documents.append(Some(&gettext("_New Window")), Some("app.new"));
+    documents.append(Some(&gettext("_Open…")), Some("app.open"));
 
     // How big the document is, shown the way every GNOME application shows it: a row
     // of its own rather than menu items, because the reader steps it several times in
@@ -2430,7 +2466,7 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     scale.append_item(&slot);
 
     let reading = gio::Menu::new();
-    reading.append(Some("_Find…"), Some(crate::find::FIND));
+    reading.append(Some(&gettext("_Find…")), Some(crate::find::FIND));
     // Which engine this window reads with (issue #17). A submenu of the main menu
     // rather than something buried: it is two presses from any document, and every
     // engine this build has is in it, named by the engine itself — the name the reader
@@ -2442,26 +2478,30 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
         item.set_action_and_target_value(Some(ENGINE), Some(&engine.id().as_str().to_variant()));
         parsers.append_item(&item);
     }
-    reading.append_submenu(Some("Markdown _Engine"), &parsers);
+    reading.append_submenu(Some(&gettext("Markdown _Engine")), &parsers);
 
     let editing = gio::Menu::new();
-    editing.append(Some("_Edit Source"), Some(MODE));
-    editing.append(Some("_Save"), Some(SAVE));
-    editing.append(Some("Save _As…"), Some(SAVE_AS));
+    editing.append(Some(&gettext("_Edit Source")), Some(MODE));
+    editing.append(Some(&gettext("_Save")), Some(SAVE));
+    editing.append(Some(&gettext("Save _As…")), Some(SAVE_AS));
 
     let leaving = gio::Menu::new();
-    leaving.append(Some("_Print…"), Some(PRINT));
-    leaving.append(Some("E_xport…"), Some(EXPORT));
+    leaving.append(Some(&gettext("_Print…")), Some(PRINT));
+    leaving.append(Some(&gettext("E_xport…")), Some(EXPORT));
 
     // What the HIG puts at the end of every primary menu, and nothing else: closing the
     // window and quitting are keys (`Ctrl+W`, `Ctrl+Q`) and the window's own controls,
     // not menu items — the shortcuts dialog beside them is where a reader finds those
     // keys now (issue #29).
     let application = gio::Menu::new();
-    application.append(Some("_Preferences"), Some("app.preferences"));
-    application.append(Some("_Keyboard Shortcuts"), Some(crate::chrome::KEYS));
-    // Lowercase on purpose, here as everywhere (`ux_decisions.md`).
-    application.append(Some("_About axiomd"), Some(crate::chrome::ABOUT));
+    application.append(Some(&gettext("_Preferences")), Some("app.preferences"));
+    application.append(
+        Some(&gettext("_Keyboard Shortcuts")),
+        Some(crate::chrome::KEYS),
+    );
+    // Lowercase on purpose, here as everywhere (`ux_decisions.md`) — including in
+    // translation: the name is the application's, not a word to be turned into another.
+    application.append(Some(&gettext("_About axiomd")), Some(crate::chrome::ABOUT));
 
     // Where the header bar's history buttons go while the window is too narrow to draw
     // them (issue #30). Empty for as long as the header is showing them: a menu
@@ -2485,8 +2525,8 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     let filling = history.clone();
     narrow.connect_apply(move |_| {
         filling.remove_all();
-        filling.append(Some("_Back"), Some(BACK));
-        filling.append(Some("_Forward"), Some(FORWARD));
+        filling.append(Some(&gettext("_Back")), Some(BACK));
+        filling.append(Some(&gettext("_Forward")), Some(FORWARD));
     });
     narrow.connect_unapply(move |_| history.remove_all());
 
@@ -2508,7 +2548,7 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     }
     // No key in brackets: the button fires no action, so `F10` is GTK's rather than
     // one of ours to name, and this is the name GNOME's own applications give it.
-    crate::chrome::name(&button, "Main Menu");
+    crate::chrome::name(&button, &gettext("Main Menu"));
     button
 }
 

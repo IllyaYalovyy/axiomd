@@ -20,6 +20,7 @@
 use std::borrow::Cow;
 
 use axiomd_engine::Event;
+use axiomd_i18n::gettext_noop;
 
 use super::{Asset, Manifest, PLUGIN_API, Plugin};
 
@@ -37,8 +38,8 @@ const STYLE: Asset = Asset {
 const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "emoji",
-    name: "Emoji Shortcodes",
-    description: "Write :tada: and read 🎉, the way GitHub spells them.",
+    name: gettext_noop("Emoji Shortcodes"),
+    description: gettext_noop("Write :tada: and read 🎉, the way GitHub spells them."),
     fences: &[],
     assets: &[STYLE],
 };

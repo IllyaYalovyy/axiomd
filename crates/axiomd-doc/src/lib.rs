@@ -60,6 +60,8 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
+use axiomd_i18n::{gettext, gettext_noop};
+
 pub use home::Home;
 
 /// The text a window owns, and everything true about it that is not the text.
@@ -143,7 +145,10 @@ impl Stamp {
 }
 
 /// What an untitled document is called, in the window title and in the Save As dialog.
-const UNTITLED: &str = "Untitled";
+///
+/// A name the reader reads and then types over, so it is theirs to read: a German
+/// reader's first save offers `Unbenannt.md`, not `Untitled.md`.
+const UNTITLED: &str = gettext_noop("Untitled");
 
 impl Document {
     /// A document with nothing in it and nowhere to be saved — a bare launch, or
@@ -172,12 +177,12 @@ impl Document {
         // already has.
         let stamp = Stamp::of(file);
         let bytes = std::fs::read(file).map_err(|error| Trouble {
-            title: format!("Could not open {name}"),
+            title: gettext("Could not open {document}").replace("{document}", &name),
             detail: format!("{error}."),
         })?;
         let text = String::from_utf8(bytes).map_err(|_| Trouble {
-            title: format!("Could not read {name}"),
-            detail: "This file is not UTF-8 text, so it is not a Markdown document.".to_owned(),
+            title: gettext("Could not read {document}").replace("{document}", &name),
+            detail: gettext("This file is not UTF-8 text, so it is not a Markdown document."),
         })?;
         Ok(Document {
             home: Some(home.clone()),
@@ -198,7 +203,7 @@ impl Document {
     pub fn name(&self) -> String {
         match &self.home {
             Some(home) => name_of(home.path()),
-            None => UNTITLED.to_owned(),
+            None => gettext(UNTITLED),
         }
     }
 
@@ -240,8 +245,9 @@ impl Document {
     pub fn save(&mut self) -> Result<(), Trouble> {
         let Some(file) = self.home.as_ref().map(|home| home.path().to_path_buf()) else {
             return Err(Trouble {
-                title: format!("Could not save {UNTITLED}"),
-                detail: "This document has never been saved, so it has no file yet.".to_owned(),
+                title: gettext("Could not save {document}")
+                    .replace("{document}", &gettext(UNTITLED)),
+                detail: gettext("This document has never been saved, so it has no file yet."),
             });
         };
         self.write(&file)
@@ -262,7 +268,7 @@ impl Document {
         // their document and leave the original untouched.
         let target = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
         write_atomically(&target, &self.text).map_err(|error| Trouble {
-            title: format!("Could not save {}", name_of(file)),
+            title: gettext("Could not save {document}").replace("{document}", &name_of(file)),
             detail: format!("{error}."),
         })?;
         self.stamp = Stamp::of(&target);

@@ -41,6 +41,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use axiomd_i18n::gettext;
 use gtk::gdk;
 use gtk::gio;
 use webkit6::prelude::WebViewExt;
@@ -85,7 +86,7 @@ impl Zoom {
     pub(crate) fn attach(window: &adw::ApplicationWindow, view: &webkit6::WebView) -> Rc<Zoom> {
         let level = gtk::Button::builder().action_name(RESET).build();
         level.add_css_class("flat");
-        crate::chrome::name(&level, "Reset Zoom");
+        crate::chrome::name(&level, &gettext("Reset Zoom"));
         // A fixed width, so walking the ladder does not shuffle the buttons beside it.
         level.set_width_request(72);
 
@@ -107,10 +108,10 @@ impl Zoom {
         });
 
         zoom.row
-            .append(&step_button("zoom-out-symbolic", "Zoom Out", OUT));
+            .append(&step_button("zoom-out-symbolic", &gettext("Zoom Out"), OUT));
         zoom.row.append(&zoom.level);
         zoom.row
-            .append(&step_button("zoom-in-symbolic", "Zoom In", IN));
+            .append(&step_button("zoom-in-symbolic", &gettext("Zoom In"), IN));
 
         for (action, towards) in zoom.steps.iter().zip([Step::Out, Step::In]) {
             let stepping = Rc::downgrade(&zoom);
@@ -226,7 +227,11 @@ impl Zoom {
         self.at.set(at);
         let percent = LADDER[at];
         self.view.set_zoom_level(f64::from(percent) / 100.0);
-        self.level.set_label(&format!("{percent}%"));
+        // TRANSLATORS: how big the document is drawn, as a percentage of its normal
+        // size — the whole phrase, so a language that writes a percentage another way
+        // can.
+        self.level
+            .set_label(&gettext("{percent}%").replace("{percent}", &percent.to_string()));
         self.steps[0].set_enabled(at > 0);
         self.steps[1].set_enabled(at + 1 < LADDER.len());
     }

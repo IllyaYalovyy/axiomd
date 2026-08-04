@@ -29,6 +29,9 @@
 /build-aux/flatpak/build/
 /build-aux/flatpak/repo/
 /dist/
+# The translation template, which is a view of the source at one moment rather than a
+# file to keep: `scripts/generate-pot.sh` writes it whenever a translator needs one.
+/po/axiomd.pot
 /out/
 /coverage/
 node_modules/

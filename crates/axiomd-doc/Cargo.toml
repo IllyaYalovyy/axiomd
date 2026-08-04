@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The model's troubles are sentences the reader is shown beside their document, so
+# they are said in the reader's language rather than in English (issue #34).
+axiomd-i18n = { path = "../axiomd-i18n" }
 # Only to ask the desktop where a document really is: `Home` puts one question to the
 # Documents portal over the session bus (issue #24). No toolkit, no main loop.
 gio.workspace = true

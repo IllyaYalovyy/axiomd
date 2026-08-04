@@ -28,6 +28,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use axiomd_i18n::{gettext, gettext_noop, pgettext};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -43,12 +44,12 @@ pub(crate) const FIND_PREVIOUS: &str = "win.find-previous";
 pub(crate) const FIND_CLOSE: &str = "win.find-close";
 
 /// What the counter says when the document has none of what the reader asked for.
-const NOTHING_FOUND: &str = "No results";
+const NOTHING_FOUND: &str = gettext_noop("No results");
 
 /// What the bar says when walking the matches has just taken the reader past an end of
 /// the document and back round.
-const WRAPPED_TO_THE_TOP: &str = "Wrapped to the top";
-const WRAPPED_TO_THE_BOTTOM: &str = "Wrapped to the bottom";
+const WRAPPED_TO_THE_TOP: &str = gettext_noop("Wrapped to the top");
+const WRAPPED_TO_THE_BOTTOM: &str = gettext_noop("Wrapped to the bottom");
 
 /// What the reader is looking for.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
@@ -157,7 +158,7 @@ impl Find {
         editing: Rc<dyn Searchable>,
     ) -> Rc<Self> {
         let entry = gtk::SearchEntry::builder()
-            .placeholder_text("Search this document")
+            .placeholder_text(gettext("Search this document"))
             .hexpand(true)
             .build();
 
@@ -181,19 +182,27 @@ impl Find {
         // Two letters rather than an icon: there is no symbolic in the Adwaita set for
         // "match case", and a button whose meaning the reader has to guess at is worse
         // than one that simply says what it does.
-        let cased = gtk::ToggleButton::builder().label("Aa").build();
+        // Under a context, because two letters on their own say nothing to a
+        // translator: this is the pair that shows an alphabet's upper and lower case.
+        let cased = gtk::ToggleButton::builder()
+            .label(pgettext("the search bar's case switch", "Aa"))
+            .build();
         cased.add_css_class("flat");
         // On no key of its own, so no key in brackets — the one rule everything in
         // this window is named by (`chrome.rs`).
-        crate::chrome::name(&cased, "Match Case");
+        crate::chrome::name(&cased, &gettext("Match Case"));
 
-        let previous = step_button("go-up-symbolic", "Find Previous", FIND_PREVIOUS);
-        let next = step_button("go-down-symbolic", "Find Next", FIND_NEXT);
+        let previous = step_button("go-up-symbolic", &gettext("Find Previous"), FIND_PREVIOUS);
+        let next = step_button("go-down-symbolic", &gettext("Find Next"), FIND_NEXT);
         // Our own rather than the one `GtkSearchBar` draws for itself: that one carries
         // neither a name nor a key, so it is the one control in the bar a screen reader
         // could only announce as a button (issue #32). This one closes the bar through
         // the same action `Escape` fires, and says so.
-        let close = step_button("window-close-symbolic", "Close Search", FIND_CLOSE);
+        let close = step_button(
+            "window-close-symbolic",
+            &gettext("Close Search"),
+            FIND_CLOSE,
+        );
 
         let row = gtk::Box::builder().spacing(6).build();
         row.append(&entry);
@@ -440,10 +449,10 @@ impl Find {
             (if at == 0 { total - 1 } else { at - 1 }, at == 0)
         };
         self.at.set(next);
-        self.wrap.set_label(match (wrapped, forward) {
-            (false, _) => "",
-            (true, true) => WRAPPED_TO_THE_TOP,
-            (true, false) => WRAPPED_TO_THE_BOTTOM,
+        self.wrap.set_label(&match (wrapped, forward) {
+            (false, _) => String::new(),
+            (true, true) => gettext(WRAPPED_TO_THE_TOP),
+            (true, false) => gettext(WRAPPED_TO_THE_BOTTOM),
         });
         let running = self.running.borrow().clone();
         self.surface(self.mode.get())
@@ -479,13 +488,18 @@ impl Find {
             return;
         }
         if total == 0 {
-            self.counter.set_label(NOTHING_FOUND);
+            self.counter.set_label(&gettext(NOTHING_FOUND));
             self.wrap.set_label("");
             self.entry.add_css_class("error");
             return;
         }
-        self.counter
-            .set_label(&format!("{} of {total}", self.at.get() + 1));
+        // The whole phrase rather than a number glued to a word: which way round the
+        // two numbers go is the translator's to decide.
+        self.counter.set_label(
+            &gettext("{position} of {total}")
+                .replace("{position}", &(self.at.get() + 1).to_string())
+                .replace("{total}", &total.to_string()),
+        );
         self.entry.remove_css_class("error");
     }
 
