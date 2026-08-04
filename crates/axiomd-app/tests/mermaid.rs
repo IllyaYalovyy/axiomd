@@ -244,7 +244,7 @@ fn a_document_with_no_diagram_never_loads_the_library() {
     );
     let app = axiomd_e2e::launch(&plain);
 
-    settled(&app, "Plain");
+    settled(&app, "Plain", 0);
     assert_eq!(app.dom(LIBRARY), "undefined");
     assert_eq!(app.dom(STYLESHEET), "0");
     assert_eq!(app.dom(BLOCKS), "0", "an ordinary fence was claimed");
@@ -255,8 +255,9 @@ fn a_document_with_no_diagram_never_loads_the_library() {
     assert_eq!(app.dom(LIBRARY), "drawing");
 
     // And back to the one that does not: a page load leaves nothing behind.
+    let reported = app.section_reports();
     app.open_here(&plain);
-    settled(&app, "Plain");
+    settled(&app, "Plain", reported);
     assert_eq!(
         app.dom(LIBRARY),
         "undefined",
@@ -514,13 +515,19 @@ fn a_drawn_diagram_in_the_dark_still_looks_the_way_it_was_approved() {
 /// blocks are patched and after anything the document needs run has been run. So one
 /// more of those reports than there were before is the app saying it is done, and an
 /// absence asserted after it is an absence rather than a race.
-fn settled(app: &App, title: &str) {
-    let reports = app.section_reports();
+///
+/// `reported` is how many reports the window had made *before* the document was asked
+/// for, and it has to be read before asking: a page says where the reader is once, on
+/// its own, as soon as it is watched (`track.js`), and nothing but scrolling makes it
+/// say so again. A baseline read after the document arrived would therefore be waiting
+/// for a second report that is never coming — which is what made this suite fail one
+/// run in three under load.
+fn settled(app: &App, title: &str, reported: u32) {
     app.wait_until(&format!(
         "document.querySelector('h1').textContent === {title:?}"
     ));
     app.wait_for("the page to say where the reader is", || {
-        app.section_reports() > reports
+        app.section_reports() > reported
     });
 }
 
