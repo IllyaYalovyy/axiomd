@@ -52,6 +52,8 @@ pub(crate) enum Key {
     ReadingWidth,
     /// Whether a document's headings are listed beside it.
     Outline,
+    /// How wide they are listed, in pixels. Window state, not a preference.
+    SidebarWidth,
     /// Whether edits are written back without being asked for.
     Autosave,
     /// How long after the last edit that happens, in seconds.
@@ -70,11 +72,12 @@ impl Key {
         not(test),
         allow(dead_code, reason = "the completeness tests are its only reader")
     )]
-    const ALL: [Key; 9] = [
+    const ALL: [Key; 10] = [
         Key::Theme,
         Key::ReadingWidthLimited,
         Key::ReadingWidth,
         Key::Outline,
+        Key::SidebarWidth,
         Key::Autosave,
         Key::AutosaveDelay,
         Key::Spellcheck,
@@ -89,6 +92,7 @@ impl Key {
             Key::ReadingWidthLimited => "reading-width-limited",
             Key::ReadingWidth => "reading-width",
             Key::Outline => "outline",
+            Key::SidebarWidth => "sidebar-width",
             Key::Autosave => "autosave",
             Key::AutosaveDelay => "autosave-delay",
             Key::Spellcheck => "spellcheck",
@@ -207,6 +211,36 @@ impl Settings {
         };
         apply();
         self.watch(&[Key::Outline], apply)
+    }
+
+    /// How wide the outline sits beside the document, in pixels — where the reader
+    /// last let go of the divider.
+    ///
+    /// Window state rather than a preference, and the one setting here with no row in
+    /// the dialog and no `follow_` beside it (owner ruling, `ux_decisions.md`, issue
+    /// #27): a width is chosen by dragging the thing itself, so it belongs to a window
+    /// the way a window's own size does. A window takes it when it is built and gives
+    /// it back when the reader lets go — never under the hands of another window that
+    /// is open at the time.
+    pub(crate) fn sidebar_width(&self) -> i32 {
+        self.store.int(Key::SidebarWidth.name())
+    }
+
+    /// Remembers the width the reader has just dragged the divider to.
+    pub(crate) fn remember_sidebar_width(&self, width: i32) {
+        if self.sidebar_width() == width {
+            return;
+        }
+        if let Err(error) = self.store.set_int(Key::SidebarWidth.name(), width) {
+            eprintln!("axiomd: could not remember the outline's width: {error}");
+        }
+    }
+
+    /// Forgets it, and answers the width that leaves — what a reader who has never
+    /// touched the divider reads at.
+    pub(crate) fn forget_sidebar_width(&self) -> i32 {
+        self.store.reset(Key::SidebarWidth.name());
+        self.sidebar_width()
     }
 
     /// Tells `check` whether the editor marks misspelled words — now, and again every
@@ -460,6 +494,7 @@ mod tests {
         let schema = schema();
         for (key, default) in [
             (Key::Outline, "true"),
+            (Key::SidebarWidth, "260"),
             (Key::Autosave, "true"),
             (Key::AutosaveDelay, "2"),
             (Key::Spellcheck, "true"),
@@ -492,6 +527,50 @@ mod tests {
                 "the dialog offers {key:?} between {low} and {high}",
             );
         }
+    }
+
+    /// The same for the divider: a width the reader can drag to that the schema
+    /// refuses is a drag GSettings drops on the floor, leaving the outline a width it
+    /// will not have next time.
+    #[test]
+    fn the_widths_the_divider_allows_are_the_ones_the_schema_does() {
+        let range = schema().key(Key::SidebarWidth.name()).range();
+        let (kind, bounds) = range
+            .get::<(String, glib::Variant)>()
+            .unwrap_or_else(|| panic!("the sidebar width has an unreadable range: {range}"));
+
+        assert_eq!(
+            kind, "range",
+            "the sidebar width declares no range in the schema"
+        );
+        assert_eq!(
+            bounds.get::<(i32, i32)>(),
+            Some(crate::outline::BOUNDS),
+            "the divider lets the reader drag the outline outside what the schema \
+             will store",
+        );
+    }
+
+    /// Forgetting the width is what a double-click on the divider does, and what it
+    /// leaves behind has to be the width a reader who never touched it reads at —
+    /// otherwise the way back leads somewhere the reader has never been.
+    #[test]
+    fn forgetting_the_dragged_width_leaves_the_one_a_first_run_has() {
+        let scratch = ScratchDir::new("settings-sidebar");
+        let settings = stored(&scratch, "dragged.keyfile", "sidebar-width=400");
+        assert_eq!(settings.sidebar_width(), 400);
+
+        let usual = settings.forget_sidebar_width();
+
+        assert_eq!(
+            usual,
+            schema()
+                .key(Key::SidebarWidth.name())
+                .default_value()
+                .get::<i32>()
+                .expect("a width"),
+        );
+        assert_eq!(settings.sidebar_width(), usual);
     }
 
     /// The engine a first run reads with has to be one this build actually has, or

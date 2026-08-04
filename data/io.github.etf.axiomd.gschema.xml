@@ -42,6 +42,18 @@
       </description>
     </key>
 
+    <key name="sidebar-width" type="i">
+      <range min="180" max="480"/>
+      <default>260</default>
+      <summary>Outline sidebar width</summary>
+      <description>
+        How wide the outline sits beside the document, in pixels — where the reader
+        last dragged the divider. Window state rather than a preference: it is chosen
+        by direct manipulation and has no row in the preferences dialog
+        (ux_decisions.md, issue #27).
+      </description>
+    </key>
+
     <key name="autosave" type="b">
       <default>true</default>
       <summary>Save edits automatically</summary>

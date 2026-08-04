@@ -21,6 +21,28 @@
 //! that line by whichever surface the reader is on: the page, over the message bridge
 //! and only on a frame in which the answer can have changed (`view.rs`, `track.js`), or
 //! the editor's caret. Nothing here polls, measures a height, or reads the file.
+//!
+//! # How wide it is
+//!
+//! The reader says, by dragging the divider (issue #27), and it is remembered as
+//! window state rather than as a preference — there is no row to hunt for, because the
+//! thing itself is the control (`ux_decisions.md`). The width the divider is let go at
+//! is written once, on release, and the next window built reads it.
+//!
+//! Neither pane can be crushed. The split view is told three numbers rather than one:
+//! the chosen width as its maximum, the fraction that width is of a window just wide
+//! enough to hold it *and* a document, and the floor below which the outline never
+//! shrinks. Documented behaviour is that the sidebar is drawn at
+//! `clamp(fraction × total, min, max)`, and that a collapsed one uses `max` when it can
+//! (libadwaita 1.8.6, `/usr/share/doc/libadwaita-1/class.OverlaySplitView.html`). So a
+//! window with room honours the chosen width exactly, and a narrower one shrinks the
+//! two panes together instead of leaving the document a sliver.
+//!
+//! The one thing no test here drives is a real pointer: a headless compositor has none
+//! and GTK 4 offers no way to inject one. So a drag arrives as the divider's own
+//! gesture signals ([`Outline::drag`], [`Outline::restore`]) — the very signals a
+//! press, a move and a release emit — exactly as picking a section emits the list's
+//! own `activate`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -31,10 +53,29 @@ use axiomd_render::Heading;
 use gtk::gio;
 use gtk::glib;
 
+use crate::settings::Settings;
+
 /// How narrow a window has to get before the outline stops sitting beside the document
 /// and starts overlaying it — the point at which a 900px window's document would be
 /// squeezed into less than a comfortable measure.
 const TOO_NARROW: f64 = 600.0;
+
+/// The narrowest and widest the reader may drag the outline, in pixels: narrower and a
+/// heading is unreadable, wider and it is a pane rather than an index.
+///
+/// The schema's own range for `sidebar-width` is these two numbers, and
+/// `the_widths_the_divider_allows_are_the_ones_the_schema_does` holds the two together
+/// — a bound the schema refuses is a drag that writes nothing.
+pub(crate) const BOUNDS: (i32, i32) = (180, 480);
+
+/// The least room the document keeps beside the outline, in pixels. The reader cannot
+/// drag past it, and a window too narrow to give it shrinks both panes rather than
+/// starving one.
+const ROOM_FOR_THE_DOCUMENT: i32 = 480;
+
+/// How wide the grip on the divider is — the part of the edge that answers a pointer,
+/// as `GtkPaned`'s own handle does.
+const GRIP: i32 = 5;
 
 /// How far one heading level is indented under the one above it.
 const NESTING: i32 = 12;
@@ -53,6 +94,20 @@ pub(crate) struct Outline {
     selection: gtk::SingleSelection,
     list: gtk::ListView,
     faces: gtk::Stack,
+    /// The sidebar the split view holds: the headings, and the grip on their edge.
+    sidebar: gtk::Box,
+    /// The two gestures the grip answers — held so a test can emit what a pointer
+    /// emits, there being no pointer to move.
+    divider: gtk::GestureDrag,
+    restorer: gtk::GestureClick,
+    settings: Rc<Settings>,
+    /// The width the reader has chosen, in pixels — what is drawn when the window has
+    /// room for it, and what is written down when they let go.
+    width: Cell<i32>,
+    /// How wide the outline was drawn when the current drag took hold of it, so that a
+    /// drag moves the divider from where the reader is looking at it rather than from
+    /// a remembered width a narrow window is not honouring.
+    grabbed: Cell<i32>,
     /// The source line the reader was last known to be on, so that a document which
     /// has just been re-rendered under them highlights the same section rather than
     /// none (live reload, and every keystroke in edit mode).
@@ -73,6 +128,7 @@ impl Outline {
         window: &adw::ApplicationWindow,
         content: &impl IsA<gtk::Widget>,
         action: &str,
+        settings: &Rc<Settings>,
     ) -> Rc<Self> {
         let entries = gio::ListStore::new::<Entry>();
         // Nothing is selected until the reader is somewhere: a document open at its
@@ -112,14 +168,37 @@ impl Outline {
         faces.add_named(&scroller, Some(HEADINGS));
         faces.add_named(&nothing, Some(NOTHING));
         faces.set_visible_child_name(NOTHING);
+        faces.set_hexpand(true);
+
+        // The divider the reader drags, on the outline's inner edge, where the split
+        // view already draws the line between the two panes. It is the pointer's
+        // target and nothing else: no ink of its own, and the resize cursor that says
+        // what it is — the affordance `GtkPaned` gives its own handle.
+        let grip = gtk::Box::builder()
+            .width_request(GRIP)
+            .tooltip_text("Drag to resize the outline, double-click to reset it")
+            .build();
+        grip.set_cursor_from_name(Some("col-resize"));
+
+        let sidebar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        sidebar.append(&faces);
+        sidebar.append(&grip);
 
         let split = adw::OverlaySplitView::builder()
-            .sidebar(&faces)
+            .sidebar(&sidebar)
             .content(content)
             .show_sidebar(true)
-            .min_sidebar_width(180.0)
-            .max_sidebar_width(320.0)
-            .sidebar_width_fraction(0.22)
+            // Pixels, because a width the reader dragged to is a number of pixels.
+            .sidebar_width_unit(adw::LengthUnit::Px)
+            .min_sidebar_width(f64::from(BOUNDS.0))
+            .build();
+
+        // A divider over a document the outline is overlaying resizes nothing — the
+        // panes are not sharing the width to begin with — so it is not there to drag.
+        split
+            .bind_property("collapsed", &grip, "visible")
+            .invert_boolean()
+            .sync_create()
             .build();
 
         // A window too narrow to hold both stops holding both: the outline overlays
@@ -149,9 +228,56 @@ impl Outline {
             selection,
             list,
             faces,
+            sidebar,
+            divider: gtk::GestureDrag::new(),
+            restorer: gtk::GestureClick::new(),
+            settings: settings.clone(),
+            width: Cell::new(BOUNDS.0),
+            grabbed: Cell::new(BOUNDS.0),
             at: Cell::new(0),
             chosen: RefCell::new(None),
         });
+
+        // The width the reader left the divider at, before the window is ever drawn:
+        // they never see the default one first.
+        outline.widen_to(settings.sidebar_width());
+
+        // A drag moves the divider from where it is drawn, so where it is drawn is
+        // taken at the press. The release is the only moment anything is written down:
+        // one write per drag, not one per frame of it.
+        let grabbing = Rc::downgrade(&outline);
+        outline.divider.connect_drag_begin(move |_, _, _| {
+            if let Some(outline) = grabbing.upgrade() {
+                outline.grabbed.set(outline.sidebar.width());
+            }
+        });
+        let dragging = Rc::downgrade(&outline);
+        outline.divider.connect_drag_update(move |_, across, _| {
+            if let Some(outline) = dragging.upgrade() {
+                outline.dragged(across);
+            }
+        });
+        let released = Rc::downgrade(&outline);
+        outline.divider.connect_drag_end(move |_, across, _| {
+            if let Some(outline) = released.upgrade() {
+                outline.dragged(across);
+                outline.settings.remember_sidebar_width(outline.width.get());
+            }
+        });
+        grip.add_controller(outline.divider.clone());
+
+        // Double-click, the divider's way back: the reader who has dragged themselves
+        // into a corner is never stuck with it (issue #27).
+        let restoring = Rc::downgrade(&outline);
+        outline.restorer.connect_released(move |_, presses, _, _| {
+            if presses != 2 {
+                return;
+            }
+            if let Some(outline) = restoring.upgrade() {
+                outline.widen_to(outline.settings.forget_sidebar_width());
+            }
+        });
+        grip.add_controller(outline.restorer.clone());
 
         let picked = Rc::downgrade(&outline);
         outline.list.connect_activate(move |_, position| {
@@ -178,7 +304,56 @@ impl Outline {
     /// The sidebar on its own — the panel the reader sees the headings in, for the
     /// window to say where on screen it is.
     pub(crate) fn panel(&self) -> &gtk::Widget {
-        self.faces.upcast_ref()
+        self.sidebar.upcast_ref()
+    }
+
+    /// Drags the divider `across` pixels, exactly as the pointer does: the grip's own
+    /// gesture, which is what a press, a move and a release emit.
+    pub(crate) fn drag(&self, across: f64) {
+        self.divider
+            .emit_by_name::<()>("drag-begin", &[&0.0f64, &0.0f64]);
+        self.divider
+            .emit_by_name::<()>("drag-update", &[&across, &0.0f64]);
+        self.divider
+            .emit_by_name::<()>("drag-end", &[&across, &0.0f64]);
+    }
+
+    /// Double-clicks the divider, which is what puts the outline back to the width a
+    /// reader who never touched it reads at.
+    pub(crate) fn restore(&self) {
+        self.restorer
+            .emit_by_name::<()>("released", &[&2i32, &0.0f64, &0.0f64]);
+    }
+
+    /// Where a drag `across` pixels from where it took hold leaves the divider.
+    ///
+    /// Nothing while the outline is overlaying the document: the two panes are not
+    /// sharing the window's width, so there is nothing between them to move.
+    fn dragged(&self, across: f64) {
+        if self.split.is_collapsed() {
+            return;
+        }
+        let wanted = self.grabbed.get().saturating_add(across.round() as i32);
+        self.widen_to(wanted.min(self.widest_here()));
+    }
+
+    /// Puts the outline at `width` pixels, within the bounds neither pane may cross.
+    ///
+    /// Three numbers rather than one, because one alone would crush a pane — see the
+    /// module documentation for what libadwaita does with them.
+    fn widen_to(&self, width: i32) {
+        let width = width.clamp(BOUNDS.0, BOUNDS.1);
+        self.width.set(width);
+        self.split.set_max_sidebar_width(f64::from(width));
+        self.split.set_sidebar_width_fraction(
+            f64::from(width) / f64::from(width + ROOM_FOR_THE_DOCUMENT),
+        );
+    }
+
+    /// The widest the divider goes in the window it is in now: never so wide that the
+    /// document beside it is left less than a document's worth of room.
+    fn widest_here(&self) -> i32 {
+        (self.split.width() - ROOM_FOR_THE_DOCUMENT).clamp(BOUNDS.0, BOUNDS.1)
     }
 
     /// Calls `handler` with the source line of the heading the reader picked.

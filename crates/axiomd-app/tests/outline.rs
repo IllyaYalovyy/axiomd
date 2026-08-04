@@ -418,3 +418,162 @@ fn the_reader_can_switch_the_outline_off_and_it_goes_at_once() {
     );
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
+
+/// How wide the outline is for a reader who has never touched the divider, how narrow
+/// it goes, and how wide it goes in the 900px window every launch here starts in — the
+/// last being what is left after the document keeps a document's worth of room.
+const USUAL: i32 = 260;
+const NARROWEST: i32 = 180;
+const WIDEST_IN_THIS_WINDOW: i32 = 420;
+
+/// The least the document keeps beside the outline, whatever the reader drags.
+const ROOM_FOR_THE_DOCUMENT: i32 = 480;
+
+/// The owner's ruling in one test (issue #27): the reader drags the divider, the
+/// outline is that wide, and it is still that wide the next time they open a document.
+#[test]
+fn dragging_the_divider_widens_the_outline_and_the_width_comes_back_next_time() {
+    let fixture = Fixture::new("outline-resize");
+    let preferences = Preferences::new("outline-resize");
+    let document = fixture.write("guide.md", &guide());
+    let app = axiomd_e2e::launch_with(&document, &preferences);
+
+    let before = app.layout();
+    assert_eq!(
+        before.sidebar.width, USUAL,
+        "a reader who has never touched the divider did not get the usual width",
+    );
+
+    app.drag_divider(90);
+    app.wait_until_sidebar_width(USUAL + 90);
+
+    // The room came out of the document beside it, and the two still meet: an outline
+    // that widened over the document would be covering what it is an index of.
+    let widened = app.layout();
+    assert_eq!(
+        widened.document.width,
+        before.document.width - 90,
+        "the document did not give up exactly the room the outline took",
+    );
+    assert_eq!(
+        widened.document.x,
+        widened.sidebar.right(),
+        "the outline and the document are not meeting at the divider",
+    );
+    assert_eq!(
+        app.outline().headings.first().map(String::as_str),
+        Some("h1 Guide"),
+        "the outline stopped listing the document it was widened beside",
+    );
+
+    // Window state, not a preference: it is written down where a window's own size is
+    // written down, and no dialog was involved (`ux_decisions.md`).
+    preferences.wait_until("sidebar-width", &(USUAL + 90).to_string());
+    assert_eq!(
+        app.visible_dialog(),
+        "",
+        "dragging the divider raised a dialog"
+    );
+    assert!(app.close().is_empty(), "the launch left processes behind");
+
+    let again = axiomd_e2e::launch_with(&document, &preferences);
+    assert_eq!(
+        again.layout().sidebar.width,
+        USUAL + 90,
+        "the width the reader dragged to was not there when they came back",
+    );
+    assert!(again.close().is_empty(), "the launch left processes behind");
+}
+
+/// The non-happy path: a reader who shoves the divider as far as it goes, either way.
+/// Neither pane may be crushed to something unusable, so both ends stop.
+#[test]
+fn the_divider_stops_before_either_pane_is_crushed() {
+    let fixture = Fixture::new("outline-bounds");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    app.drag_divider(10_000);
+    app.wait_until_sidebar_width(WIDEST_IN_THIS_WINDOW);
+    let widest = app.layout();
+    assert!(
+        widest.document.width >= ROOM_FOR_THE_DOCUMENT,
+        "the document was left {}px to be read in",
+        widest.document.width,
+    );
+    assert_eq!(
+        app.dom_text("h1"),
+        "Guide",
+        "the document beside the widest outline is not readable",
+    );
+
+    app.drag_divider(-10_000);
+    app.wait_until_sidebar_width(NARROWEST);
+    assert_eq!(
+        app.outline().headings.first().map(String::as_str),
+        Some("h1 Guide"),
+        "the narrowest outline stopped being a list of headings",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The way back. A reader who has dragged themselves somewhere they did not mean to go
+/// double-clicks the divider, and the outline is the width it started at — for good,
+/// not just until the window closes.
+#[test]
+fn double_clicking_the_divider_puts_the_outline_back() {
+    let fixture = Fixture::new("outline-restore");
+    let preferences = Preferences::new("outline-restore");
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &preferences);
+
+    app.drag_divider(120);
+    app.wait_until_sidebar_width(USUAL + 120);
+    preferences.wait_until("sidebar-width", &(USUAL + 120).to_string());
+
+    app.restore_divider();
+    app.wait_until_sidebar_width(USUAL);
+
+    let second = axiomd_e2e::launch_with(&fixture.write("second.md", &guide()), &preferences);
+    assert_eq!(
+        second.layout().sidebar.width,
+        USUAL,
+        "a window opened after the divider was put back is still the dragged width",
+    );
+
+    assert!(
+        second.close().is_empty(),
+        "the launch left processes behind"
+    );
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The width and the breakpoint together (issue #27 meets issue #7): a window too
+/// narrow to hold both panes still takes the outline away, and the width the reader
+/// chose while it was wide is what they get back when it is wide again.
+#[test]
+fn a_width_chosen_while_wide_comes_back_when_the_window_is_wide_again() {
+    let fixture = Fixture::new("outline-resize-narrow");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    app.drag_divider(90);
+    app.wait_until_sidebar_width(USUAL + 90);
+
+    app.resize(480, 700);
+    app.wait_for("the outline to get out of a narrow window's way", || {
+        !app.outline().shown
+    });
+    assert!(app.showing_document());
+    assert_eq!(app.dom_text("h1"), "Guide");
+
+    // And `F9` still calls it up over the document, as it does at any width.
+    app.activate("win.outline");
+    assert!(app.outline().shown, "the outline could not be called up");
+
+    app.resize(1000, 700);
+    app.wait_for("the outline to come back beside the document", || {
+        app.outline().shown
+    });
+    app.wait_until_sidebar_width(USUAL + 90);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}

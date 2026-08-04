@@ -879,6 +879,37 @@ impl App {
         }
     }
 
+    /// Drags the divider between the outline and the document `across` pixels — to the
+    /// right when positive, as the reader's hand goes.
+    ///
+    /// A press, a move and a release, as the pointer makes them. A headless compositor
+    /// has no pointer, so this is the divider's own gesture, exactly as pressing a
+    /// button here emits the button's own `clicked`.
+    pub fn drag_divider(&self, across: i32) {
+        self.command("divider", &format!("drag {across}"));
+    }
+
+    /// Double-clicks that divider, as the reader putting the outline back to its usual
+    /// width does.
+    pub fn restore_divider(&self) {
+        self.command("divider", "restore");
+    }
+
+    /// Waits until the outline is drawn `wanted` pixels wide, and fails saying how wide
+    /// it is instead.
+    ///
+    /// A width the application has changed reaches the screen on the next layout pass,
+    /// so a test that measured it once would be racing the frame it is about to assert.
+    pub fn wait_until_sidebar_width(&self, wanted: i32) {
+        self.settle(&format!("the outline to be {wanted}px wide"), || {
+            let width = self.layout().sidebar.width;
+            if width == wanted {
+                return Ok(true);
+            }
+            Err(format!("the outline is {width}px wide"))
+        });
+    }
+
     /// Types `text` into the search bar, exactly as pressing the keys does. The bar has
     /// to be open, exactly as it does for the reader.
     pub fn search_for(&self, text: &str) {

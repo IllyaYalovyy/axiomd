@@ -293,6 +293,25 @@ impl Session {
                 self.target(shell)?.scroll_over_document(delta, control);
                 Ok(String::new())
             }
+            // The divider between the outline and the document: a drag of it, and the
+            // double click that puts it back. Same reason as `scroll` and `pinch` —
+            // there is no pointer to move — so these emit the divider's own gesture
+            // signals, which is what a press, a move and a release emit (`outline.rs`).
+            "divider" => {
+                let window = self.target(shell)?;
+                if payload == "restore" {
+                    window.restore_divider();
+                } else if let Some(across) = payload.strip_prefix("drag ") {
+                    window.drag_divider(
+                        across
+                            .parse::<f64>()
+                            .map_err(|_| format!("not a drag distance: {across:?}"))?,
+                    );
+                } else {
+                    return Err(format!("not a divider gesture: {payload:?}"));
+                }
+                Ok(String::new())
+            }
             "pinch" => {
                 let scale = payload
                     .parse::<f64>()

@@ -371,7 +371,7 @@ impl DocumentWindow {
         // The outline goes between the header and that pane: it owns the split the two
         // surfaces sit in, the `F9` action, and the breakpoint that gets it out of a
         // narrow window's way.
-        let outline = Outline::new(&window, &pane, OUTLINE);
+        let outline = Outline::new(&window, &pane, OUTLINE, settings);
         layout.set_content(Some(outline.widget()));
 
         let document_window = Rc::new(Self {
@@ -793,6 +793,17 @@ impl DocumentWindow {
     /// landing where the view's own zoom gesture lands.
     pub(crate) fn pinch_over_document(&self, scale: f64) {
         self.zoom.pinched(scale);
+    }
+
+    /// A drag of the divider between the outline and the document, `across` pixels from
+    /// where it took hold — landing where the divider's own gesture lands.
+    pub(crate) fn drag_divider(&self, across: f64) {
+        self.outline.drag(across);
+    }
+
+    /// A double-click on that divider, which puts the outline back to its usual width.
+    pub(crate) fn restore_divider(&self) {
+        self.outline.restore();
     }
 
     /// How many pages this window has finished showing since it was built.
