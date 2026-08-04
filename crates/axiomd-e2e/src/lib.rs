@@ -119,6 +119,28 @@ pub struct Search {
     pub cased: bool,
 }
 
+/// The header bar's switch between reading and editing, as the reader — and a screen
+/// reader — meets it.
+///
+/// One question rather than four, because the four are only meaningful together: a
+/// control drawn as one mode while it announces the other is exactly the defect this
+/// is here to catch (issue #28).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeSwitch {
+    /// The symbolic icon drawn on it — or `image-missing`, which is the glyph the
+    /// reader is looking at instead when the icon theme has no icon of that name.
+    pub icon: String,
+    /// What hovering it says.
+    pub tooltip: String,
+    /// What a screen reader announces it as: its accessible name. An empty string when
+    /// that name is neither of the two things the switch can offer, which includes
+    /// never having been given one.
+    pub announced: String,
+    /// Whether it reads as pressed — the toggle's own way of saying which mode the
+    /// window is in, as distinct from where pressing it goes.
+    pub pressed: bool,
+}
+
 /// Where one part of a window is drawn, in window coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -682,6 +704,26 @@ impl App {
         self.property("mode")
     }
 
+    /// The header bar's switch between reading and editing, as the reader and a screen
+    /// reader meet it: what it draws, what hovering it says, what it announces, and
+    /// whether it reads as pressed.
+    pub fn mode_switch(&self) -> ModeSwitch {
+        let shown = self.property("mode-switch");
+        let field = |name: &str| {
+            shown
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("{name} ")))
+                .unwrap_or_else(|| panic!("no {name} in the mode switch: {shown:?}"))
+                .to_owned()
+        };
+        ModeSwitch {
+            icon: field("icon"),
+            tooltip: field("tooltip"),
+            announced: field("announces"),
+            pressed: field("pressed") == "true",
+        }
+    }
+
     /// Waits until the addressed window is in `wanted` mode.
     ///
     /// Switching from reading to editing asks the page where the reader is before it
@@ -1030,9 +1072,24 @@ impl App {
     /// Captures the addressed window's rendered document as pixels.
     pub fn screenshot(&self) -> Screenshot {
         self.wait_until_the_page_has_drawn_again();
-        let path = self.scratch.path().join("screenshot.png");
+        self.capture("document")
+    }
+
+    /// Captures the addressed window's header bar as pixels — the strip the mode
+    /// switch, the outline button and the menu are drawn in.
+    ///
+    /// No wait for a frame, unlike the document: the page is captured from what the
+    /// web process last painted, where a widget is drawn afresh from the window's own
+    /// renderer at the moment it is asked. A window that has not been laid out yet
+    /// fails the capture rather than answering with a blank strip.
+    pub fn header_screenshot(&self) -> Screenshot {
+        self.capture("header")
+    }
+
+    fn capture(&self, part: &str) -> Screenshot {
+        let path = self.scratch.path().join(format!("{part}.png"));
         let _ = std::fs::remove_file(&path);
-        self.command("screenshot", &path.display().to_string());
+        self.command("screenshot", &format!("{part} {}", path.display()));
         Screenshot::read(&path).unwrap_or_else(|error| panic!("{error}"))
     }
 

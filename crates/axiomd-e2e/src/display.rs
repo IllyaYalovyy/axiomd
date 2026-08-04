@@ -278,9 +278,16 @@ impl Environment {
                 // this set takes 424 ms in total. A budget measured through that is a
                 // budget on Mesa's shader compiler (issue #9).
                 ("GSK_RENDERER", PathBuf::from("cairo")),
-                // Nothing here needs the accessibility bus, and asking for one that
-                // is not there is a warning on every launch.
-                ("GTK_A11Y", PathBuf::from("none")),
+                // Nothing here needs the accessibility *bus*, and asking for one that
+                // is not there is a warning on every launch — but a test does need
+                // what the application tells it, because what a screen reader would
+                // announce is a thing the reader is owed (issue #28). `test` is GTK's
+                // own answer to exactly that: an accessibility context that keeps
+                // everything the application sets and talks to nothing. Probed on GTK
+                // 4.20.4: with `none` the context is absent and every accessible name
+                // reads back as whatever it was asked about, which is worse than no
+                // answer.
+                ("GTK_A11Y", PathBuf::from("test")),
                 ("LC_ALL", PathBuf::from("C.UTF-8")),
                 ("LANG", PathBuf::from("C.UTF-8")),
                 ("TZ", PathBuf::from("UTC")),

@@ -537,6 +537,23 @@ fn the_installed_flatpak_renders_a_document_and_fetches_nothing_until_asked() {
         "40",
         "the image reached the page from inside the sandbox but never decoded",
     );
+
+    // Last, because switching modes re-renders what everything above asserted about:
+    // the controls the runtime has to draw, not only the document it renders. An icon
+    // the sandbox's icon theme is missing is a missing-image glyph in the header, and
+    // the reader inside the flatpak is the only one who would ever see it (issue #28).
+    assert_eq!(
+        app.mode_switch().icon,
+        "document-edit-symbolic",
+        "the packaged runtime has no icon for reading's face of the mode switch",
+    );
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    assert_eq!(
+        app.mode_switch().icon,
+        "view-reveal-symbolic",
+        "the packaged runtime has no icon for editing's face of the mode switch",
+    );
 }
 
 /// UT-001 for the packaged application, as far as the boundary in `docs/TESTING.md`

@@ -350,19 +350,32 @@ impl Session {
                     .ok_or_else(|| format!("not a <row>=<value> setting: {payload:?}"))?;
                 set_row(&self.target(shell)?, title, value)
             }
+            // A picture of one part of the window: the rendered document, or the strip
+            // of controls above it. Two painters, because they are two different
+            // things — the page is what the web process last drew, the header is drawn
+            // afresh by the window's own renderer when it is asked for.
             "screenshot" => {
-                let webview = self.target(shell)?.webview().clone();
-                let picture = webview
-                    .snapshot_future(
-                        webkit6::SnapshotRegion::Visible,
-                        webkit6::SnapshotOptions::NONE,
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
-                picture
-                    .save_to_png(payload)
-                    .map(|()| String::new())
-                    .map_err(|error| error.to_string())
+                let (part, path) = payload
+                    .split_once(' ')
+                    .ok_or_else(|| format!("not a <part> <file> capture: {payload:?}"))?;
+                match part {
+                    "document" => {
+                        let webview = self.target(shell)?.webview().clone();
+                        let picture = webview
+                            .snapshot_future(
+                                webkit6::SnapshotRegion::Visible,
+                                webkit6::SnapshotOptions::NONE,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        picture
+                            .save_to_png(path)
+                            .map(|()| String::new())
+                            .map_err(|error| error.to_string())
+                    }
+                    "header" => capture(self.target(shell)?.header(), path),
+                    other => Err(format!("no such part to capture: {other}")),
+                }
             }
             "close" => {
                 self.target(shell)?.window().close();
@@ -427,6 +440,10 @@ impl Session {
                 "editor" => "edit".to_owned(),
                 _ => "read".to_owned(),
             }),
+            // The header-bar switch as the reader and a screen reader meet it. One
+            // question rather than four, because a control drawn as one mode while it
+            // announces the other is the defect worth catching (issue #28).
+            "mode-switch" => Ok(window.mode_switch()),
             "modified" => Ok(window.is_modified().to_string()),
             // Which engine the main menu shows this window reading with — its own
             // choice, or the reader's preference while it has made none.
@@ -450,6 +467,40 @@ impl Session {
             .window_at(index)
             .ok_or_else(|| format!("window {index} has closed"))
     }
+}
+
+/// Writes `widget` to `path` as the pixels it is drawn as.
+///
+/// Through the window's own renderer, which draws the widget again there and then —
+/// so, unlike the page, there is no last-painted frame to race and a capture taken
+/// before the window has been laid out is a failure rather than a blank picture.
+fn capture(widget: &gtk::Widget, path: &str) -> Answer {
+    let (width, height) = (widget.width(), widget.height());
+    if width <= 0 || height <= 0 {
+        return Err(format!(
+            "the window has not laid this out yet, so it is {width}x{height}",
+        ));
+    }
+    let renderer = widget
+        .native()
+        .and_then(|native| native.renderer())
+        .ok_or("the window has no renderer to draw with")?;
+    let snapshot = gtk::Snapshot::new();
+    gtk::WidgetPaintable::new(Some(widget)).snapshot(&snapshot, width as f64, height as f64);
+    let drawn = snapshot.to_node().ok_or("the widget drew nothing")?;
+    renderer
+        .render_texture(
+            &drawn,
+            Some(&gtk::graphene::Rect::new(
+                0.0,
+                0.0,
+                width as f32,
+                height as f32,
+            )),
+        )
+        .save_to_png(path)
+        .map(|()| String::new())
+        .map_err(|error| error.to_string())
 }
 
 /// Presses the thing labelled `label`, wherever in the window it is — a button in the

@@ -114,12 +114,42 @@ impl Mode {
             Mode::Edit => Mode::Read,
         }
     }
+
+    /// The symbolic icon that stands for going to this mode: the pencil for editing the
+    /// source, the eye for looking at the document.
+    ///
+    /// Both are in the Adwaita icon theme this desktop ships (probed on Adwaita under
+    /// GTK 4.20.4: `document-edit-symbolic` and `view-reveal-symbolic` are both in its
+    /// `symbolic/actions` set). A name the theme does not have would draw as the
+    /// missing-image glyph, which is what [`ModeSwitch::shown`] reports rather than
+    /// hides.
+    fn icon(self) -> &'static str {
+        match self {
+            Mode::Edit => "document-edit-symbolic",
+            Mode::Read => "view-reveal-symbolic",
+        }
+    }
+
+    /// What going to this mode is called — the words the switch's tooltip and its
+    /// accessible name are both made of, so a screen reader and a pointer can never be
+    /// told two different things.
+    fn invitation(self) -> &'static str {
+        match self {
+            Mode::Edit => "Edit the source",
+            Mode::Read => "View the document",
+        }
+    }
+
+    /// Every mode there is, for the two answers a read-back has to choose between.
+    const ALL: [Mode; 2] = [Mode::Read, Mode::Edit];
 }
 
 /// A window showing one document.
 pub(crate) struct DocumentWindow {
     window: adw::ApplicationWindow,
     title: adw::WindowTitle,
+    header: adw::HeaderBar,
+    switch: ModeSwitch,
     notice: Notice,
     view: Rc<DocumentView>,
     editor: Rc<Editor>,
@@ -340,12 +370,13 @@ impl DocumentWindow {
 
         let title = adw::WindowTitle::new("axiomd", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
+        let switch = ModeSwitch::new();
         header.pack_start(&outline_button());
         header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
         header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
         header.pack_start(&open_button());
         header.pack_end(&primary_menu_button(&zoom));
-        header.pack_end(&mode_button());
+        header.pack_end(switch.widget());
 
         // The search bar holds both surfaces and asks whichever one the reader is
         // looking at, so the window only has to tell it when that changes.
@@ -377,6 +408,8 @@ impl DocumentWindow {
         let document_window = Rc::new(Self {
             window,
             title,
+            header,
+            switch,
             notice,
             view,
             editor,
@@ -721,6 +754,18 @@ impl DocumentWindow {
         let mut surfaces = vec![self.window.clone().upcast::<gtk::Widget>()];
         surfaces.extend(self.dialog_window().map(|dialog| dialog.upcast()));
         surfaces
+    }
+
+    /// The strip of controls above the document — what a header golden is a picture of.
+    pub(crate) fn header(&self) -> &gtk::Widget {
+        self.header.upcast_ref()
+    }
+
+    /// The switch between reading and editing as the reader and a screen reader meet
+    /// it: what it draws, what hovering it says, what it announces, and whether it
+    /// reads as pressed.
+    pub(crate) fn mode_switch(&self) -> String {
+        self.switch.shown()
     }
 
     /// What the window is saying beside the document, or an empty string when it has
@@ -1167,6 +1212,9 @@ impl DocumentWindow {
     /// Puts `mode`'s surface on screen and tells the header-bar button about it.
     fn enter(&self, mode: Mode) {
         self.mode.set(mode);
+        // What the switch draws is where pressing it goes, so it follows the window
+        // into the mode rather than being set alongside it (issue #28).
+        self.switch.show(mode);
         // A search the reader has open follows them across: the same bar, the same
         // words, counted over what is now in front of them (issue #8).
         self.find.look_in(mode);
@@ -1914,14 +1962,103 @@ fn outline_button() -> gtk::ToggleButton {
         .build()
 }
 
-/// The switch between reading and editing. A toggle rather than a button, because it
-/// says which of the two the window is in as well as changing it.
-fn mode_button() -> gtk::ToggleButton {
-    gtk::ToggleButton::builder()
-        .icon_name("document-edit-symbolic")
-        .tooltip_text("Edit the source (Ctrl+E)")
-        .action_name(MODE)
-        .build()
+/// The switch between reading and editing, in the header bar.
+///
+/// A toggle rather than a button, because it says which of the two the window is in as
+/// well as changing it. What it *draws* is the other half of that: where pressing it
+/// goes (`ux_decisions.md`, issue #28) — the pencil while the reader is reading, the
+/// eye while they are editing. The icon, the tooltip and the name a screen reader
+/// announces are all made from the one mode in [`ModeSwitch::show`], so none of the
+/// three can be left behind when the window changes mode.
+struct ModeSwitch {
+    button: gtk::ToggleButton,
+}
+
+impl ModeSwitch {
+    /// The switch as a window that has just opened a document has it: reading, and
+    /// offering the way into the source.
+    fn new() -> ModeSwitch {
+        let switch = ModeSwitch {
+            button: gtk::ToggleButton::builder().action_name(MODE).build(),
+        };
+        switch.show(Mode::Read);
+        switch
+    }
+
+    fn widget(&self) -> &gtk::ToggleButton {
+        &self.button
+    }
+
+    /// Draws the switch as a window in `mode` needs it: showing the way out of it.
+    fn show(&self, mode: Mode) {
+        let offer = mode.other();
+        self.button.set_icon_name(offer.icon());
+        self.button
+            .set_tooltip_text(Some(&format!("{} (Ctrl+E)", offer.invitation())));
+        // The accessible name is the invitation without the shortcut: GTK announces
+        // the accelerator itself, and a screen reader reading "Ctrl plus E" out of the
+        // name would say it twice.
+        self.button
+            .update_property(&[gtk::accessible::Property::Label(offer.invitation())]);
+    }
+
+    /// What the reader — and a screen reader — has in front of them, one line each:
+    /// the icon drawn, the tooltip, the name announced, and whether it reads as
+    /// pressed.
+    ///
+    /// The icon is the one the theme resolved rather than the one that was asked for,
+    /// because a name no theme has is a missing-image glyph on screen and a test must
+    /// see what the reader sees. The announced name is read back over the two names
+    /// the switch can carry, which is the whole of what it could be saying.
+    fn shown(&self) -> String {
+        let asked = self.button.icon_name().unwrap_or_default();
+        let drawn = match gtk::IconTheme::for_display(&self.button.display()).has_icon(&asked) {
+            true => asked.to_string(),
+            false => "image-missing".to_owned(),
+        };
+        let announced = Mode::ALL
+            .into_iter()
+            .map(Mode::invitation)
+            .find(|name| self.announces(name))
+            .unwrap_or_default();
+        format!(
+            "icon {drawn}\ntooltip {}\nannounces {announced}\npressed {}",
+            self.button.tooltip_text().unwrap_or_default(),
+            self.button.is_active(),
+        )
+    }
+
+    /// Whether a screen reader would announce the switch as `name`.
+    ///
+    /// Asked rather than read, because GTK has setters for an accessible name and no
+    /// getter: `gtk_test_accessible_check_property` is its own way of asking, and
+    /// answers a null pointer when the property is what was expected and a complaint
+    /// saying what it is instead when it is not (GTK 4.20.4, `gtktestutils.c`). The
+    /// caller tries it with each name the switch could be carrying, so a stale name is
+    /// reported as the *other* mode's rather than as this one's.
+    fn announces(&self, name: &str) -> bool {
+        use gtk::glib::translate::{IntoGlib, ToGlibPtr};
+
+        let expected = std::ffi::CString::new(name).expect("a name with no NUL in it");
+        let accessible: gtk::glib::translate::Stash<'_, *mut gtk::ffi::GtkAccessible, _> =
+            self.button.upcast_ref::<gtk::Accessible>().to_glib_none();
+        // SAFETY: a variadic GTK testing function, given the accessible the stash above
+        // keeps alive, the property's own enumerated value, and the one string argument
+        // `GTK_ACCESSIBLE_PROPERTY_LABEL` takes. The answer is freshly allocated and
+        // freed here.
+        unsafe {
+            let complaint = gtk::ffi::gtk_test_accessible_check_property(
+                accessible.0,
+                gtk::AccessibleProperty::Label.into_glib(),
+                expected.as_ptr(),
+            );
+            if complaint.is_null() {
+                return true;
+            }
+            gtk::glib::ffi::g_free(complaint.cast());
+            false
+        }
+    }
 }
 
 fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
