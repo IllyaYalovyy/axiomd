@@ -253,6 +253,13 @@ impl Session {
             // Pressing a button the window is showing — in an inline notice or in a
             // dialog — by the words on it, which is all the reader has to go on.
             "press" => press(&self.target(shell)?, payload),
+            // Pressing one of the window's own controls, found by the name a screen
+            // reader announces it as — a control nobody can name is a failure rather
+            // than a press that quietly went nowhere.
+            "press-control" => match self.target(shell)?.press_control(payload) {
+                true => Ok(String::new()),
+                false => Err(format!("this window draws no control called {payload:?}")),
+            },
             // Pressing a key, spelled the way the application installs it. Answers
             // whether the key did anything, so a key bound to a disabled action is
             // told apart from one that ran.
@@ -453,6 +460,11 @@ impl Session {
         // The header bar at the width the window happens to be: the title, whether its
         // end is cut off, and the controls still drawn beside it.
         if let Some(answer) = window.header_bar(name) {
+            return Ok(answer);
+        }
+        // And how every control in the window is named, for the reader and for a screen
+        // reader — the one rule they are all named by (issue #32).
+        if let Some(answer) = window.controls(name) {
             return Ok(answer);
         }
         // And the two dialogs that say what the application is and what its keys do,

@@ -1,11 +1,20 @@
 //! The chrome every GNOME application is expected to have: what its keys do, and what
 //! it is.
 //!
-//! Three things live here because they are one thing — the shortcut table. Every key
+//! Four things live here because they are one thing — the shortcut table. Every key
 //! the application installs is a row of [`SECTIONS`], the accelerators are set from it,
-//! and the keyboard-shortcuts dialog is built from it, so a key the reader can press
-//! and a key the dialog lists cannot be two different sets. Adding a shortcut anywhere
-//! else than this table is what the completeness test in `shell.rs` catches.
+//! the keyboard-shortcuts dialog is built from it, and every control in the window is
+//! [`name`]d from it, so a key the reader can press, a key the dialog lists and a key a
+//! tooltip promises cannot be three different sets. Adding a shortcut anywhere else
+//! than this table is what the completeness test in `shell.rs` catches.
+//!
+//! # How a control is named
+//!
+//! One rule, everywhere (issue #32): hovering says `"Name (Key)"` and a screen reader
+//! announces `"Name"`. [`name`] is the only way it is applied, so the two readings of a
+//! name are set together and the key is never written down a second time beside the
+//! words. `crates/axiomd-app/tests/naming.rs` sweeps every control the reader can reach
+//! and holds all of them to it.
 //!
 //! # Where the About dialog's words come from
 //!
@@ -216,6 +225,94 @@ pub(crate) fn arm(app: &adw::Application) {
     present(app, ABOUT, |window| {
         about().present(Some(window));
     });
+}
+
+/// Names `control` for the reader and for a screen reader, by the one rule the whole
+/// application is named by (issue #32).
+///
+/// Hovering it says `"Name (Key)"` and a screen reader announces `"Name"`. The two are
+/// set together and can only be set together, because they are two readings of one
+/// name: a control named in one of the ways and not the other is what left `Back` and
+/// `Open` without their keys while the outline button had `(F9)` inside the words a
+/// screen reader reads out — and GTK announces the key itself, so a name carrying it
+/// would say it twice.
+///
+/// The key is not given here. It is looked up from [`SECTIONS`] by the action the
+/// control is already bound to, so what a tooltip promises and what the keyboard
+/// installs are the same fact read twice, and a key that moves moves in the tooltip
+/// with it. A control bound to no action, or to one on no key — the main menu, the
+/// case switch in the search bar — is simply named, with nothing in brackets.
+///
+/// `saying` is header-capitalised, as every name the reader reads is (GNOME HIG), and
+/// it is the words rather than the action so that a control whose meaning changes with
+/// its state can say what it means now (the read/edit switch, issue #28).
+pub(crate) fn name(control: &impl IsA<gtk::Widget>, saying: &str) {
+    let control = control.as_ref();
+    let tooltip = match key_on(control) {
+        Some(key) => format!("{saying} ({key})"),
+        None => saying.to_owned(),
+    };
+    control.set_tooltip_text(Some(&tooltip));
+    control.update_property(&[gtk::accessible::Property::Label(saying)]);
+}
+
+/// The key the action `control` fires is on, as GTK spells it for a reader, or nothing
+/// when the control fires no action or the action is on no key.
+///
+/// The first of the action's keys: a shortcut on several keys is offered by the one it
+/// is written down under first, which is the one this desktop's readers press (see the
+/// notes beside the zoom and redo rows above).
+fn key_on(control: &gtk::Widget) -> Option<String> {
+    let action = control
+        .dynamic_cast_ref::<gtk::Actionable>()
+        .and_then(gtk::prelude::ActionableExt::action_name)?;
+    let key = SECTIONS
+        .iter()
+        .flat_map(|(_, shortcuts)| *shortcuts)
+        .find(|shortcut| shortcut.action == action)
+        .and_then(|shortcut| shortcut.keys.first())?;
+    let (value, modifiers) = gtk::accelerator_parse(*key)?;
+    Some(gtk::accelerator_get_label(value, modifiers).to_string())
+}
+
+/// What a screen reader would announce `control` as, and `"undefined"` for a control
+/// that has never been named.
+///
+/// Asked rather than read, because GTK has a setter for an accessible name and no
+/// getter. `gtk_test_accessible_check_property` is its own way of asking: given a value
+/// the property does not have it answers what the property *does* have, and given the
+/// value it has it answers nothing at all (GTK 4.20.4, `gtktestutils.c`). So it is
+/// asked about a name no control could carry, and the complaint is the answer.
+pub(crate) fn announced(control: &impl IsA<gtk::Widget>) -> String {
+    use gtk::glib::translate::{IntoGlib, ToGlibPtr};
+
+    /// One unit-separator character: a name no reader would ever be shown.
+    const NO_SUCH_NAME: &str = "\u{1f}";
+
+    let accessible: gtk::glib::translate::Stash<'_, *mut gtk::ffi::GtkAccessible, _> = control
+        .as_ref()
+        .upcast_ref::<gtk::Accessible>()
+        .to_glib_none();
+    let expected = std::ffi::CString::new(NO_SUCH_NAME).expect("a name with no NUL in it");
+    // SAFETY: a variadic GTK testing function, given the accessible the stash above
+    // keeps alive, the property's own enumerated value, and the one string argument
+    // `GTK_ACCESSIBLE_PROPERTY_LABEL` takes. The answer is freshly allocated and freed
+    // here.
+    unsafe {
+        let complaint = gtk::ffi::gtk_test_accessible_check_property(
+            accessible.0,
+            gtk::AccessibleProperty::Label.into_glib(),
+            expected.as_ptr(),
+        );
+        if complaint.is_null() {
+            return NO_SUCH_NAME.to_owned();
+        }
+        let announced = std::ffi::CStr::from_ptr(complaint)
+            .to_string_lossy()
+            .into_owned();
+        gtk::glib::ffi::g_free(complaint.cast());
+        announced
+    }
 }
 
 /// What the dialog `of` names is showing, as the reader reads it, or nothing at all

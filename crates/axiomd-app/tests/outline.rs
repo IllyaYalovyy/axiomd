@@ -309,6 +309,112 @@ fn a_document_with_no_headings_says_so_where_its_headings_would_be() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// Issue #32: a window opened with nothing in it reads without a sidebar standing
+/// empty beside it.
+///
+/// "No headings" is the right answer for a document that *has* none; for a page the
+/// reader has not written yet it is a fifth of the window saying nothing, in front of
+/// the first line they came to type. The sidebar is out of the way until there is a
+/// reason for it — and here that reason is the first heading they write, which arrives
+/// through the same render every keystroke does.
+#[test]
+fn a_window_with_nothing_in_it_yet_reads_without_an_empty_sidebar_beside_it() {
+    let app = axiomd_e2e::launch_without_document();
+    app.wait_until_mode("edit");
+
+    let opened = app.outline();
+    assert!(
+        !opened.shown,
+        "an untitled window opened with an empty sidebar beside it, saying {:?}",
+        opened.notice,
+    );
+
+    // The reader's first heading. The sidebar has something to list now, so it comes
+    // back with it in — no key pressed, no preference changed.
+    app.type_text("# Notes\n\nThe first line.\n");
+    app.wait_for(
+        "the sidebar to come back with the new heading in it",
+        || app.outline().headings == ["h1 Notes"],
+    );
+    assert!(app.outline().shown, "the sidebar listed a heading unseen");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// `F9` in an empty window is the reader saying they want the sidebar there — so it is
+/// there, saying why it is empty, and once they have had their say the sidebar is
+/// theirs: a heading written into one they have since shut does not push it back open
+/// over them.
+#[test]
+fn the_reader_can_call_up_the_sidebar_of_an_untitled_window_and_it_stays_theirs() {
+    let app = axiomd_e2e::launch_without_document();
+    app.wait_until_mode("edit");
+    assert!(!app.outline().shown);
+
+    app.activate("win.outline");
+    let asked_for = app.outline();
+    assert!(asked_for.shown, "F9 did not bring the sidebar up");
+    assert_eq!(
+        asked_for.notice, "No headings",
+        "a sidebar the reader called up says why it is empty",
+    );
+
+    app.activate("win.outline");
+    app.type_text("# Notes\n");
+    app.wait_for("the window to render what was typed", || {
+        app.outline().headings == ["h1 Notes"]
+    });
+    assert!(
+        !app.outline().shown,
+        "a heading pushed the sidebar back open over the reader",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Giving the untitled page a name is not opening a document: the reader who saves
+/// what they are still writing does not get a sidebar pushed open beside them.
+#[test]
+fn saving_an_untitled_page_does_not_push_a_sidebar_open_over_the_reader() {
+    let fixture = Fixture::new("outline-untitled-saved");
+    let app = axiomd_e2e::launch_without_document();
+    app.wait_until_mode("edit");
+    app.type_text("Just words, and no heading yet.\n");
+
+    app.save_as(&fixture.write("draft.md", ""));
+    app.wait_until_saved();
+
+    let saved = app.outline();
+    assert!(
+        !saved.shown,
+        "saving opened a sidebar saying {:?} over the reader",
+        saved.notice,
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The window the reader launched bare and then opened a document into reads that
+/// document the way any opened document is read — sidebar and all. The quiet start was
+/// for want of a document, and there is one now.
+#[test]
+fn a_document_opened_into_an_untitled_window_is_read_with_its_outline_beside_it() {
+    let fixture = Fixture::new("outline-untitled-then-opened");
+    let app = axiomd_e2e::launch_without_document();
+    app.wait_until_mode("edit");
+    assert!(!app.outline().shown);
+
+    app.open_here(&fixture.write("guide.md", &guide()));
+
+    app.wait_for("the opened document's sidebar", || app.outline().shown);
+    assert_eq!(
+        app.outline().headings.first().map(String::as_str),
+        Some("h1 Guide"),
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// `F9` and the header-bar button are one action and one state, so the button can
 /// never say the sidebar is open while it is shut.
 #[test]

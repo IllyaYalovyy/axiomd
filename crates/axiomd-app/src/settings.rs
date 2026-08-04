@@ -219,10 +219,17 @@ impl Settings {
     pub(crate) fn follow_outline(self: &Rc<Self>, reveal: impl Fn(bool) + 'static) -> Watch {
         let apply = {
             let settings = self.clone();
-            move || reveal(settings.store.boolean(Key::Outline.name()))
+            move || reveal(settings.outline_shown())
         };
         apply();
         self.watch(&[Key::Outline], apply)
+    }
+
+    /// Whether documents are read with their outline beside them, right now — what a
+    /// sidebar that has been out of the way goes back to when there is finally
+    /// something in it (issue #32).
+    pub(crate) fn outline_shown(&self) -> bool {
+        self.store.boolean(Key::Outline.name())
     }
 
     /// How wide the outline sits beside the document, in pixels — where the reader

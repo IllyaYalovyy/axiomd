@@ -108,6 +108,11 @@ pub(crate) struct Outline {
     /// has just been re-rendered under them highlights the same section rather than
     /// none (live reload, and every keystroke in edit mode).
     at: Cell<u32>,
+    /// Whether the sidebar is out of the way for want of anything to put in it — a
+    /// window opened with no document (issue #32). Set while that is true and cleared
+    /// the moment it stops being: a heading arrives, or the reader asks for the sidebar
+    /// themselves.
+    held: Cell<bool>,
     chosen: RefCell<Option<Chosen>>,
 }
 
@@ -228,7 +233,21 @@ impl Outline {
             width: Cell::new(BOUNDS.0),
             grabbed: Cell::new(BOUNDS.0),
             at: Cell::new(0),
+            held: Cell::new(false),
             chosen: RefCell::new(None),
+        });
+
+        // A sidebar the reader has in front of them is no longer being held back for
+        // want of anything to put in it, however it got there — `F9`, the header-bar
+        // toggle, or their preference. So a heading typed afterwards into a sidebar
+        // they have since shut does not push it open again over them.
+        let asked_for = Rc::downgrade(&outline);
+        outline.split.connect_show_sidebar_notify(move |split| {
+            if split.shows_sidebar()
+                && let Some(outline) = asked_for.upgrade()
+            {
+                outline.held.set(false);
+            }
         });
 
         // The width the reader left the divider at, before the window is ever drawn:
@@ -375,6 +394,11 @@ impl Outline {
         } else {
             HEADINGS
         });
+        // The first heading in a window that opened with nothing in it: there is
+        // something to navigate by now, so the sidebar is no longer held back.
+        if !headings.is_empty() {
+            self.let_go();
+        }
         match reading.and_then(|reading| self.find_section(&reading)) {
             Some(position) => self.select(position),
             None => self.highlight(),
@@ -392,6 +416,39 @@ impl Outline {
     /// Shows or hides the sidebar — the preference, and what `F9` toggles.
     pub(crate) fn reveal(&self, shown: bool) {
         self.split.set_show_sidebar(shown);
+    }
+
+    /// What the sidebar does when the window is given something to show — a file, or a
+    /// new untitled document with nothing in it yet (issue #32).
+    ///
+    /// A window opened with no document has no headings to list and no prospect of any
+    /// until the reader writes one, so a fifth of it standing empty under "No headings"
+    /// is noise where the reader's first line should be. The sidebar stays out of the
+    /// way, and comes back the moment there is a reason for it: the first heading they
+    /// write, `F9`, or the file they open here instead.
+    ///
+    /// A document opened into a window that was never holding the sidebar back leaves
+    /// it exactly as the reader left it — following a link with the sidebar shut does
+    /// not reopen it — and a heading-less document that was *opened* still says "No
+    /// headings" where its headings would be, which is the empty state that is right
+    /// for it.
+    pub(crate) fn opened(&self, a_document: bool) {
+        match a_document {
+            true => self.let_go(),
+            false => {
+                self.held.set(true);
+                self.reveal(false);
+            }
+        }
+    }
+
+    /// Stops holding the sidebar back, and puts it where the reader's preference says
+    /// — but only for a sidebar that *was* being held back, so this can never move one
+    /// the reader has put where they want it.
+    fn let_go(&self) {
+        if self.held.replace(false) {
+            self.reveal(self.settings.outline_shown());
+        }
     }
 
     /// Whether the sidebar is beside the document.

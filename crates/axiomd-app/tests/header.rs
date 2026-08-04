@@ -34,8 +34,8 @@ fn the_mode_switch_offers_the_mode_the_reader_is_not_in() {
         ),
         (
             "document-edit-symbolic",
-            "Edit the source (Ctrl+E)",
-            "Edit the source",
+            "Edit the Source (Ctrl+E)",
+            "Edit the Source",
             false,
         ),
         "reading, the switch does not offer the source",
@@ -55,8 +55,8 @@ fn the_mode_switch_offers_the_mode_the_reader_is_not_in() {
         ),
         (
             "view-reveal-symbolic",
-            "View the document (Ctrl+E)",
-            "View the document",
+            "View the Document (Ctrl+E)",
+            "View the Document",
             true,
         ),
         "editing, the switch does not offer the document",
@@ -83,7 +83,7 @@ fn a_window_that_opens_editing_starts_with_the_switch_offering_the_document() {
 
     let switch = app.mode_switch();
     assert_eq!(switch.icon, "view-reveal-symbolic");
-    assert_eq!(switch.announced, "View the document");
+    assert_eq!(switch.announced, "View the Document");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

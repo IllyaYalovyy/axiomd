@@ -106,6 +106,27 @@ A control that toggles state shows where it takes you: the read/edit
 toggle changes icon and tooltip with the mode (issue #28). The general
 rule: a stateful affordance whose presentation never changes is a defect.
 
+## How is a control named?
+
+One rule, everywhere (issue #32): the tooltip is `Action Name (Key)` and
+the accessible label is the action name alone, header-capitalized. GTK
+announces the accelerator itself, so a name carrying it would say it
+twice. The key is never written beside the words — it is looked up from
+the shortcut table in `chrome.rs` by the action the control fires, so a
+tooltip cannot promise a key the keyboard does not install. A control on
+no key is simply named. Applied through `chrome::name` and swept by
+`crates/axiomd-app/tests/naming.rs`.
+
+## Does an untitled window open with its outline sidebar?
+
+No (issue #32). A window with no document has no headings and no prospect
+of any until the reader writes one, so "No headings" beside an empty page
+is noise where their first line should be. The sidebar appears at the
+first heading they write, at F9, or when a document is opened into the
+window — never on save, which names the page rather than opening one.
+A document that was *opened* with no headings keeps the "No headings"
+empty state: that is the right answer for a document that has none.
+
 ## Is YAML frontmatter rendered?
 
 No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as

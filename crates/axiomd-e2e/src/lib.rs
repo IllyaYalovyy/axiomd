@@ -132,9 +132,8 @@ pub struct ModeSwitch {
     pub icon: String,
     /// What hovering it says.
     pub tooltip: String,
-    /// What a screen reader announces it as: its accessible name. An empty string when
-    /// that name is neither of the two things the switch can offer, which includes
-    /// never having been given one.
+    /// What a screen reader announces it as: its accessible name, and `"undefined"`
+    /// when it has never been given one.
     pub announced: String,
     /// Whether it reads as pressed — the toggle's own way of saying which mode the
     /// window is in, as distinct from where pressing it goes.
@@ -164,6 +163,26 @@ impl Header {
     pub fn offers(&self, wanted: &str) -> bool {
         self.controls.iter().any(|control| control == wanted)
     }
+}
+
+/// One control the reader can press, and the two names it carries.
+///
+/// The two are one name read two ways: hovering shows the words with the key in
+/// brackets, a screen reader announces the words alone. They are kept together here
+/// because a control named for the pointer and not for the screen reader is exactly the
+/// defect a test of either one alone would miss (issue #32).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    /// The action pressing it fires, in full, or empty for a control bound to none.
+    pub action: String,
+    /// The key that action is installed on, spelled the way GTK spells it for a reader.
+    /// Empty when the action is on no key, or when there is no action.
+    pub key: String,
+    /// What hovering it says.
+    pub tooltip: String,
+    /// What a screen reader announces it as, and `"undefined"` for a control that was
+    /// never given a name of its own.
+    pub announced: String,
 }
 
 /// One thing the preferences dialog says: a group's heading, or a row.
@@ -969,6 +988,41 @@ impl App {
                 .map(str::to_owned)
                 .collect(),
         }
+    }
+
+    /// Every control the reader can reach in the addressed window and how it is named
+    /// — the header bar, the search bar while it is up, and the primary menu's zoom row
+    /// while the menu is open.
+    ///
+    /// One question rather than one per control, because the point of asking is that
+    /// they are named by one rule: a sweep that had to name the controls it wanted
+    /// would pass over exactly the control nobody remembered to name.
+    pub fn controls(&self) -> Vec<Named> {
+        self.property("controls")
+            .lines()
+            .filter_map(|line| line.strip_prefix("control "))
+            .map(|control| {
+                let mut fields = control.split('\t');
+                let mut next = || fields.next().unwrap_or_default().to_owned();
+                Named {
+                    action: next(),
+                    key: next(),
+                    tooltip: next(),
+                    announced: next(),
+                }
+            })
+            .collect()
+    }
+
+    /// Presses the control a screen reader announces as `name`, exactly as a click on
+    /// it does.
+    ///
+    /// By the name rather than by a path through the widget tree, because the name is
+    /// what the reader is going by too. A name no control in the window carries is a
+    /// failure: a test asserting that pressing something works must not pass by
+    /// pressing nothing.
+    pub fn press_control(&self, name: &str) {
+        self.command("press-control", name);
     }
 
     /// Presses `accelerator` — spelled the way GTK does, `<Control>n` — in the

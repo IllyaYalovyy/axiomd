@@ -25,12 +25,12 @@ const NOTES: &str = "# Release Notes\n\nThe first paragraph.\n\nA [link](second.
 const NARROW: [i32; 2] = [400, 360];
 
 /// What hovering each header control says — the only name a symbolic icon has.
-const OUTLINE: &str = "Show the outline (F9)";
-const BACK: &str = "Back";
-const FORWARD: &str = "Forward";
-const OPEN: &str = "Open a document";
-const EDIT: &str = "Edit the source (Ctrl+E)";
-const MENU: &str = "Main menu";
+const OUTLINE: &str = "Outline (F9)";
+const BACK: &str = "Back (Alt+Left)";
+const FORWARD: &str = "Forward (Alt+Right)";
+const OPEN: &str = "Open Document (Ctrl+O)";
+const EDIT: &str = "Edit the Source (Ctrl+E)";
+const MENU: &str = "Main Menu";
 /// The window's own close button, which carries no tooltip and is named by the icon it
 /// is drawn as. It is in every list below: a window the reader cannot close is not an
 /// improvement on one whose title they cannot read.

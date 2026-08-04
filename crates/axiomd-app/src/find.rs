@@ -181,18 +181,19 @@ impl Find {
         // Two letters rather than an icon: there is no symbolic in the Adwaita set for
         // "match case", and a button whose meaning the reader has to guess at is worse
         // than one that simply says what it does.
-        let cased = gtk::ToggleButton::builder()
-            .label("Aa")
-            .tooltip_text("Match case")
-            .build();
+        let cased = gtk::ToggleButton::builder().label("Aa").build();
         cased.add_css_class("flat");
+        // On no key of its own, so no key in brackets — the one rule everything in
+        // this window is named by (`chrome.rs`).
+        crate::chrome::name(&cased, "Match Case");
 
-        let previous = step_button(
-            "go-up-symbolic",
-            "Previous match (Ctrl+Shift+G)",
-            FIND_PREVIOUS,
-        );
-        let next = step_button("go-down-symbolic", "Next match (Ctrl+G)", FIND_NEXT);
+        let previous = step_button("go-up-symbolic", "Find Previous", FIND_PREVIOUS);
+        let next = step_button("go-down-symbolic", "Find Next", FIND_NEXT);
+        // Our own rather than the one `GtkSearchBar` draws for itself: that one carries
+        // neither a name nor a key, so it is the one control in the bar a screen reader
+        // could only announce as a button (issue #32). This one closes the bar through
+        // the same action `Escape` fires, and says so.
+        let close = step_button("window-close-symbolic", "Close Search", FIND_CLOSE);
 
         let row = gtk::Box::builder().spacing(6).build();
         row.append(&entry);
@@ -201,10 +202,11 @@ impl Find {
         row.append(&cased);
         row.append(&previous);
         row.append(&next);
+        row.append(&close);
 
         let bar = gtk::SearchBar::builder()
             .child(&row)
-            .show_close_button(true)
+            .show_close_button(false)
             .build();
         bar.connect_entry(&entry);
 
@@ -514,12 +516,13 @@ impl Find {
 
 /// One of the two buttons that walk the matches. Bound to a window action, so it does
 /// exactly what the key beside it in the tooltip does.
-fn step_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
-    gtk::Button::builder()
+fn step_button(icon: &str, saying: &str, action: &str) -> gtk::Button {
+    let button = gtk::Button::builder()
         .icon_name(icon)
-        .tooltip_text(tooltip)
         .action_name(action)
-        .build()
+        .build();
+    crate::chrome::name(&button, saying);
+    button
 }
 
 /// An action's bare name, as a window registers it, from the full one a widget uses.

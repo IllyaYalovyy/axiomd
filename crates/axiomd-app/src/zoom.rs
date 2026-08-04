@@ -83,11 +83,9 @@ impl Zoom {
     /// Gives `window` its zoom: the three actions, the two gestures over `view`, and
     /// the row for the primary menu.
     pub(crate) fn attach(window: &adw::ApplicationWindow, view: &webkit6::WebView) -> Rc<Zoom> {
-        let level = gtk::Button::builder()
-            .action_name(RESET)
-            .tooltip_text("Reset the zoom (Ctrl+0)")
-            .build();
+        let level = gtk::Button::builder().action_name(RESET).build();
         level.add_css_class("flat");
+        crate::chrome::name(&level, "Reset Zoom");
         // A fixed width, so walking the ladder does not shuffle the buttons beside it.
         level.set_width_request(72);
 
@@ -108,17 +106,11 @@ impl Zoom {
             pinched_at: Cell::new(1.0),
         });
 
-        zoom.row.append(&step_button(
-            "zoom-out-symbolic",
-            "Make the document smaller (Ctrl+minus)",
-            OUT,
-        ));
+        zoom.row
+            .append(&step_button("zoom-out-symbolic", "Zoom Out", OUT));
         zoom.row.append(&zoom.level);
-        zoom.row.append(&step_button(
-            "zoom-in-symbolic",
-            "Make the document bigger (Ctrl+plus)",
-            IN,
-        ));
+        zoom.row
+            .append(&step_button("zoom-in-symbolic", "Zoom In", IN));
 
         for (action, towards) in zoom.steps.iter().zip([Step::Out, Step::In]) {
             let stepping = Rc::downgrade(&zoom);
@@ -249,13 +241,13 @@ enum Step {
 
 /// One of the two step buttons, bound to its action — so GTK makes it insensitive
 /// exactly when the document is already as big or as small as it goes.
-fn step_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
+fn step_button(icon: &str, saying: &str, action: &str) -> gtk::Button {
     let button = gtk::Button::builder()
         .icon_name(icon)
-        .tooltip_text(tooltip)
         .action_name(action)
         .build();
     button.add_css_class("flat");
+    crate::chrome::name(&button, saying);
     button
 }
 

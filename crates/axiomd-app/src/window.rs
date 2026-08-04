@@ -135,13 +135,10 @@ impl Mode {
     /// told two different things.
     fn invitation(self) -> &'static str {
         match self {
-            Mode::Edit => "Edit the source",
-            Mode::Read => "View the document",
+            Mode::Edit => "Edit the Source",
+            Mode::Read => "View the Document",
         }
     }
-
-    /// Every mode there is, for the two answers a read-back has to choose between.
-    const ALL: [Mode; 2] = [Mode::Read, Mode::Edit];
 }
 
 /// A window showing one document.
@@ -830,10 +827,83 @@ impl DocumentWindow {
         controls_drawn(self.header.upcast_ref(), &mut drawn);
         said.extend(
             drawn
-                .into_iter()
-                .map(|control| format!("control {control}")),
+                .iter()
+                .map(|control| format!("control {}", hovering_says(control))),
         );
         Some(said.join("\n"))
+    }
+
+    /// Presses the control a screen reader announces as `name`, and says so; answers
+    /// `false` when this window is drawing no such control.
+    ///
+    /// A widget's own activation, which is what a click on a button ends in — the same
+    /// shape as the window's scroll, its pinch and its divider drag, all of which call
+    /// what the gesture calls because a headless compositor has no pointer to move.
+    pub(crate) fn press_control(&self, name: &str) -> bool {
+        self.every_control()
+            .iter()
+            .find(|control| crate::chrome::announced(*control) == name)
+            .is_some_and(gtk::prelude::WidgetExt::activate)
+    }
+
+    /// How every control the reader can reach in this window is named — one line each,
+    /// as `action<TAB>key<TAB>tooltip<TAB>announced`.
+    ///
+    /// One rule names them all (`chrome.rs`, issue #32), so one question asks about
+    /// them all: the header bar, the search bar when it is up, and the primary menu's
+    /// zoom row when the menu is open. `action` and `key` are read from the running
+    /// application rather than from the words — the action the control is bound to, and
+    /// the key that action is actually installed on — so a test can hold the words to
+    /// the key instead of to another string written beside them.
+    ///
+    /// A control on no action, or on an action with no key, answers empty for both.
+    pub(crate) fn controls(&self, of: &str) -> Option<String> {
+        if of != "controls" {
+            return None;
+        }
+        let application = self.window.application();
+        Some(
+            self.every_control()
+                .iter()
+                .map(|control| {
+                    let action = control
+                        .dynamic_cast_ref::<gtk::Actionable>()
+                        .and_then(gtk::prelude::ActionableExt::action_name)
+                        .unwrap_or_default();
+                    let key = application
+                        .as_ref()
+                        .map(|application| application.accels_for_action(&action))
+                        .and_then(|keys| keys.first().cloned())
+                        .and_then(|key| gtk::accelerator_parse(&key))
+                        .map(|(value, modifiers)| gtk::accelerator_get_label(value, modifiers))
+                        .unwrap_or_default();
+                    format!(
+                        "control {action}\t{key}\t{}\t{}",
+                        hovering_says(control),
+                        crate::chrome::announced(control),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    /// Every control this window is drawing, in the order the reader meets them.
+    ///
+    /// The window itself, and the primary menu's popover while the reader has it open:
+    /// a popover is a window of GTK's own rather than a child of the button that raised
+    /// it, so what is inside the menu is not under the window at all.
+    fn every_control(&self) -> Vec<gtk::Widget> {
+        let mut drawn = Vec::new();
+        controls_drawn(self.window.upcast_ref(), &mut drawn);
+        if let Some(popover) = self
+            .menu
+            .popover()
+            .filter(gtk::prelude::WidgetExt::is_visible)
+        {
+            controls_drawn(popover.upcast_ref(), &mut drawn);
+        }
+        drawn
     }
 
     /// The main menu as the reader meets it: whether it is open, and everything it
@@ -1106,6 +1176,9 @@ impl DocumentWindow {
         self.retrace();
         *self.document.borrow_mut() = Document::untitled();
         self.editor.fill("");
+        // Nothing to list and nothing to list it from, so the sidebar keeps out of the
+        // way of the first line the reader came here to write (issue #32).
+        self.outline.opened(false);
         self.take_over(None, "");
         self.enter(Mode::Edit);
         self.retitle();
@@ -1143,6 +1216,10 @@ impl DocumentWindow {
             return;
         }
 
+        // A document, so the sidebar is no longer being kept back for want of one.
+        // Opening rather than saving: `Ctrl+S` on an untitled page gives it a name, not
+        // a reason to push a sidebar open over the reader who is still writing it.
+        self.outline.opened(true);
         self.take_over(Some(&file), fragment);
         self.enter(Mode::Read);
         self.retitle_as(&file_name(&file), &folder_of(&file));
@@ -2088,31 +2165,39 @@ impl Notice {
 
 /// One of the two history buttons. It is bound to a window action, so GTK makes it
 /// insensitive exactly when there is nowhere that way to go.
-fn step_button(icon: &str, tooltip: &str, action: &str) -> gtk::Button {
-    gtk::Button::builder()
+fn step_button(icon: &str, saying: &str, action: &str) -> gtk::Button {
+    let button = gtk::Button::builder()
         .icon_name(icon)
-        .tooltip_text(tooltip)
         .action_name(action)
-        .build()
+        .build();
+    crate::chrome::name(&button, saying);
+    button
 }
 
 fn open_button() -> gtk::Button {
-    gtk::Button::builder()
+    let button = gtk::Button::builder()
         .icon_name("document-open-symbolic")
-        .tooltip_text("Open a document")
         .action_name("app.open")
-        .build()
+        .build();
+    crate::chrome::name(&button, "Open Document");
+    button
 }
 
 /// The switch for the outline sidebar. A toggle, because it says whether the sidebar
 /// is there as well as putting it there — including when a window too narrow to hold
 /// it is what took it away.
+///
+/// Named for the thing rather than for showing it: a toggle says for itself whether it
+/// is pressed, so a reader looking at an open sidebar would be reading "Show the
+/// outline" over it and a screen reader would be announcing that it is pressed in the
+/// same breath.
 fn outline_button() -> gtk::ToggleButton {
-    gtk::ToggleButton::builder()
+    let button = gtk::ToggleButton::builder()
         .icon_name("view-list-symbolic")
-        .tooltip_text("Show the outline (F9)")
         .action_name(OUTLINE)
-        .build()
+        .build();
+    crate::chrome::name(&button, "Outline");
+    button
 }
 
 /// The switch between reading and editing, in the header bar.
@@ -2146,13 +2231,10 @@ impl ModeSwitch {
     fn show(&self, mode: Mode) {
         let offer = mode.other();
         self.button.set_icon_name(offer.icon());
-        self.button
-            .set_tooltip_text(Some(&format!("{} (Ctrl+E)", offer.invitation())));
-        // The accessible name is the invitation without the shortcut: GTK announces
-        // the accelerator itself, and a screen reader reading "Ctrl plus E" out of the
-        // name would say it twice.
-        self.button
-            .update_property(&[gtk::accessible::Property::Label(offer.invitation())]);
+        // Named the way every control is named — the words, and the key from the
+        // shortcut table (`chrome.rs`) — with the words being the ones this switch is
+        // saying now rather than a fixed name.
+        crate::chrome::name(&self.button, offer.invitation());
     }
 
     /// What the reader — and a screen reader — has in front of them, one line each:
@@ -2161,56 +2243,19 @@ impl ModeSwitch {
     ///
     /// The icon is the one the theme resolved rather than the one that was asked for,
     /// because a name no theme has is a missing-image glyph on screen and a test must
-    /// see what the reader sees. The announced name is read back over the two names
-    /// the switch can carry, which is the whole of what it could be saying.
+    /// see what the reader sees.
     fn shown(&self) -> String {
         let asked = self.button.icon_name().unwrap_or_default();
         let drawn = match gtk::IconTheme::for_display(&self.button.display()).has_icon(&asked) {
             true => asked.to_string(),
             false => "image-missing".to_owned(),
         };
-        let announced = Mode::ALL
-            .into_iter()
-            .map(Mode::invitation)
-            .find(|name| self.announces(name))
-            .unwrap_or_default();
         format!(
-            "icon {drawn}\ntooltip {}\nannounces {announced}\npressed {}",
+            "icon {drawn}\ntooltip {}\nannounces {}\npressed {}",
             self.button.tooltip_text().unwrap_or_default(),
+            crate::chrome::announced(&self.button),
             self.button.is_active(),
         )
-    }
-
-    /// Whether a screen reader would announce the switch as `name`.
-    ///
-    /// Asked rather than read, because GTK has setters for an accessible name and no
-    /// getter: `gtk_test_accessible_check_property` is its own way of asking, and
-    /// answers a null pointer when the property is what was expected and a complaint
-    /// saying what it is instead when it is not (GTK 4.20.4, `gtktestutils.c`). The
-    /// caller tries it with each name the switch could be carrying, so a stale name is
-    /// reported as the *other* mode's rather than as this one's.
-    fn announces(&self, name: &str) -> bool {
-        use gtk::glib::translate::{IntoGlib, ToGlibPtr};
-
-        let expected = std::ffi::CString::new(name).expect("a name with no NUL in it");
-        let accessible: gtk::glib::translate::Stash<'_, *mut gtk::ffi::GtkAccessible, _> =
-            self.button.upcast_ref::<gtk::Accessible>().to_glib_none();
-        // SAFETY: a variadic GTK testing function, given the accessible the stash above
-        // keeps alive, the property's own enumerated value, and the one string argument
-        // `GTK_ACCESSIBLE_PROPERTY_LABEL` takes. The answer is freshly allocated and
-        // freed here.
-        unsafe {
-            let complaint = gtk::ffi::gtk_test_accessible_check_property(
-                accessible.0,
-                gtk::AccessibleProperty::Label.into_glib(),
-                expected.as_ptr(),
-            );
-            if complaint.is_null() {
-                return true;
-            }
-            gtk::glib::ffi::g_free(complaint.cast());
-            false
-        }
     }
 }
 
@@ -2247,32 +2292,40 @@ fn label_showing(widget: &gtk::Widget, text: &str) -> Option<gtk::Label> {
     None
 }
 
-/// Every control drawn anywhere under `widget`, appended to `drawn` as what hovering
-/// it says.
+/// Every control drawn anywhere under `widget`, appended to `drawn`.
 ///
 /// What is *drawn*, which is what the reader can press: a button the window has hidden
 /// is not there, and neither is anything inside it. A control is a button — a menu
 /// button included, and never descended into, because the toggle GTK builds inside one
 /// is not a second control the reader can see.
-///
-/// The window's own close button carries no tooltip, so a control with nothing to say
-/// is named by the icon it is drawn as instead: every control the reader can see
-/// answers to something.
-fn controls_drawn(widget: &gtk::Widget, drawn: &mut Vec<String>) {
-    if !widget.is_visible() {
+fn controls_drawn(widget: &gtk::Widget, drawn: &mut Vec<gtk::Widget>) {
+    // Both, because they are two different ways of not being there: `visible` is what
+    // the window says about a control, and `child-visible` is what its parent says
+    // about it — a page of a `GtkStack` that is not the one on screen stays `visible`,
+    // so the status page's own Open button would otherwise be counted among the
+    // controls of a window that is showing a document.
+    if !widget.is_visible() || !widget.is_child_visible() {
         return;
     }
     if widget.is::<gtk::Button>() || widget.is::<gtk::MenuButton>() {
-        drawn.push(match widget.tooltip_text() {
-            Some(tooltip) => tooltip.to_string(),
-            None => icon_drawn(widget).unwrap_or_default(),
-        });
+        drawn.push(widget.clone());
         return;
     }
     let mut child = widget.first_child();
     while let Some(candidate) = child {
         controls_drawn(&candidate, drawn);
         child = candidate.next_sibling();
+    }
+}
+
+/// What hovering `control` says, and the icon it is drawn as when it says nothing.
+///
+/// The window's own close button carries no tooltip, so a control with nothing to say
+/// is named by the icon instead: every control the reader can see answers to something.
+fn hovering_says(control: &gtk::Widget) -> String {
+    match control.tooltip_text() {
+        Some(tooltip) => tooltip.to_string(),
+        None => icon_drawn(control).unwrap_or_default(),
     }
 }
 
@@ -2413,7 +2466,6 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     // button's popover.
     let button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
-        .tooltip_text("Main menu")
         .menu_model(&menu)
         .primary(true)
         .build();
@@ -2423,6 +2475,9 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     if let Some(popover) = button.popover().and_downcast::<gtk::PopoverMenu>() {
         popover.add_child(zoom.indicator(), ZOOM_SLOT);
     }
+    // No key in brackets: the button fires no action, so `F10` is GTK's rather than
+    // one of ours to name, and this is the name GNOME's own applications give it.
+    crate::chrome::name(&button, "Main Menu");
     button
 }
 
