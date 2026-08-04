@@ -437,6 +437,523 @@ fn the_offline_cargo_sources_are_the_lock_file_this_build_uses() {
 }
 
 // ---------------------------------------------------------------------------
+// The per-user install — the recommended way to run axiomd (issue #25).
+//
+// Every one of these runs `scripts/install.sh --user` against a home directory of the
+// test's own, so the machine running the suite is never installed into and never
+// uninstalled from, and two of them can run at once.
+// ---------------------------------------------------------------------------
+
+/// Exactly what a per-user install leaves in the reader's home: the files installed,
+/// and the three caches the desktop reads *about* them.
+const USER_INSTALL_LAYOUT: [&str; 9] = [
+    ".local/bin/axiomd",
+    ".local/share/applications/io.github.etf.axiomd.desktop",
+    ".local/share/applications/mimeinfo.cache",
+    ".local/share/glib-2.0/schemas/gschemas.compiled",
+    ".local/share/glib-2.0/schemas/io.github.etf.axiomd.gschema.xml",
+    ".local/share/icons/hicolor/icon-theme.cache",
+    ".local/share/icons/hicolor/scalable/apps/io.github.etf.axiomd.svg",
+    ".local/share/icons/hicolor/symbolic/apps/io.github.etf.axiomd-symbolic.svg",
+    ".local/share/metainfo/io.github.etf.axiomd.metainfo.xml",
+];
+
+/// axiomd installed with `--user`, into a home directory of this test's own.
+struct UserInstalled {
+    home: Scratch,
+    said: String,
+}
+
+impl UserInstalled {
+    /// Installs into a home nothing else has touched, with the prefix's `bin` absent
+    /// from the PATH the installer sees — the state a reader installing for the first
+    /// time is usually in.
+    fn new(label: &str) -> UserInstalled {
+        UserInstalled::into_home(Scratch::new(label), false)
+    }
+
+    /// The same, for a reader who already has `~/.local/bin` on their PATH.
+    fn with_bin_on_path(label: &str) -> UserInstalled {
+        UserInstalled::into_home(Scratch::new(label), true)
+    }
+
+    fn into_home(home: Scratch, bin_on_path: bool) -> UserInstalled {
+        let said = UserInstalled::run(
+            &home,
+            &["--user", "--binary", env!("CARGO_BIN_EXE_axiomd")],
+            bin_on_path,
+        );
+        UserInstalled { home, said }
+    }
+
+    /// Takes the install back out, the way the reader who no longer wants it does.
+    fn uninstall(&self) -> String {
+        UserInstalled::run(&self.home, &["--uninstall", "--user"], false)
+    }
+
+    /// Runs the installer against this home and nothing else: the environment is
+    /// cleared, so `--user` can only mean the home it is given, and a machine-wide
+    /// `XDG_DATA_HOME` cannot quietly redirect it.
+    fn run(home: &Scratch, arguments: &[&str], bin_on_path: bool) -> String {
+        let path = std::env::var("PATH").expect("a PATH to find the packaging tools on");
+        let path = match bin_on_path {
+            true => format!("{}:{path}", home.path.join(".local/bin").display()),
+            false => path,
+        };
+
+        let output = Command::new(repository().join("scripts/install.sh"))
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", &home.path)
+            .args(arguments)
+            .output()
+            .unwrap_or_else(|error| panic!("run scripts/install.sh {arguments:?}: {error}"));
+
+        assert!(
+            output.status.success(),
+            "scripts/install.sh {arguments:?} failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        String::from_utf8(output.stdout).expect("the installer prints utf-8")
+    }
+
+    /// Where the installed axiomd runs from.
+    fn prefix(&self) -> PathBuf {
+        self.home.path.join(".local")
+    }
+
+    /// Every file under this home, named as the reader would name it — relative to the
+    /// home, sorted, so the whole of an install is one comparison.
+    fn files(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        collect_files(&self.home.path, &self.home.path, &mut found);
+        found.sort();
+        found
+    }
+
+    /// Everything left under the prefix, directories as well as files: an uninstall
+    /// that leaves a tree of empty directories in the reader's home has not quite taken
+    /// itself back out.
+    fn left_behind(&self) -> Vec<String> {
+        let mut found = Vec::new();
+        collect_entries(&self.prefix(), &self.prefix(), &mut found);
+        found.sort();
+        found
+    }
+
+    /// The keys GLib finds for `schema` when it looks at nothing but this home — the
+    /// question an installed axiomd asks on its first preference read, asked of the
+    /// installed prefix alone. Empty when GLib cannot find the schema at all.
+    ///
+    /// `XDG_DATA_HOME` is the home's own `share`, which is where a `--user` install
+    /// puts things and where GLib looks for schemas (probed with GLib 2.86.5:
+    /// `gsettings list-keys` finds a schema compiled under `XDG_DATA_HOME` with
+    /// `XDG_DATA_DIRS` pointing nowhere). `XDG_DATA_DIRS` points at an empty directory
+    /// so the system's own schemas — which on a developer's machine may well include
+    /// an axiomd — cannot be what answers.
+    fn keys_glib_finds(&self, schema: &str) -> Vec<String> {
+        let nothing = Scratch::new("no-system-schemas");
+        let output = tool("gsettings", "sudo dnf install glib2")
+            .env_clear()
+            .env("PATH", std::env::var("PATH").expect("a PATH"))
+            .env("HOME", &self.home.path)
+            .env("XDG_DATA_HOME", self.prefix().join("share"))
+            .env("XDG_DATA_DIRS", &nothing.path)
+            .args(["list-keys", schema])
+            .output()
+            .expect("run gsettings list-keys");
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let mut keys: Vec<String> = String::from_utf8(output.stdout)
+            .expect("gsettings prints utf-8")
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        keys.sort();
+        keys
+    }
+}
+
+/// Every file under `directory`, relative to `root`.
+fn collect_files(root: &Path, directory: &Path, found: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files(root, &path, found);
+        } else {
+            found.push(named_under(root, &path));
+        }
+    }
+}
+
+/// The same, counting the directories themselves.
+fn collect_entries(root: &Path, directory: &Path, found: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        found.push(named_under(root, &path));
+        if path.is_dir() {
+            collect_entries(root, &path, found);
+        }
+    }
+}
+
+fn named_under(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .expect("a path under the root it was found in")
+        .display()
+        .to_string()
+}
+
+/// axiomd's settings schema, as it is in the repository — the source of both what an
+/// installed prefix has to be able to answer and what it has to answer with.
+fn declared_schema() -> String {
+    std::fs::read_to_string(repository().join(format!("data/{APP_ID}.gschema.xml")))
+        .expect("read axiomd's settings schema")
+}
+
+/// The keys axiomd's schema declares — the list the installed prefix has to be able to
+/// answer with.
+fn keys_the_schema_declares() -> Vec<String> {
+    let schema = declared_schema();
+    let mut keys: Vec<String> = schema
+        .split("<key name=\"")
+        .skip(1)
+        .map(|key| {
+            key.split('"')
+                .next()
+                .expect("a key name in the schema")
+                .to_owned()
+        })
+        .collect();
+    keys.sort();
+    assert!(!keys.is_empty(), "axiomd's schema declares no keys at all");
+    keys
+}
+
+/// What the schema says `key` is before the reader has ever changed it — read from the
+/// schema rather than repeated here, so this is "what the installed settings say" and
+/// not a number that has to be kept in step with them.
+fn the_schema_default_for(key: &str) -> String {
+    let schema = declared_schema();
+    let declaration = schema
+        .split_once(&format!("<key name=\"{key}\""))
+        .unwrap_or_else(|| panic!("axiomd's schema has no {key}"))
+        .1;
+    let default = declaration
+        .split_once("<default>")
+        .expect("a key with no default")
+        .1;
+    default
+        .split_once("</default>")
+        .expect("an unterminated default")
+        .0
+        .trim()
+        .to_owned()
+}
+
+/// Another application's files, already in the home a reader installs axiomd into.
+///
+/// The point of it: the desktop's caches are shared. Compiling schemas, rebuilding the
+/// MIME cache and rebuilding the icon cache are all whole-directory operations, so an
+/// uninstall that reaches for a directory rather than for its own files takes a
+/// stranger's application with it.
+struct Neighbour {
+    files: Vec<String>,
+}
+
+impl Neighbour {
+    const SCHEMA: &'static str = "io.example.neighbour";
+
+    fn plant(home: &Path) -> Neighbour {
+        let applications = home.join(".local/share/applications");
+        let schemas = home.join(".local/share/glib-2.0/schemas");
+        std::fs::create_dir_all(&applications).expect("create the neighbour's applications");
+        std::fs::create_dir_all(&schemas).expect("create the neighbour's schemas");
+
+        std::fs::write(
+            applications.join(format!("{}.desktop", Self::SCHEMA)),
+            "[Desktop Entry]\nType=Application\nName=Neighbour\nExec=neighbour %F\n\
+             Terminal=false\nMimeType=text/x-neighbour;\n",
+        )
+        .expect("write the neighbour's desktop entry");
+        std::fs::write(
+            schemas.join(format!("{}.gschema.xml", Self::SCHEMA)),
+            format!(
+                "<schemalist>\n  <schema id=\"{}\" path=\"/io/example/neighbour/\">\n    \
+                 <key name=\"borrowed-cup\" type=\"b\">\n      <default>true</default>\n    \
+                 </key>\n  </schema>\n</schemalist>\n",
+                Self::SCHEMA,
+            ),
+        )
+        .expect("write the neighbour's schema");
+
+        Neighbour {
+            files: vec![
+                format!(".local/share/applications/{}.desktop", Self::SCHEMA),
+                ".local/share/applications/mimeinfo.cache".to_owned(),
+                ".local/share/glib-2.0/schemas/gschemas.compiled".to_owned(),
+                format!(".local/share/glib-2.0/schemas/{}.gschema.xml", Self::SCHEMA),
+            ],
+        }
+    }
+
+    /// What must still be there when axiomd has been uninstalled: the neighbour's own
+    /// files, and the two caches that have to have been rebuilt around them.
+    fn survivors(&self) -> Vec<String> {
+        let mut files = self.files.clone();
+        files.sort();
+        files
+    }
+}
+
+/// What a per-user install is, in the reader's own home: the binary, the four files the
+/// desktop reads, and the three caches it reads them through — and not one thing
+/// anywhere else.
+#[test]
+fn a_user_install_writes_the_whole_of_an_axiomd_into_the_home_it_is_given() {
+    let installed = UserInstalled::new("layout");
+
+    assert_eq!(
+        installed.files(),
+        USER_INSTALL_LAYOUT,
+        "a per-user install is not the layout the desktop reads",
+    );
+
+    let binary = installed.prefix().join("bin/axiomd");
+    let mode = std::os::unix::fs::PermissionsExt::mode(
+        &std::fs::metadata(&binary)
+            .expect("the installed binary")
+            .permissions(),
+    );
+    assert_eq!(
+        mode & 0o111,
+        0o111,
+        "the installed axiomd is not something the reader can run",
+    );
+}
+
+/// The preference read that aborts an axiomd with no schema, asked of the installed
+/// prefix alone: GLib finds axiomd's schema under the home it was installed into, and
+/// finds every key the application has.
+///
+/// This is the half of "preferences work" that the running application cannot prove on
+/// a developer's machine — a copy built from this tree carries the schema its own build
+/// compiled as a fallback, so it would start happily even from a prefix with none.
+#[test]
+fn the_settings_a_user_install_leaves_are_the_ones_glib_finds_under_that_home() {
+    let installed = UserInstalled::new("schema");
+
+    assert_eq!(
+        installed.keys_glib_finds(APP_ID),
+        keys_the_schema_declares(),
+        "GLib does not find axiomd's settings under a per-user install, \
+         so its first preference read would abort",
+    );
+}
+
+/// The app grid's half: the entry a user install leaves starts the axiomd beside it
+/// however the session's PATH is set — a per-user `bin` is on no PATH by default, and
+/// an entry running a bare `axiomd` would be a launcher that does nothing.
+#[test]
+fn the_entry_a_user_install_leaves_starts_the_axiomd_beside_it() {
+    let installed = UserInstalled::new("entry");
+    let entry = installed
+        .prefix()
+        .join(format!("share/applications/{APP_ID}.desktop"));
+    let text = std::fs::read_to_string(&entry).expect("read the installed desktop entry");
+
+    let exec = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Exec="))
+        .expect("the installed entry has no Exec");
+    let (command, _) = exec.split_once(' ').unwrap_or((exec, ""));
+    assert_eq!(
+        Path::new(command),
+        installed.prefix().join("bin/axiomd"),
+        "the installed entry does not start the installed axiomd",
+    );
+    assert!(
+        Path::new(command).is_file(),
+        "the installed entry starts something that is not there",
+    );
+
+    // Still an entry the desktop will read at all, after the installer has rewritten
+    // it: `desktop-file-validate` is the authority on that, and it is silent when happy.
+    let checked = tool(
+        "desktop-file-validate",
+        "sudo dnf install desktop-file-utils",
+    )
+    .arg(&entry)
+    .output()
+    .expect("run desktop-file-validate");
+    let complaints = format!(
+        "{}{}",
+        String::from_utf8_lossy(&checked.stdout),
+        String::from_utf8_lossy(&checked.stderr),
+    );
+    assert!(
+        checked.status.success() && complaints.is_empty(),
+        "desktop-file-validate is not happy with the installed entry:\n{complaints}",
+    );
+
+    // And an entry with a picture beside it: the name it gives its icon has to be an
+    // icon the install put in the prefix's own theme, or the app grid draws nothing.
+    let icon = text
+        .lines()
+        .find_map(|line| line.strip_prefix("Icon="))
+        .expect("the installed entry names no icon");
+    let drawn = installed
+        .prefix()
+        .join(format!("share/icons/hicolor/scalable/apps/{icon}.svg"));
+    gtk::gdk_pixbuf::Pixbuf::from_file(&drawn).unwrap_or_else(|error| {
+        panic!("the app grid has no icon to draw for the installed entry: {error}")
+    });
+}
+
+/// UT-001 for a per-user install, as far as `docs/TESTING.md` category 2 goes: with
+/// nothing installed but this, the desktop's own answer to "what opens Markdown" is
+/// the axiomd in the reader's home.
+///
+/// Asked of that home alone — never of the session's own configuration, which the
+/// suite must not depend on or change.
+#[test]
+fn the_desktop_opens_markdown_with_the_axiomd_a_user_install_left() {
+    let installed = UserInstalled::new("mime");
+    let elsewhere = Scratch::new("mime-config");
+    let nothing = Scratch::new("no-system-applications");
+
+    let output = tool("xdg-mime", "sudo dnf install xdg-utils")
+        .env_clear()
+        .env("PATH", std::env::var("PATH").expect("a PATH"))
+        .env("HOME", &installed.home.path)
+        .env("XDG_CURRENT_DESKTOP", "GNOME")
+        .env("XDG_CONFIG_HOME", &elsewhere.path)
+        .env("XDG_DATA_HOME", installed.prefix().join("share"))
+        .env("XDG_DATA_DIRS", &nothing.path)
+        .args(["query", "default", "text/markdown"])
+        .output()
+        .expect("run xdg-mime query default");
+
+    let handler = String::from_utf8(output.stdout).expect("xdg-mime prints utf-8");
+    assert_eq!(
+        handler.trim(),
+        format!("{APP_ID}.desktop"),
+        "the desktop does not offer a per-user install for Markdown",
+    );
+}
+
+/// The reader who runs `axiomd` in a terminal is told what to add, and the reader who
+/// does not need to be told is not told anything.
+#[test]
+fn a_user_install_says_how_to_reach_axiomd_from_a_terminal_only_when_it_cannot_be() {
+    let hinted = UserInstalled::new("path-hint");
+    assert!(
+        hinted
+            .said
+            .contains("export PATH=\"$HOME/.local/bin:$PATH\""),
+        "an install into a prefix that is on no PATH did not say how to reach it:\n{}",
+        hinted.said,
+    );
+
+    let quiet = UserInstalled::with_bin_on_path("path-quiet");
+    assert!(
+        !quiet.said.contains("PATH"),
+        "an install into a prefix already on the PATH talked about the PATH anyway:\n{}",
+        quiet.said,
+    );
+}
+
+/// Uninstalling is the install undone: the home it was installed into is as empty as
+/// it was before, caches and all.
+#[test]
+fn uninstalling_a_user_install_leaves_nothing_behind() {
+    let installed = UserInstalled::new("uninstall");
+    assert_eq!(installed.files(), USER_INSTALL_LAYOUT);
+
+    installed.uninstall();
+
+    assert_eq!(
+        installed.left_behind(),
+        Vec::<String>::new(),
+        "uninstalling a per-user install left something behind",
+    );
+}
+
+/// And it is *only* the install undone. The desktop's caches are shared, so the
+/// dangerous way to write an uninstall is to reach for the directories rather than for
+/// the files: this is the test that says a stranger's application is still installed,
+/// still compiled and still the handler for its own documents afterwards.
+#[test]
+fn uninstalling_a_user_install_leaves_another_application_in_that_home_working() {
+    let home = Scratch::new("uninstall-neighbour");
+    let neighbour = Neighbour::plant(&home.path);
+    let installed = UserInstalled::into_home(home, false);
+
+    installed.uninstall();
+
+    assert_eq!(
+        installed.files(),
+        neighbour.survivors(),
+        "uninstalling axiomd did not leave the neighbouring application's home alone",
+    );
+    assert_eq!(
+        installed.keys_glib_finds(Neighbour::SCHEMA),
+        vec!["borrowed-cup".to_owned()],
+        "uninstalling axiomd took the neighbour's settings out of the compiled schemas",
+    );
+    assert_eq!(
+        installed.keys_glib_finds(APP_ID),
+        Vec::<String>::new(),
+        "axiomd's settings are still compiled into a home it was uninstalled from",
+    );
+}
+
+/// The probe issue #25 asks for, in place of somebody installing axiomd and looking at
+/// it: the copy a per-user install leaves is started from where it was installed, with
+/// the prefix leading the data directories the desktop reads, and it opens a document
+/// and offers the reader their preferences.
+#[test]
+fn the_axiomd_a_user_install_leaves_reads_a_document_and_offers_its_preferences() {
+    let installed = UserInstalled::new("launch");
+    let fixture = Fixture::new("user-install");
+    let document = fixture.write("notes.md", "# Installed\n\nA paragraph.\n");
+
+    let app = axiomd_e2e::launch_installed(&installed.prefix(), &document);
+
+    assert_eq!(
+        app.dom_text("h1"),
+        "Installed",
+        "the installed axiomd did not render the document it was opened with",
+    );
+
+    app.activate("app.preferences");
+    assert_eq!(
+        app.visible_dialog(),
+        "Preferences",
+        "the installed axiomd has no preferences to show",
+    );
+    assert_eq!(
+        app.preference("Reading Width"),
+        the_schema_default_for("reading-width"),
+        "the installed axiomd is not reading its settings out of the schema it installed",
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the installed axiomd left something running",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The installed flatpak — probes, run by scripts/quality.d/40-flatpak.sh.
 // ---------------------------------------------------------------------------
 

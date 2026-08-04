@@ -511,6 +511,28 @@ pub fn launch_installed_flatpak(document: &Path) -> App {
     app
 }
 
+/// Starts the axiomd **installed into `prefix`** by `scripts/install.sh` showing
+/// `document` — the copy a reader who ran `install.sh --user` has, run from where it
+/// was installed (issue #25).
+///
+/// The prefix's `share` leads `XDG_DATA_DIRS`, which is what a per-user install relies
+/// on for everything the desktop reads about an application: its compiled settings
+/// schema, its icons, its desktop entry. So what a rendered document proves here is
+/// that the *installed prefix* is a complete axiomd — not that the build tree beside
+/// this test is.
+///
+/// Panics with what to build if there is no binary in the prefix.
+pub fn launch_installed(prefix: &Path, document: &Path) -> App {
+    let app = App::start_under(
+        Under::Installed(prefix.to_path_buf()),
+        Some(document),
+        None,
+        None,
+    );
+    app.wait_for_a_rendered_document();
+    app
+}
+
 /// Starts axiomd with nothing open — a bare launch, which is a new untitled document
 /// in edit mode (`ux_decisions.md`).
 ///
@@ -579,6 +601,30 @@ impl App {
                         .into_iter()
                         .map(|(name, value)| (name.to_owned(), value))
                         .chain(control_variable),
+                );
+                command
+            }
+            Under::Installed(ref prefix) => {
+                let mut command = Command::new(installed_binary(prefix));
+                environment.apply(
+                    &mut command,
+                    display
+                        .wayland()
+                        .into_iter()
+                        .map(|(name, value)| (name.to_owned(), value))
+                        .chain(control_variable)
+                        // What a per-user install is: a prefix the desktop reads
+                        // alongside the system's, and ahead of it. The system's stays
+                        // on the list because a login session has it — an application
+                        // started from an installed prefix still draws its window with
+                        // the desktop's own icon theme.
+                        .chain([(
+                            "XDG_DATA_DIRS".to_owned(),
+                            PathBuf::from(format!(
+                                "{}:/usr/local/share:/usr/share",
+                                prefix.join("share").display(),
+                            )),
+                        )]),
                 );
                 command
             }
@@ -1609,10 +1655,12 @@ fn line_of(answer: &str, named: &str) -> String {
 }
 
 /// Which axiomd a launch drives.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Under {
     /// The binary built beside the test running it — every launch but one.
     BesideThisTest,
+    /// The copy `scripts/install.sh` installed into a prefix.
+    Installed(PathBuf),
     /// The flatpak installed on this machine, in its own sandbox.
     InstalledFlatpak,
 }
@@ -1621,9 +1669,25 @@ impl std::fmt::Display for Under {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Under::BesideThisTest => write!(out, "{}", binary().display()),
+            Under::Installed(prefix) => {
+                write!(out, "the axiomd installed in {}", prefix.display())
+            }
             Under::InstalledFlatpak => write!(out, "the installed flatpak {APP_ID}"),
         }
     }
+}
+
+/// The binary of an installed prefix, insisted on rather than left to fail as a
+/// puzzling "no such file" from the spawn.
+fn installed_binary(prefix: &Path) -> PathBuf {
+    let binary = prefix.join("bin/axiomd");
+    assert!(
+        binary.is_file(),
+        "there is no axiomd installed in {}, so there is none to drive.\n  \
+         Install one with: cargo build --release && scripts/install.sh --user",
+        prefix.display(),
+    );
+    binary
 }
 
 /// `flatpak run`, with the directories the probe needs to be able to see into it and

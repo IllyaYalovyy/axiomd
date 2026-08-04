@@ -27,29 +27,64 @@ Build prerequisites (Fedora): `gtk4-devel`, `libadwaita-devel`,
 `webkitgtk6.0-devel`, `glib2-devel` (for `glib-compile-schemas`).
 
 Preferences are GSettings-backed: `data/io.github.etf.axiomd.gschema.xml`
-must be installed into the system's schema directory (and
-`glib-compile-schemas` run over it) when axiomd is packaged. A copy built
-but not installed — `cargo run`, the test suite — uses the schema its own
-build compiled, so nothing has to be installed to develop or test.
+must be installed into a schema directory the desktop reads — the
+system's, or `~/.local/share/glib-2.0/schemas` for a per-user install —
+and `glib-compile-schemas` run over it. `scripts/install.sh` does both. A
+copy built but not installed — `cargo run`, the test suite — uses the
+schema its own build compiled, so nothing has to be installed to develop
+or test.
 
 ## Installing
 
-axiomd is built by cargo and installed by one script — there is no meson
-layer (RFC-001 Q1). `cargo install` alone is not enough: it places the
-binary and none of the files the desktop reads, including the compiled
-settings schema, without which the first preference read aborts.
+Native is the recommended way to run axiomd (`design_decisions.md`, owner
+ruling 2026-08-03): no sandbox, no portal, the reader's own files opened
+directly. axiomd is built by cargo and installed by one script — there is
+no meson layer (RFC-001 Q1). `cargo install` alone is not enough: it
+places the binary and none of the files the desktop reads, including the
+compiled settings schema, without which the first preference read aborts.
+
+### For yourself, without root (recommended)
+
+```bash
+cargo build --release
+scripts/install.sh --user               # into ~/.local
+```
+
+That is the whole of it: the binary lands in `~/.local/bin`, the desktop
+entry, icons, AppStream data and compiled settings schema in
+`~/.local/share`, and the desktop reads all of them from there — axiomd
+appears in the app grid and opens `.md` files from Files. The entry starts
+the binary by its full path, so it works whether or not `~/.local/bin` is
+on your `PATH`; the installer says how to add it if you also want to type
+`axiomd` in a terminal.
+
+To take it back out again — exactly the files it wrote, and the desktop's
+caches rebuilt around whatever else lives in those directories:
+
+```bash
+scripts/install.sh --uninstall --user
+```
+
+### System-wide
 
 ```bash
 cargo build --release
 sudo scripts/install.sh                 # --prefix /usr/local by default
+sudo scripts/install.sh --uninstall     # and back out again
 ```
 
-`scripts/install.sh --help` lists the options (`--prefix`, `--destdir`,
-`--binary`) a packager needs.
+`scripts/install.sh --help` lists the options (`--user`, `--prefix`,
+`--destdir`, `--binary`, `--uninstall`) a packager needs.
 
-### Flatpak
+### Flatpak (secondary)
 
-The packaged form. It needs `flatpak-builder` and, once,
+Supported and maintained, but second in recommendation order: the sandbox
+costs integration axiomd would rather have — the open defects are #22–#24
+— and an overhead against native that is being measured and worked down
+(#36). Prefer the native install above unless you specifically want the
+packaged form.
+
+It needs `flatpak-builder` and, once,
 
 ```bash
 flatpak install --user flathub org.gnome.Platform//49 org.gnome.Sdk//49 \
@@ -123,6 +158,7 @@ without an explicit decision to change direction.
 ├── scripts/
 │   ├── quality.sh               # The quality gate (one command)
 │   ├── install.sh               # Installs a built axiomd into a prefix
+│                                #   (--user, system-wide, or --uninstall)
 │   ├── install-agent-files.sh   # agent/ → gitignored .claude/ + .ktask/
 │   └── install-git-hooks.sh     # Pre-commit AI-file guard
 └── .github/                     # Issue templates
