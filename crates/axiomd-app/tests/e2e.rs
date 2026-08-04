@@ -67,6 +67,53 @@ fn opening_a_file_shows_the_document_it_holds() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// Issue #22: a document axiomd was launched to open is a document, whatever the path
+/// leading to it looks like.
+///
+/// The path the desktop hands a packaged axiomd is not a path anybody chose. A document
+/// opened from Files arrives through the document portal as
+/// `/run/user/<uid>/doc/<id>/<name>` — a directory named by a hex id, on a filesystem
+/// of its own — and a reader who renames a document loses the extension with it. The
+/// shape of that path must never decide how the document is shown: it is rendered in
+/// read mode, exactly as one in the reader's own folder is.
+///
+/// The name with no extension at all is the strongest form of the question, so it is
+/// the one asked here. Nothing about it loosens what axiomd *registers* for or what a
+/// link inside a document may reach (`ux_decisions.md`: Markdown files only) — those
+/// are asked of names the reader did not hand the application on purpose.
+#[test]
+fn a_document_opened_under_a_portal_shaped_path_is_rendered_and_not_shown_as_source() {
+    let fixture = Fixture::new("portal-shape");
+    let app = axiomd_e2e::launch(&fixture.write("doc/6a6290b7/article", NOTES));
+
+    assert_eq!(app.mode(), "read", "the document did not open in read mode");
+    assert!(
+        app.showing_document(),
+        "the window is not showing a rendered document",
+    );
+    assert_eq!(app.dom_text("h1"), "Release Notes");
+    assert_eq!(app.dom_text("h2"), "Details");
+    assert_eq!(app.dom_text("em"), "emphasis");
+    assert!(
+        !app.dom("document.body.textContent").contains('#'),
+        "the document is showing its own Markdown source",
+    );
+    // The two halves the defect report saw disagree: the sidebar had the document's
+    // headings while the page had its source. They are one render, and this is what
+    // says so.
+    assert_eq!(
+        app.outline()
+            .rows
+            .iter()
+            .map(|row| row.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Release Notes", "Details"],
+        "the outline and the page are not the same document",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// Source spans are what outline navigation, scroll sync, search and live reload all
 /// map through. They have to survive the trip into the view, not just the renderer.
 #[test]

@@ -86,7 +86,7 @@ use axiomd_render::{Rendered, Request};
 use gtk::gio;
 use gtk::glib;
 
-use crate::document::{FileId, Renderer};
+use crate::document::{FileId, Renderer, as_a_markdown_name};
 use crate::editor::Editor;
 use crate::find::{Find, Searchable};
 use crate::links::Follow;
@@ -1712,7 +1712,7 @@ impl DocumentWindow {
         let dialog = gtk::FileDialog::builder()
             .title("Save Document")
             .modal(true)
-            .initial_name(with_a_markdown_name(&self.document.borrow().name()))
+            .initial_name(as_a_markdown_name(&self.document.borrow().name()))
             .build();
 
         let window = Rc::downgrade(self);
@@ -2062,16 +2062,6 @@ fn placed(widget: &gtk::Widget, window: &adw::ApplicationWindow) -> String {
 /// An action's bare name, as a window registers it, from the full one a widget uses.
 fn bare(action: &str) -> &str {
     action.strip_prefix("win.").unwrap_or(action)
-}
-
-/// What the Save As dialog offers as a name. An untitled document is offered a
-/// Markdown one, because that is the only kind axiomd writes.
-fn with_a_markdown_name(name: &str) -> String {
-    if Path::new(name).extension().is_some() {
-        name.to_owned()
-    } else {
-        format!("{name}.md")
-    }
 }
 
 fn file_name(file: &Path) -> String {
@@ -2586,9 +2576,9 @@ mod tests {
     /// extension to keep, and one that has been saved before keeps its own.
     #[test]
     fn save_as_offers_a_markdown_name_for_a_document_that_has_none() {
-        assert_eq!(with_a_markdown_name("Untitled"), "Untitled.md");
-        assert_eq!(with_a_markdown_name("notes.md"), "notes.md");
-        assert_eq!(with_a_markdown_name("README.markdown"), "README.markdown");
+        assert_eq!(as_a_markdown_name("Untitled"), "Untitled.md");
+        assert_eq!(as_a_markdown_name("notes.md"), "notes.md");
+        assert_eq!(as_a_markdown_name("README.markdown"), "README.markdown");
     }
 
     /// Pressing a box rewrites one character, and only when that character is still

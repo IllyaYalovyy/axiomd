@@ -1313,6 +1313,73 @@ fn the_installed_flatpak_renders_a_document_and_fetches_nothing_until_asked() {
     );
 }
 
+/// The defect issue #22 reports: a document double-clicked in Files reaches a packaged
+/// axiomd through the document portal, and it has to *render* — not be shown as its own
+/// source.
+///
+/// Nothing about the route is faked. `--file-forwarding` is the flag the exported
+/// desktop entry carries, so flatpak exports the document to the portal itself and the
+/// application is launched with the fuse path it answers with; the sandbox is shown no
+/// folder the document is in, because a package with no filesystem permission has none.
+/// What is asserted is what the reader sees: rendered elements, and not one character of
+/// Markdown syntax left in the page.
+///
+/// Two names, because the portal keeps the one the reader's file has (probed on flatpak
+/// 1.16.2: forwarding `article.medium.md` arrives as
+/// `/run/user/1000/doc/78e9eb22/article.medium.md`). The everyday name is the reported
+/// case; the name with no extension at all is the one that would catch a build deciding
+/// how to show a document from the shape of its path, which is what the report suspected.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_renders_a_document_opened_through_the_document_portal() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-portal");
+    for name in ["article.medium.md", "article"] {
+        let document = fixture.write(
+            name,
+            "# Through the portal\n\n## A section\n\nA paragraph with **bold**.\n",
+        );
+
+        let app = axiomd_e2e::launch_installed_flatpak_from_the_desktop(&document);
+
+        assert_eq!(
+            app.window_title(),
+            name,
+            "the portal did not hand the sandbox the document the reader chose",
+        );
+        assert_eq!(
+            app.mode(),
+            "read",
+            "{name} opened through the portal did not open in read mode",
+        );
+        assert_eq!(
+            app.dom_text("h1"),
+            "Through the portal",
+            "{name} opened through the portal was not rendered",
+        );
+        assert_eq!(
+            app.dom_text("h2"),
+            "A section",
+            "{name} opened through the portal was not rendered",
+        );
+        assert_eq!(
+            app.dom("document.querySelectorAll('strong').length"),
+            "1",
+            "{name} opened through the portal was not rendered",
+        );
+        assert!(
+            !app.dom("document.body.textContent").contains('#'),
+            "{name} opened through the portal is showing its own Markdown source",
+        );
+
+        assert!(
+            app.close().is_empty(),
+            "the sandboxed launch left something running",
+        );
+    }
+}
+
 /// UT-001 for the packaged application, as far as the boundary in `docs/TESTING.md`
 /// category 2 goes: with the flatpak installed, the desktop's own answer to "what
 /// opens Markdown" is axiomd.

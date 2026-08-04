@@ -338,6 +338,21 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
     app
 }
 
+/// What the Open dialog shows: the documents axiomd opens, and nothing else.
+///
+/// Its globs come from the one rule that says what those are
+/// (`document::MARKDOWN_EXTENSIONS`), so the dialog cannot come to offer a different
+/// set of files from the one the application will open (issue #22).
+fn markdown_filter() -> gtk::FileFilter {
+    let markdown = gtk::FileFilter::new();
+    markdown.set_name(Some("Markdown Documents"));
+    markdown.add_mime_type("text/markdown");
+    for extension in crate::document::MARKDOWN_EXTENSIONS {
+        markdown.add_pattern(&format!("*.{extension}"));
+    }
+    markdown
+}
+
 /// Adds an application action that acts on the running application.
 fn add_action(app: &adw::Application, name: &str, activate: impl Fn(&adw::Application) + 'static) {
     let action = gio::SimpleAction::new(name, None);
@@ -355,11 +370,7 @@ fn add_action(app: &adw::Application, name: &str, activate: impl Fn(&adw::Applic
 /// The chooser is a dialog the user asked for, which is the only kind this app has;
 /// the document it produces then opens without any further question.
 fn ask_for_a_document(shell: &Rc<Shell>, app: &adw::Application) {
-    let markdown = gtk::FileFilter::new();
-    markdown.set_name(Some("Markdown Documents"));
-    markdown.add_mime_type("text/markdown");
-    markdown.add_pattern("*.md");
-    markdown.add_pattern("*.markdown");
+    let markdown = markdown_filter();
 
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&markdown);

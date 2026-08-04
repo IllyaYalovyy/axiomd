@@ -84,7 +84,7 @@ pub(crate) fn follow(here: &str, root: Option<&Path>, target: &str, activated: b
         let Some(file) = decode(relative).and_then(|relative| path_under(root, &relative)) else {
             return Follow::Refuse;
         };
-        return if is_markdown(&file) {
+        return if crate::document::is_a_markdown_file(&file) {
             Follow::Document {
                 file,
                 fragment: fragment.map(str::to_owned),
@@ -99,16 +99,6 @@ pub(crate) fn follow(here: &str, root: Option<&Path>, target: &str, activated: b
         };
     }
     Follow::Refuse
-}
-
-/// The extensions axiomd claims (`ux_decisions.md`: Markdown files only). Anything
-/// else beside the document belongs to whatever the desktop opens it with.
-fn is_markdown(file: &Path) -> bool {
-    file.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
-        })
 }
 
 /// The schemes a link may hand to the desktop.

@@ -185,7 +185,7 @@ fn beside(root: Option<&Path>) -> axiomd_render::Folder {
             let path = format!("{prefix}{name}");
             if kind.is_dir() && depth + 1 < REACH {
                 folders.push((entry.path(), format!("{path}/"), depth + 1));
-            } else if kind.is_file() && is_markdown(&name) {
+            } else if kind.is_file() && is_a_markdown_file(&name) {
                 documents.push(path);
                 if documents.len() >= MOST_DOCUMENTS {
                     return axiomd_render::Folder::holding(documents);
@@ -196,15 +196,43 @@ fn beside(root: Option<&Path>) -> axiomd_render::Folder {
     axiomd_render::Folder::holding(documents)
 }
 
-/// The extensions axiomd claims (`ux_decisions.md`: Markdown files only), which is
-/// also the whole of what a wikilink can name.
-fn is_markdown(name: &str) -> bool {
-    Path::new(name)
+/// The extensions axiomd claims (`ux_decisions.md`: Markdown files only), in the order
+/// it prefers them: the first is the one a document with no name of its own is given.
+///
+/// This is the decision itself, and everything derived from it is derived here.
+pub(crate) const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+
+/// Whether `file` is a document axiomd reads — asked of a bare name or of a whole
+/// path, and answered the same way for both.
+///
+/// The one place the question is decided (issue #22). It was decided in two places
+/// that happened to agree, which is a coincidence and not a design: the folder a
+/// wikilink resolves against and the link the reader clicks are the same question about
+/// the same file, and an app that answers them differently shows an outline of a
+/// document it will not open.
+///
+/// It is a question about the *name*, so it says nothing about what is on disk, and
+/// nothing about the shape of the path leading to it: a document reached through the
+/// desktop's file portal lives under `/run/user/<uid>/doc/<id>/`, on a filesystem of
+/// its own, and is exactly as much a document as one in the reader's home.
+pub(crate) fn is_a_markdown_file(file: impl AsRef<Path>) -> bool {
+    file.as_ref()
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
+            MARKDOWN_EXTENSIONS
+                .iter()
+                .any(|claimed| extension.eq_ignore_ascii_case(claimed))
         })
+}
+
+/// `name` with a Markdown extension on it, for a document that carries none — what
+/// Save As offers a document that has never had a name.
+pub(crate) fn as_a_markdown_name(name: &str) -> String {
+    match Path::new(name).extension() {
+        Some(_) => name.to_owned(),
+        None => format!("{name}.{}", MARKDOWN_EXTENSIONS[0]),
+    }
 }
 
 /// The same document as one file that carries everything it needs — the export path's
@@ -380,6 +408,45 @@ mod tests {
         let html = shown[0].0.html();
         assert!(html.contains("Wanted"), "{html}");
         assert!(!html.contains("Stale"), "{html}");
+    }
+
+    /// The rule the whole application asks, over the names it is asked about — a
+    /// document the reader has, one written under either extension, one shouted, and
+    /// the things beside a document that are not documents.
+    ///
+    /// It answers about a name, so a path of any shape carrying that name gets the same
+    /// answer: the document portal's `/run/user/1000/doc/<id>/notes.md` is a document,
+    /// and the `<id>` directory above it — which is a name with no extension at all,
+    /// and the shape issue #22 suspected of demoting documents — is not one.
+    #[test]
+    fn what_axiomd_reads_is_decided_by_the_name_and_never_by_the_path() {
+        for name in [
+            "notes.md",
+            "README.markdown",
+            "NOTES.MD",
+            "Guide.Markdown",
+            "/home/reader/documents/notes.md",
+            "/run/user/1000/doc/6a6290b7/article.medium.md",
+            "./sub/../notes.md",
+        ] {
+            assert!(
+                is_a_markdown_file(name),
+                "{name} is a document axiomd reads"
+            );
+        }
+        for name in [
+            "notes.txt",
+            "diagram.png",
+            "notes",
+            "notes.mdx",
+            "/run/user/1000/doc/6a6290b7",
+            ".md",
+        ] {
+            assert!(
+                !is_a_markdown_file(name),
+                "{name} is not a document axiomd reads",
+            );
+        }
     }
 
     /// Windows are deduplicated by this identity, so spelling must not matter.
