@@ -61,12 +61,15 @@ blocker for core quality.
 
 ## How is axiomd distributed?
 
-Native installation is PRIMARY (owner ruling, 2026-08-03): flatpak has
-too many integration issues for daily use. `scripts/install.sh` supports
-system-wide (sudo) and per-user (`--user`, no root, `~/.local`) installs
-with full desktop integration and no sandbox (issue #25). The flatpak
-remains as a secondary, optional form; its portal-related defects
-(#22–#24) are tracked but never block native work.
+Both forms are supported; native leads (owner ruling, 2026-08-03,
+refined): `scripts/install.sh` supports system-wide (sudo) and per-user
+(`--user`, no root, `~/.local`) installs with full desktop integration
+and no sandbox (issue #25) — this is the owner's daily driver and the
+recommended path. The flatpak is a first-class supported distribution for
+users who want it: its defects are fixed (#22–#24), its probes stay in
+the quality gate, and its performance overhead vs native is measured and
+worked down (#36) — it is secondary in recommendation order, never
+unmaintained. Flathub submission remains out of scope for now.
 
 ## What is the network policy?
 
