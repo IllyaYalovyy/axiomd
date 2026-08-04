@@ -348,6 +348,13 @@ impl Session {
                 self.target(shell)?.window().set_default_size(width, height);
                 Ok(String::new())
             }
+            // Maximizing it, as double-clicking its header bar does. The compositor
+            // decides when and how big, exactly as it does for the reader, so what
+            // follows is waited for rather than assumed.
+            "maximize" => {
+                self.target(shell)?.window().maximize();
+                Ok(String::new())
+            }
             "window" => self.property(payload, shell),
             // The two halves of driving the preferences dialog: reading a row, and
             // turning it. Turning it sets the very property the reader's click sets,
@@ -440,6 +447,11 @@ impl Session {
         if let Some(answer) = window.menu(name) {
             return Ok(answer);
         }
+        // The header bar at the width the window happens to be: the title, whether its
+        // end is cut off, and the controls still drawn beside it.
+        if let Some(answer) = window.header_bar(name) {
+            return Ok(answer);
+        }
         // And the two dialogs that say what the application is and what its keys do,
         // each empty while the window is not showing it.
         if let Some(answer) = crate::chrome::showing(window.window(), name) {
@@ -450,6 +462,9 @@ impl Session {
             // how a test settles what belongs over the document and what belongs over
             // the whole window.
             "geometry" => Ok(window.geometry()),
+            // Whether the window is filling the screen — the other half of how big it
+            // is, and the half that outlives it (issue #30).
+            "maximized" => Ok(window.window().is_maximized().to_string()),
             "title" => Ok(window.window().title().unwrap_or_default().to_string()),
             "uri" => Ok(window.webview().uri().unwrap_or_default().to_string()),
             "navigations" => Ok(window.navigations().to_string()),

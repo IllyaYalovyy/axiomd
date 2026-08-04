@@ -2,9 +2,10 @@
 //!
 //! One module owns the whole sidebar: the split view the document sits in, the list of
 //! headings, the empty state for a document that has none, the action `F9` and the
-//! header-bar button share, and the breakpoint that stops a narrow window from being
-//! all sidebar. What the window has to know is four calls — here is the document's
-//! outline, the reader is here, tell me when they pick a section, show or hide it.
+//! header-bar button share, and what a window too narrow to hold both means for it,
+//! which is the whole of what stops such a window from being all sidebar. What the
+//! window has to know is four calls — here is the document's outline, the reader is
+//! here, tell me when they pick a section, show or hide it.
 //!
 //! # Nothing here re-reads the document
 //!
@@ -54,11 +55,6 @@ use gtk::gio;
 use gtk::glib;
 
 use crate::settings::Settings;
-
-/// How narrow a window has to get before the outline stops sitting beside the document
-/// and starts overlaying it — the point at which a 900px window's document would be
-/// squeezed into less than a comfortable measure.
-const TOO_NARROW: f64 = 600.0;
 
 /// The narrowest and widest the reader may drag the outline, in pixels: narrower and a
 /// heading is unreadable, wider and it is a pane rather than an index.
@@ -129,6 +125,7 @@ impl Outline {
         content: &impl IsA<gtk::Widget>,
         action: &str,
         settings: &Rc<Settings>,
+        narrow: &adw::Breakpoint,
     ) -> Rc<Self> {
         let entries = gio::ListStore::new::<Entry>();
         // Nothing is selected until the reader is somewhere: a document open at its
@@ -203,15 +200,11 @@ impl Outline {
 
         // A window too narrow to hold both stops holding both: the outline overlays
         // the document rather than squeezing it, and starts out of the way. Both
-        // settings are undone when the window is given room again.
-        let breakpoint = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
-            adw::BreakpointConditionLengthType::MaxWidth,
-            TOO_NARROW,
-            adw::LengthUnit::Px,
-        ));
-        breakpoint.add_setter(&split, "collapsed", Some(&true.to_value()));
-        breakpoint.add_setter(&split, "show-sidebar", Some(&false.to_value()));
-        window.add_breakpoint(breakpoint);
+        // settings are undone when the window is given room again. What counts as too
+        // narrow is the window's to say (`window.rs`), because the header bar answers
+        // the same condition.
+        narrow.add_setter(&split, "collapsed", Some(&true.to_value()));
+        narrow.add_setter(&split, "show-sidebar", Some(&false.to_value()));
 
         // The sidebar's own visibility *is* the action's state, in both directions, so
         // the button can never say "open" while the sidebar is shut — including when

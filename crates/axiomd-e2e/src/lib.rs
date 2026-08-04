@@ -141,6 +141,31 @@ pub struct ModeSwitch {
     pub pressed: bool,
 }
 
+/// The header bar as the reader meets it at the width the window happens to be.
+///
+/// One question rather than three, because the three are only meaningful together: a
+/// header is readable exactly when the title it is showing fits in the room the
+/// controls beside it leave (issue #30).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header {
+    /// The name the title is saying — the document's, with a bullet in front of it
+    /// while there is work in it that is not on disk.
+    pub title: String,
+    /// Whether the reader is reading the whole of that name or an ellipsis where its
+    /// end should be.
+    pub cut: bool,
+    /// Every control drawn in the strip, in the order the header bar holds them, by
+    /// what hovering it says — which is the only name a symbolic icon has.
+    pub controls: Vec<String>,
+}
+
+impl Header {
+    /// Whether the reader can press something the header says `wanted`.
+    pub fn offers(&self, wanted: &str) -> bool {
+        self.controls.iter().any(|control| control == wanted)
+    }
+}
+
 /// The main menu as the reader meets it.
 ///
 /// One question rather than two, because a menu offering something nobody can open is
@@ -153,6 +178,9 @@ pub struct Menu {
     /// fires — a submenu by its own words and an empty action. The zoom row is a
     /// widget rather than an item and is not among them.
     pub items: Vec<(String, String)>,
+    /// What the zoom row in the menu says the document is scaled to, or an empty
+    /// string when the menu is not showing that row at all.
+    pub zoom: String,
 }
 
 impl Menu {
@@ -217,6 +245,9 @@ impl Bounds {
 pub struct Layout {
     /// The window itself — what everything else has to fit inside.
     pub window: Bounds,
+    /// The header bar. As wide as the window once it fits in it, and wider than the
+    /// window when it does not — which is the reader losing its ends off the edge.
+    pub header: Bounds,
     /// The outline sidebar, or all zeroes when the window is not showing one.
     pub sidebar: Bounds,
     /// The surface the document itself is on — the rendered page or the source.
@@ -885,6 +916,22 @@ impl App {
                     None => (item.to_owned(), String::new()),
                 })
                 .collect(),
+            zoom: line_of(&shown, "zoom"),
+        }
+    }
+
+    /// The header bar of the addressed window as the reader meets it: the title,
+    /// whether its end is cut off, and the controls drawn beside it.
+    pub fn header(&self) -> Header {
+        let shown = self.property("header");
+        Header {
+            title: line_of(&shown, "title"),
+            cut: shown.lines().any(|line| line == "cut true"),
+            controls: shown
+                .lines()
+                .filter_map(|line| line.strip_prefix("control "))
+                .map(str::to_owned)
+                .collect(),
         }
     }
 
@@ -1018,6 +1065,7 @@ impl App {
         };
         Layout {
             window: part("window"),
+            header: part("header"),
             sidebar: part("sidebar"),
             document: part("document"),
             search: part("search"),
@@ -1098,6 +1146,26 @@ impl App {
     /// Resizes the addressed window, as dragging its edge or tiling it does.
     pub fn resize(&self, width: i32, height: i32) {
         self.command("resize", &format!("{width}x{height}"));
+    }
+
+    /// Maximizes the addressed window, as double-clicking its header bar does.
+    ///
+    /// The compositor answers a maximize when it is ready to, so what follows is
+    /// waited for rather than assumed — [`App::is_maximized`] is the answer.
+    pub fn maximize(&self) {
+        self.command("maximize", "");
+    }
+
+    /// Whether the addressed window is filling the screen.
+    pub fn is_maximized(&self) -> bool {
+        self.property("maximized") == "true"
+    }
+
+    /// Waits until the addressed window is maximized, or is no longer.
+    pub fn wait_until_maximized(&self, wanted: bool) {
+        self.settle(&format!("the window to be maximized: {wanted}"), || {
+            Ok((self.try_command("window", "maximized")? == "true") == wanted)
+        });
     }
 
     /// What the addressed window's inline banner says, or an empty string when no
@@ -1338,6 +1406,16 @@ impl Drop for App {
         self.control.borrow_mut().hang_up();
         self.wait_for_exit();
     }
+}
+
+/// What `answer` says after the word `named` — the shape every answer made of several
+/// things uses. An empty string when it says nothing about that.
+fn line_of(answer: &str, named: &str) -> String {
+    answer
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{named} ")))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Which axiomd a launch drives.

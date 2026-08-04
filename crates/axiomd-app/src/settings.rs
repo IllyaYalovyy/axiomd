@@ -54,6 +54,12 @@ pub(crate) enum Key {
     Outline,
     /// How wide they are listed, in pixels. Window state, not a preference.
     SidebarWidth,
+    /// How wide a window opens, in pixels. Window state.
+    WindowWidth,
+    /// How tall it opens. Window state.
+    WindowHeight,
+    /// Whether it opens filling the screen. Window state.
+    WindowMaximized,
     /// Whether edits are written back without being asked for.
     Autosave,
     /// How long after the last edit that happens, in seconds.
@@ -72,12 +78,15 @@ impl Key {
         not(test),
         allow(dead_code, reason = "the completeness tests are its only reader")
     )]
-    const ALL: [Key; 10] = [
+    const ALL: [Key; 13] = [
         Key::Theme,
         Key::ReadingWidthLimited,
         Key::ReadingWidth,
         Key::Outline,
         Key::SidebarWidth,
+        Key::WindowWidth,
+        Key::WindowHeight,
+        Key::WindowMaximized,
         Key::Autosave,
         Key::AutosaveDelay,
         Key::Spellcheck,
@@ -93,6 +102,9 @@ impl Key {
             Key::ReadingWidth => "reading-width",
             Key::Outline => "outline",
             Key::SidebarWidth => "sidebar-width",
+            Key::WindowWidth => "window-width",
+            Key::WindowHeight => "window-height",
+            Key::WindowMaximized => "is-maximized",
             Key::Autosave => "autosave",
             Key::AutosaveDelay => "autosave-delay",
             Key::Spellcheck => "spellcheck",
@@ -228,11 +240,61 @@ impl Settings {
 
     /// Remembers the width the reader has just dragged the divider to.
     pub(crate) fn remember_sidebar_width(&self, width: i32) {
-        if self.sidebar_width() == width {
+        self.remember(Key::SidebarWidth, width.to_variant());
+    }
+
+    /// Opens `window` the size and shape the reader last left one, and remembers this
+    /// one when it goes (issue #30).
+    ///
+    /// Window state, like the divider's width and for the same reason: a window's size
+    /// is chosen by dragging the window, so there is no row in the dialog to hunt for
+    /// (`ux_decisions.md`). The caller says only which window; when it is read, when it
+    /// is written and what is worth writing are this module's business.
+    ///
+    /// The size written down is the window's *default* size and never its allocation.
+    /// GTK keeps that in step with every resize the reader makes and holds it still
+    /// "unless the window is forced to a size, like when it is maximized or
+    /// fullscreened", and its documentation says in as many words that it is the size
+    /// to save and that using the allocation "will not work in all circumstances and
+    /// can lead to growing or shrinking windows" (`gtk_window_set_default_size`, GTK
+    /// 4.20 `Gtk-4.0.gir`). That is also what keeps a maximized window from overwriting
+    /// the size the reader chose: they come back to a maximized window, and taking it
+    /// out of the screen's hands leaves them the window they had. The allocation, for
+    /// its part, is already gone by `unrealize`.
+    ///
+    /// Written once, as the window goes: `unrealize` is the last signal a closing
+    /// window emits, whichever way it was closed (probed on GTK 4.20.4 — `shell.rs`
+    /// records which of the four signals a closing window really emits).
+    pub(crate) fn keep_window_geometry(self: &Rc<Self>, window: &adw::ApplicationWindow) {
+        window.set_default_size(
+            self.store.int(Key::WindowWidth.name()),
+            self.store.int(Key::WindowHeight.name()),
+        );
+        if self.store.boolean(Key::WindowMaximized.name()) {
+            window.maximize();
+        }
+
+        let settings = self.clone();
+        window.connect_unrealize(move |window| {
+            let (width, height) = window.default_size();
+            settings.remember(Key::WindowWidth, width.to_variant());
+            settings.remember(Key::WindowHeight, height.to_variant());
+            settings.remember(Key::WindowMaximized, window.is_maximized().to_variant());
+            // A window closing may be the last thing this process does, so what it
+            // learned is put beyond the process's own lifetime rather than left to a
+            // flush that may never come.
+            gio::Settings::sync();
+        });
+    }
+
+    /// Writes down one thing the reader has done to their windows, saying so rather
+    /// than failing silently if the store will not have it.
+    fn remember(&self, key: Key, value: glib::Variant) {
+        if self.store.value(key.name()) == value {
             return;
         }
-        if let Err(error) = self.store.set_int(Key::SidebarWidth.name(), width) {
-            eprintln!("axiomd: could not remember the outline's width: {error}");
+        if let Err(error) = self.store.set_value(key.name(), &value) {
+            eprintln!("axiomd: could not remember {}: {error}", key.name());
         }
     }
 
@@ -495,6 +557,9 @@ mod tests {
         for (key, default) in [
             (Key::Outline, "true"),
             (Key::SidebarWidth, "260"),
+            (Key::WindowWidth, "900"),
+            (Key::WindowHeight, "700"),
+            (Key::WindowMaximized, "false"),
             (Key::Autosave, "true"),
             (Key::AutosaveDelay, "2"),
             (Key::Spellcheck, "true"),

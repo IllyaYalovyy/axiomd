@@ -325,6 +325,17 @@ pub(crate) const ENGINE: &str = "win.engine";
 /// The name the primary menu's model gives the slot the zoom row is put into.
 const ZOOM_SLOT: &str = "zoom";
 
+/// How narrow a window has to get before it stops showing all of its chrome, in
+/// pixels.
+///
+/// One number for the whole window, because a window is narrow or it is not: below it
+/// the outline stops sitting beside the document and starts overlaying it, and the
+/// header bar gives the room its history and open buttons were taking to the title,
+/// which is the only thing in it that says which document the reader is in (issue #30,
+/// GNOME HIG on adaptive layouts). It is the width at which a document beside an
+/// outline would be squeezed into less than a comfortable measure.
+const TOO_NARROW: f64 = 600.0;
+
 impl DocumentWindow {
     /// Builds a window holding a new untitled document, ready to be given a file.
     pub(crate) fn new(
@@ -361,26 +372,49 @@ impl DocumentWindow {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("axiomd")
-            .default_width(900)
-            .default_height(700)
             .content(&layout)
             .build();
+
+        // Where the reader left the last window they closed — before it is ever drawn,
+        // so they never see a window of some other size first (issue #30).
+        settings.keep_window_geometry(&window);
 
         // Before the header, because the header shows it: this window's zoom owns the
         // three actions the menu row is bound to, and it is the window's own — closing
         // it takes the zoom with it (invariant 7).
         let zoom = Zoom::attach(&window, view.widget());
 
+        // What a window too narrow for all of its chrome does about it. Everything that
+        // answers the width answers this one condition, so the outline and the header
+        // can never disagree about whether the window is narrow.
+        let narrow = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            TOO_NARROW,
+            adw::LengthUnit::Px,
+        ));
+
         let title = adw::WindowTitle::new("axiomd", "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let switch = ModeSwitch::new();
+        let history = [
+            step_button("go-previous-symbolic", "Back", BACK),
+            step_button("go-next-symbolic", "Forward", FORWARD),
+        ];
+        let open = open_button();
         header.pack_start(&outline_button());
-        header.pack_start(&step_button("go-previous-symbolic", "Back", BACK));
-        header.pack_start(&step_button("go-next-symbolic", "Forward", FORWARD));
-        header.pack_start(&open_button());
-        let menu = primary_menu_button(&zoom);
+        for button in &history {
+            header.pack_start(button);
+        }
+        header.pack_start(&open);
+        let menu = primary_menu_button(&zoom, &narrow);
         header.pack_end(&menu);
         header.pack_end(switch.widget());
+
+        // The three the header gives up when there is no room for both them and the
+        // title: history is in the menu by then, and opening always was.
+        for button in history.iter().chain([&open]) {
+            narrow.add_setter(button, "visible", Some(&false.to_value()));
+        }
 
         // The search bar holds both surfaces and asks whichever one the reader is
         // looking at, so the window only has to tell it when that changes.
@@ -404,10 +438,13 @@ impl DocumentWindow {
         pane.set_content(Some(&surfaces));
 
         // The outline goes between the header and that pane: it owns the split the two
-        // surfaces sit in, the `F9` action, and the breakpoint that gets it out of a
-        // narrow window's way.
-        let outline = Outline::new(&window, &pane, OUTLINE, settings);
+        // surfaces sit in and the `F9` action, and it says for itself what being in a
+        // narrow window means for it.
+        let outline = Outline::new(&window, &pane, OUTLINE, settings, &narrow);
         layout.set_content(Some(outline.widget()));
+        // Last, with everything that answers it having said what it does: a window is
+        // only ever asked to watch a condition that is fully spelled out.
+        window.add_breakpoint(narrow);
 
         let document_window = Rc::new(Self {
             window,
@@ -773,23 +810,60 @@ impl DocumentWindow {
         self.switch.shown()
     }
 
+    /// The header bar as the reader meets it at the width the window happens to be:
+    /// the name the title is saying, whether its end is cut off, and every control
+    /// drawn in the strip.
+    ///
+    /// One question rather than three, because a header is readable exactly when the
+    /// title fits in the room the controls beside it leave (issue #30). The controls
+    /// are named by what hovering them says, which is the only name a symbolic icon
+    /// has, and a control the window has stopped drawing is simply not among them.
+    pub(crate) fn header_bar(&self, of: &str) -> Option<String> {
+        if of != "header" {
+            return None;
+        }
+        let mut said = vec![
+            format!("title {}", self.title.title()),
+            format!("cut {}", title_cut_off(&self.title)),
+        ];
+        let mut drawn = Vec::new();
+        controls_drawn(self.header.upcast_ref(), &mut drawn);
+        said.extend(
+            drawn
+                .into_iter()
+                .map(|control| format!("control {control}")),
+        );
+        Some(said.join("\n"))
+    }
+
     /// The main menu as the reader meets it: whether it is open, and everything it
     /// offers, in the order it offers it.
     ///
     /// A menu item is a thing with words on it, so that is what is listed: the label
     /// the reader reads and the action pressing it fires, with a submenu listed by its
-    /// own words and not descended into. The zoom row is not listed at all — it is a
-    /// widget the popover puts in a slot rather than something to press.
+    /// own words and not descended into. The zoom row is not one of them — it is a
+    /// widget the popover puts in a slot rather than something to press — so it is
+    /// answered on its own line, by what it says, and by nothing at all when the menu
+    /// has stopped showing it.
     pub(crate) fn menu(&self, of: &str) -> Option<String> {
         if of != "menu" {
             return None;
         }
-        let mut said = vec![format!(
-            "open {}",
-            self.menu
-                .popover()
-                .is_some_and(|popover| popover.is_visible())
-        )];
+        let mut said = vec![
+            format!(
+                "open {}",
+                self.menu
+                    .popover()
+                    .is_some_and(|popover| popover.is_visible())
+            ),
+            format!(
+                "zoom {}",
+                match self.zoom.indicator().parent().is_some() {
+                    true => self.zoom.shown("zoom").unwrap_or_default(),
+                    false => String::new(),
+                }
+            ),
+        ];
         if let Some(model) = self.menu.menu_model() {
             offered(&model, &mut said);
         }
@@ -937,15 +1011,17 @@ impl DocumentWindow {
     /// them: one line per part — `<part> <x> <y> <width> <height> <least>` — in window
     /// coordinates, with `least` the narrowest that part can be drawn.
     ///
-    /// One question rather than four, because the four only mean anything against each
+    /// One question rather than five, because they only mean anything against each
     /// other: a search bar is over the document exactly when it starts where the
     /// outline ends, a sidebar is undisturbed exactly when it is where it was, and a
-    /// part is cut off exactly when it reaches past the window's own edge. Separate
-    /// questions could also fall either side of a relayout and answer about different
-    /// moments.
+    /// part is cut off exactly when the narrowest it can be drawn is wider than the
+    /// window it is in — which is what a header bar too full for its window does to
+    /// the reader (issue #30). Separate questions could also fall either side of a
+    /// relayout and answer about different moments.
     pub(crate) fn geometry(&self) -> String {
         [
             ("window", self.window.upcast_ref::<gtk::Widget>()),
+            ("header", self.header.upcast_ref::<gtk::Widget>()),
             ("sidebar", self.outline.panel()),
             ("document", self.surfaces.upcast_ref::<gtk::Widget>()),
             ("search", self.find.widget()),
@@ -2138,6 +2214,84 @@ impl ModeSwitch {
     }
 }
 
+/// Whether the reader is reading an ellipsis where the end of `title` should be.
+///
+/// Asked of the Pango layout the label is drawn from, which is the thing that does the
+/// ellipsizing and therefore the only thing that knows (GTK 4.20.4: `gtk_label_get_layout`
+/// hands back the laid-out text, and `pango_layout_is_ellipsized` says whether any of it
+/// was dropped). A title whose label cannot be found at all reads as cut off rather than
+/// as whole: a title the reader cannot be shown to be reading must fail a test rather
+/// than quietly pass one.
+fn title_cut_off(title: &adw::WindowTitle) -> bool {
+    let shown = title.title();
+    match label_showing(title.upcast_ref(), &shown) {
+        Some(label) => label.layout().is_ellipsized(),
+        None => true,
+    }
+}
+
+/// The label in `widget` that is showing `text`, wherever under it that label lives.
+fn label_showing(widget: &gtk::Widget, text: &str) -> Option<gtk::Label> {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>()
+        && label.label() == text
+    {
+        return Some(label.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        if let Some(found) = label_showing(&candidate, text) {
+            return Some(found);
+        }
+        child = candidate.next_sibling();
+    }
+    None
+}
+
+/// Every control drawn anywhere under `widget`, appended to `drawn` as what hovering
+/// it says.
+///
+/// What is *drawn*, which is what the reader can press: a button the window has hidden
+/// is not there, and neither is anything inside it. A control is a button — a menu
+/// button included, and never descended into, because the toggle GTK builds inside one
+/// is not a second control the reader can see.
+///
+/// The window's own close button carries no tooltip, so a control with nothing to say
+/// is named by the icon it is drawn as instead: every control the reader can see
+/// answers to something.
+fn controls_drawn(widget: &gtk::Widget, drawn: &mut Vec<String>) {
+    if !widget.is_visible() {
+        return;
+    }
+    if widget.is::<gtk::Button>() || widget.is::<gtk::MenuButton>() {
+        drawn.push(match widget.tooltip_text() {
+            Some(tooltip) => tooltip.to_string(),
+            None => icon_drawn(widget).unwrap_or_default(),
+        });
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        controls_drawn(&candidate, drawn);
+        child = candidate.next_sibling();
+    }
+}
+
+/// The name of the icon `widget` is drawn as, wherever under it the image sits — the
+/// only name a control with no words and no tooltip has.
+fn icon_drawn(widget: &gtk::Widget) -> Option<String> {
+    if let Some(image) = widget.downcast_ref::<gtk::Image>() {
+        return image.icon_name().map(|name| name.to_string());
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        if let Some(found) = icon_drawn(&candidate) {
+            return Some(found);
+        }
+        child = candidate.next_sibling();
+    }
+    None
+}
+
 /// Everything `model` offers, appended to `said` as `item<TAB>label<TAB>action`.
 ///
 /// Sections are flattened, because a reader reads one menu rather than the boxes it is
@@ -2164,7 +2318,7 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
     }
 }
 
-fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
+fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuButton {
     let documents = gio::Menu::new();
     documents.append(Some("_New Window"), Some("app.new"));
     documents.append(Some("_Open…"), Some("app.open"));
@@ -2210,13 +2364,32 @@ fn primary_menu_button(zoom: &Rc<Zoom>) -> gtk::MenuButton {
     // Lowercase on purpose, here as everywhere (`ux_decisions.md`).
     application.append(Some("_About axiomd"), Some(crate::chrome::ABOUT));
 
+    // Where the header bar's history buttons go while the window is too narrow to draw
+    // them (issue #30). Empty for as long as the header is showing them: a menu
+    // repeating the two buttons beside it would be saying the same thing twice, and a
+    // reader in a narrow window would still have nowhere to go if it were not here.
+    //
+    // The section is in the model from the start and only ever filled and emptied, so
+    // the menu the reader opens is rebuilt around this one row rather than from
+    // scratch — which is what leaves the zoom row the popover was given untouched.
+    let history = gio::Menu::new();
+
     let menu = gio::Menu::new();
+    menu.append_section(None, &history);
     menu.append_section(None, &documents);
     menu.append_section(None, &scale);
     menu.append_section(None, &reading);
     menu.append_section(None, &editing);
     menu.append_section(None, &leaving);
     menu.append_section(None, &application);
+
+    let filling = history.clone();
+    narrow.connect_apply(move |_| {
+        filling.remove_all();
+        filling.append(Some("_Back"), Some(BACK));
+        filling.append(Some("_Forward"), Some(FORWARD));
+    });
+    narrow.connect_unapply(move |_| history.remove_all());
 
     // Primary: that is what puts this menu on `F10`, the key GNOME opens an
     // application's main menu with from the keyboard (issue #29). GTK installs a

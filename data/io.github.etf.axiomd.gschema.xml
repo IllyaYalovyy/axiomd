@@ -54,6 +54,34 @@
       </description>
     </key>
 
+    <key name="window-width" type="i">
+      <default>900</default>
+      <summary>Window width</summary>
+      <description>
+        How wide a window opens, in pixels — the size the reader last left one at.
+        Window state rather than a preference: it is chosen by dragging the window
+        itself and has no row in the preferences dialog (issue #30).
+      </description>
+    </key>
+
+    <key name="window-height" type="i">
+      <default>700</default>
+      <summary>Window height</summary>
+      <description>
+        How tall a window opens, in pixels — the size the reader last left one at.
+        Window state, like the width beside it.
+      </description>
+    </key>
+
+    <key name="is-maximized" type="b">
+      <default>false</default>
+      <summary>Open windows maximized</summary>
+      <description>
+        Whether a window opens filling the screen, because that is how the reader last
+        left one. Window state, like the size beside it.
+      </description>
+    </key>
+
     <key name="autosave" type="b">
       <default>true</default>
       <summary>Save edits automatically</summary>
