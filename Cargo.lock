@@ -74,6 +74,9 @@ dependencies = [
 [[package]]
 name = "axiomd-doc"
 version = "0.1.0"
+dependencies = [
+ "gio",
+]
 
 [[package]]
 name = "axiomd-e2e"

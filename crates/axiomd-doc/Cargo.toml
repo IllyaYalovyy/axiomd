@@ -8,3 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Only to ask the desktop where a document really is: `Home` puts one question to the
+# Documents portal over the session bus (issue #24). No toolkit, no main loop.
+gio.workspace = true

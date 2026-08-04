@@ -81,7 +81,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use axiomd_doc::{Document, External, Trouble};
+use axiomd_doc::{Document, External, Home, Trouble};
 use axiomd_render::{Rendered, Request};
 use gtk::gio;
 use gtk::glib;
@@ -270,10 +270,14 @@ impl History {
 /// Everything a window sets up for the document it currently holds, and lets go of
 /// when it is given another one.
 struct OpenDocument {
-    /// The path the window is following, or `None` for a document that has never been
-    /// saved. Not the file it was opened on: an editor that saves by renaming replaces
-    /// that file, and the reader means the path.
-    file: Option<PathBuf>,
+    /// Where the window's document is, or `None` for one that has never been saved.
+    ///
+    /// Resolved once, when the window was given the document, and the only answer
+    /// anything in this window asks: the path it is read, watched and saved by, and the
+    /// folder the reader keeps it in, which under the document portal is not the same
+    /// place (issue #24). Not the file it was opened on: an editor that saves by
+    /// renaming replaces that file, and the reader means the path.
+    home: Option<Home>,
     /// The section of it the reader arrived at, if they followed a link to one.
     fragment: String,
     /// The identity on disk of whatever the path last resolved to. Windows are
@@ -814,10 +818,11 @@ impl DocumentWindow {
     }
 
     /// The header bar as the reader meets it at the width the window happens to be:
-    /// the name the title is saying, whether its end is cut off, and every control
-    /// drawn in the strip.
+    /// the name the title is saying, where it says the document lives, what hovering
+    /// that says in full, whether the name's end is cut off, and every control drawn in
+    /// the strip.
     ///
-    /// One question rather than three, because a header is readable exactly when the
+    /// One question rather than five, because a header is readable exactly when the
     /// title fits in the room the controls beside it leave (issue #30). The controls
     /// are named by what hovering them says, which is the only name a symbolic icon
     /// has, and a control the window has stopped drawing is simply not among them.
@@ -827,6 +832,8 @@ impl DocumentWindow {
         }
         let mut said = vec![
             format!("title {}", self.title.title()),
+            format!("where {}", self.title.subtitle()),
+            format!("hovering {}", self.title.tooltip_text().unwrap_or_default()),
             format!("cut {}", title_cut_off(&self.title)),
         ];
         let mut drawn = Vec::new();
@@ -1216,15 +1223,18 @@ impl DocumentWindow {
     }
 
     /// Puts a document on screen, wherever in the window's history it came from.
+    ///
+    /// Where the document is is settled here, once, and every part of the window reads
+    /// that one answer from then on (issue #24).
     fn display(self: &Rc<Self>, file: &Path, fragment: &str) {
         self.retrace();
-        let file = file.to_path_buf();
-        if FileId::of(&file).is_none() {
+        let home = Home::of(file);
+        if FileId::of(home.path()).is_none() {
             self.show_unavailable(
-                &format!("Could not open {}", file_name(&file)),
+                &format!("Could not open {}", file_name(home.path())),
                 "There is no such file.",
             );
-            self.retitle_as(&file_name(&file), &folder_of(&file));
+            self.retitle_as(&file_name(home.path()), &home);
             return;
         }
 
@@ -1232,15 +1242,15 @@ impl DocumentWindow {
         // Opening rather than saving: `Ctrl+S` on an untitled page gives it a name, not
         // a reason to push a sidebar open over the reader who is still writing it.
         self.outline.opened(true);
-        self.take_over(Some(&file), fragment);
+        self.take_over(Some(&home), fragment);
         self.enter(Mode::Read);
-        self.retitle_as(&file_name(&file), &folder_of(&file));
+        self.retitle_as(&file_name(home.path()), &home);
         self.read_the_file();
     }
 
-    /// Gives this window a place on the scheme, a renderer and a watch for `file`, and
-    /// lets go of whatever it had for the last one.
-    fn take_over(self: &Rc<Self>, file: Option<&Path>, fragment: &str) {
+    /// Gives this window a place on the scheme, a renderer and a watch for the document
+    /// at `home`, and lets go of whatever it had for the last one.
+    fn take_over(self: &Rc<Self>, home: Option<&Home>, fragment: &str) {
         let epoch = self.epoch.get() + 1;
         self.epoch.set(epoch);
         self.notice.hide();
@@ -1249,10 +1259,11 @@ impl DocumentWindow {
         // looking at any more is worse than no count at all.
         self.find.close();
 
+        let file = home.map(Home::path);
         let open = OpenDocument {
             id: Cell::new(file.and_then(FileId::of)),
             loaded: Cell::new(file.is_none()),
-            publication: self.scheme.publish(file),
+            publication: self.scheme.publish(home.and_then(Home::folder)),
             renderer: Renderer::new({
                 let window = Rc::downgrade(self);
                 move |page| {
@@ -1271,7 +1282,7 @@ impl DocumentWindow {
                     }
                 })
             }),
-            file: file.map(Path::to_path_buf),
+            home: home.cloned(),
             fragment: fragment.to_owned(),
         };
 
@@ -1288,18 +1299,18 @@ impl DocumentWindow {
     /// main thread — which is also what keeps the file monitor's callback from doing
     /// synchronous I/O (invariant 4).
     fn read_the_file(self: &Rc<Self>) {
-        let Some(file) = self
+        let Some(home) = self
             .open
             .borrow()
             .as_ref()
-            .and_then(|open| open.file.clone())
+            .and_then(|open| open.home.clone())
         else {
             return;
         };
         let epoch = self.epoch.get();
         let window = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let read = gio::spawn_blocking(move || Document::read(&file)).await;
+            let read = gio::spawn_blocking(move || Document::read(&home)).await;
             let Some(window) = window.upgrade() else {
                 return;
             };
@@ -1605,8 +1616,8 @@ impl DocumentWindow {
                 document.text().to_owned(),
                 document.name(),
                 document
-                    .file()
-                    .and_then(Path::parent)
+                    .home()
+                    .and_then(Home::folder)
                     .map(Path::to_path_buf),
             )
         };
@@ -1714,6 +1725,18 @@ impl DocumentWindow {
             .modal(true)
             .initial_name(as_a_markdown_name(&self.document.borrow().name()))
             .build();
+        // Where the reader keeps the document, which under the portal is not the folder
+        // axiomd reads it from: a chooser opening on `/run/user/…/doc/<id>` would be
+        // showing them a place they have never been (issue #24).
+        if let Some(folder) = self
+            .document
+            .borrow()
+            .home()
+            .and_then(Home::folder)
+            .filter(|folder| !folder.as_os_str().is_empty())
+        {
+            dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+        }
 
         let window = Rc::downgrade(self);
         dialog.save(Some(&self.window), gio::Cancellable::NONE, move |chosen| {
@@ -1733,7 +1756,11 @@ impl DocumentWindow {
     /// then on: it is this window's document now, watched and rendered from there.
     pub(crate) fn save_to(self: &Rc<Self>, file: &Path) {
         self.pull_text();
-        let written = self.document.borrow_mut().save_as(file);
+        // The chooser may have been the desktop's own, so what came back can itself be a
+        // portal path: where the document now is is settled here, once, exactly as it is
+        // when a window is given one.
+        let home = Home::of(file);
+        let written = self.document.borrow_mut().save_as(&home);
         if let Err(trouble) = written {
             self.notice.say(
                 &format!("{} — {}", trouble.title(), trouble.detail()),
@@ -1742,11 +1769,11 @@ impl DocumentWindow {
             return;
         }
         self.history.borrow_mut().restart(Visit {
-            file: file.to_path_buf(),
+            file: home.path().to_path_buf(),
             fragment: String::new(),
         });
         self.retrace();
-        self.take_over(Some(file), "");
+        self.take_over(Some(&home), "");
         if let Some(open) = self.open.borrow().as_ref() {
             open.loaded.set(true);
         }
@@ -1848,8 +1875,8 @@ impl DocumentWindow {
             plugins: self.settings.plugins(),
             engine: self.engine(),
             root: document
-                .file()
-                .and_then(Path::parent)
+                .home()
+                .and_then(Home::folder)
                 .map(Path::to_path_buf),
         }
     }
@@ -1951,8 +1978,8 @@ impl DocumentWindow {
             // A save may have been a replacement, which gives the path a new identity
             // on disk. The window follows it, or it stops recognising its own document
             // and opens a second window on it.
-            if let Some(file) = &open.file {
-                open.id.set(FileId::of(file));
+            if let Some(home) = &open.home {
+                open.id.set(FileId::of(home.path()));
             }
         }
         // The reader is typing; the page is kept current behind them and put on screen
@@ -1987,10 +2014,7 @@ impl DocumentWindow {
     /// whether there is work in it that is not on disk.
     fn retitle(&self) {
         let document = self.document.borrow();
-        let where_it_lives = match document.file() {
-            Some(file) => folder_of(file),
-            None => "Not saved yet".to_owned(),
-        };
+        let home = document.home().cloned();
         let name = document.name();
         let shown = if document.is_modified() {
             format!("• {name}")
@@ -1998,13 +2022,30 @@ impl DocumentWindow {
             name
         };
         drop(document);
-        self.retitle_as(&shown, &where_it_lives);
+        match &home {
+            Some(home) => self.retitle_as(&shown, home),
+            None => self.say_where(&shown, "Not saved yet", "Not saved yet"),
+        }
     }
 
-    fn retitle_as(&self, name: &str, where_it_lives: &str) {
+    /// The same, for a document the window has a place for but no model of yet — the
+    /// moment between being given a file and having read it, and a file that turned out
+    /// not to be there at all.
+    fn retitle_as(&self, name: &str, home: &Home) {
+        self.say_where(name, &home.shown(), &home.full());
+    }
+
+    /// Says what the reader is looking at and where it is.
+    ///
+    /// `where_it_lives` goes under the name, where a header bar has room for a folder
+    /// and not much more; `in_full` is the whole of it, on hovering. Neither can ever be
+    /// a portal path — [`Home`] is what guarantees that, and it is the only thing asked
+    /// (issue #24).
+    fn say_where(&self, name: &str, where_it_lives: &str, in_full: &str) {
         self.window.set_title(Some(name));
         self.title.set_title(name);
         self.title.set_subtitle(where_it_lives);
+        self.title.set_tooltip_text(Some(in_full));
     }
 }
 
@@ -2069,19 +2110,6 @@ fn file_name(file: &Path) -> String {
         .unwrap_or(file.as_os_str())
         .to_string_lossy()
         .into_owned()
-}
-
-/// The document's folder as the user thinks of it, with their home shortened.
-fn folder_of(file: &Path) -> String {
-    let folder = file.parent().unwrap_or(Path::new("")).display().to_string();
-    match glib::home_dir().to_str() {
-        Some(home) if folder == home => "~".to_owned(),
-        Some(home) => match folder.strip_prefix(&format!("{home}/")) {
-            Some(rest) => format!("~/{rest}"),
-            None => folder,
-        },
-        None => folder,
-    }
 }
 
 /// What the app has to say about a document the reader is still reading, said beside

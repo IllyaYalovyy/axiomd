@@ -221,18 +221,19 @@ impl Scheme {
         });
     }
 
-    /// Publishes `file`, giving its window a URI to load.
+    /// Publishes a document kept in `folder`, giving its window a URI to load.
     ///
     /// The document starts blank: it shows nothing until [`Publication::show`] hands
-    /// it a rendered page. Relative references resolve against `file`'s directory
-    /// and nothing above it — and an untitled document, which has no directory,
-    /// reaches nothing at all.
-    pub(crate) fn publish(&self, file: Option<&Path>) -> Publication {
+    /// it a rendered page. Relative references resolve against `folder` and nothing
+    /// above it — and a document with no folder to be in, which is an untitled one or
+    /// one the desktop would not place (`axiomd_doc::Home`), reaches nothing at all.
+    pub(crate) fn publish(&self, folder: Option<&Path>) -> Publication {
         let id = self.next.get();
         self.next.set(id + 1);
-        let root = file.map(|file| {
-            let root = file.parent().unwrap_or(Path::new("."));
-            root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+        let root = folder.map(|folder| {
+            folder
+                .canonicalize()
+                .unwrap_or_else(|_| folder.to_path_buf())
         });
         self.origin.documents.borrow_mut().insert(
             id,
@@ -475,7 +476,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-page");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
         publication.show("<!DOCTYPE html><h1>Notes</h1>".to_owned());
 
         let (body, content_type) = served_bytes(scheme.origin.serve(publication.uri()));
@@ -492,7 +493,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-blank");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         assert_eq!(scheme.origin.serve(publication.uri()), Served::Missing);
     }
@@ -503,7 +504,7 @@ mod tests {
         let file = scratch.write("notes.md", "![](images/logo.png)\n");
         scratch.write("images/logo.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         let request = format!("{}images/logo.png", publication.uri());
         let (body, content_type) = served_bytes(scheme.origin.serve(&request));
@@ -520,7 +521,7 @@ mod tests {
         let file = scratch.write("inner/notes.md", "# Notes\n");
         scratch.write("secret.txt", "credentials");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         for escape in [
             "../secret.txt",
@@ -565,7 +566,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, scratch.path().join("inner/leak.txt"))
             .expect("create symlink");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         let request = format!("{}leak.txt", publication.uri());
 
@@ -659,8 +660,8 @@ mod tests {
         let second_file = second_dir.write("b.md", "# B\n");
         first_dir.write("only-in-first.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let first = scheme.publish(Some(&first_file));
-        let second = scheme.publish(Some(&second_file));
+        let first = scheme.publish(first_file.parent());
+        let second = scheme.publish(second_file.parent());
         first.show("<h1>A</h1>".to_owned());
         second.show("<h1>B</h1>".to_owned());
 
@@ -691,7 +692,7 @@ mod tests {
         let file = scratch.write("notes.md", "# Notes\n");
         scratch.write("logo.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
         publication.show("<h1>Notes</h1>".to_owned());
 
         assert_eq!(scheme.startup(), None, "startup was over before it began");
@@ -712,7 +713,7 @@ mod tests {
 
         // A second window, a re-render, a document opened an hour later: none of them
         // are this process starting up, and none of them may move the number.
-        let second = scheme.publish(Some(&file));
+        let second = scheme.publish(file.parent());
         second.show("<h1>Other</h1>".to_owned());
         scheme.origin.serve(second.uri());
         assert_eq!(scheme.startup(), Some(first), "a later page moved startup");
@@ -725,7 +726,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-startup-blank");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         assert_eq!(scheme.origin.serve(publication.uri()), Served::Missing);
 
@@ -739,7 +740,7 @@ mod tests {
         let file = scratch.write("notes.md", "# Notes\n");
         scratch.write("logo.png", PIXEL_PNG);
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
         publication.show("<h1>Notes</h1>".to_owned());
         let page = publication.uri().to_owned();
         let image = format!("{page}logo.png");
@@ -760,7 +761,7 @@ mod tests {
         let scratch = ScratchDir::new("scheme-loaded");
         let file = scratch.write("notes.md", "# Notes\n");
         let scheme = Scheme::new();
-        let publication = scheme.publish(Some(&file));
+        let publication = scheme.publish(file.parent());
 
         let first = publication.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
         let second = publication.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());
@@ -788,8 +789,14 @@ mod tests {
         let first_dir = ScratchDir::new("scheme-img-first");
         let second_dir = ScratchDir::new("scheme-img-second");
         let scheme = Scheme::new();
-        let first = scheme.publish(Some(&first_dir.write("a.md", "# A\n")));
-        let second = scheme.publish(Some(&second_dir.write("b.md", "# B\n")));
+        let first = {
+            first_dir.write("a.md", "# A\n");
+            scheme.publish(Some(first_dir.path()))
+        };
+        let second = {
+            second_dir.write("b.md", "# B\n");
+            scheme.publish(Some(second_dir.path()))
+        };
 
         let mine = first.attach_image(PIXEL_PNG.to_vec(), "image/png".to_owned());
         let theirs = second.attach_image(b"GIF89a".to_vec(), "image/gif".to_owned());

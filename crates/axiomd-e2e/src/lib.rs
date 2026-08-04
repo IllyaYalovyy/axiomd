@@ -198,6 +198,12 @@ pub struct Header {
     /// The name the title is saying — the document's, with a bullet in front of it
     /// while there is work in it that is not on disk.
     pub title: String,
+    /// What it says under that name: where the reader keeps the document, with their
+    /// home shortened. Never a path the desktop's document portal invented (issue #24).
+    pub where_it_lives: String,
+    /// The same in full, which is what hovering the title says — where a path too long
+    /// for a header bar goes.
+    pub in_full: String,
     /// Whether the reader is reading the whole of that name or an ellipsis where its
     /// end should be.
     pub cut: bool,
@@ -1100,12 +1106,15 @@ impl App {
         }
     }
 
-    /// The header bar of the addressed window as the reader meets it: the title,
-    /// whether its end is cut off, and the controls drawn beside it.
+    /// The header bar of the addressed window as the reader meets it: the title, where
+    /// it says the document lives, what hovering that says in full, whether the name's
+    /// end is cut off, and the controls drawn beside it.
     pub fn header(&self) -> Header {
         let shown = self.property("header");
         Header {
             title: line_of(&shown, "title"),
+            where_it_lives: line_of(&shown, "where"),
+            in_full: line_of(&shown, "hovering"),
             cut: shown.lines().any(|line| line == "cut true"),
             controls: shown
                 .lines()
