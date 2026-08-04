@@ -72,6 +72,15 @@ surface), but no split implementation ships until decided. Switching modes
 preserves the reading/editing position in both directions via the
 span/anchor map.
 
+## What does editor syntax highlighting look like?
+
+Owner ruling (2026-08-03): minimal, fast, reliable source highlighting —
+GtkSourceView's stock Markdown definition with the Adwaita schemes,
+nothing more. Obsidian-style live-preview styling (markup rendering in
+place while editing) is explicitly rejected, not merely deferred.
+Highlighting may never noticeably degrade typing latency; the perf
+budgets police this.
+
 ## Is YAML frontmatter rendered?
 
 No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as
