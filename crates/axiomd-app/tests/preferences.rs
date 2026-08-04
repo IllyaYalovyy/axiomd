@@ -61,7 +61,7 @@ fn preferences_open_when_they_are_asked_for_and_reading_asks_nothing() {
 
     // The plugin section lists what this build has, each one switched on until the
     // reader says otherwise (#16).
-    assert_eq!(app.preference("Emoji shortcodes"), "true");
+    assert_eq!(app.preference("Emoji Shortcodes"), "true");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
@@ -78,7 +78,7 @@ fn the_reading_width_applies_to_the_document_the_reader_is_looking_at() {
     let pages = app.render_count();
 
     app.activate("app.preferences");
-    app.set_preference("Reading width", "80");
+    app.set_preference("Reading Width", "80");
     // 80rem at the pinned root font size.
     app.wait_until(&format!("{MEASURE} === '1280px'"));
 
@@ -87,12 +87,12 @@ fn the_reading_width_applies_to_the_document_the_reader_is_looking_at() {
     assert_eq!(app.render_count(), pages, "the document was rendered again");
 
     // And the other half of the preference: a document that fills the window.
-    app.set_preference("Limit the reading width", "false");
+    app.set_preference("Limit Reading Width", "false");
     app.wait_until(&format!("{MEASURE} === 'none'"));
     assert_eq!(app.navigation_count(), loads, "the document was reloaded");
     assert_eq!(app.render_count(), pages, "the document was rendered again");
 
-    app.set_preference("Limit the reading width", "true");
+    app.set_preference("Limit Reading Width", "true");
     app.wait_until(&format!("{MEASURE} === '1280px'"));
 
     assert!(app.close().is_empty(), "the launch left processes behind");
@@ -136,6 +136,103 @@ fn the_theme_override_recolours_the_document_without_rendering_it_again() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// The identifiers this build has that no reader should ever be shown: the engines',
+/// the plugins', and the values the theme choice stores.
+///
+/// Spelled out here rather than read back from the tables that build the dialog, so
+/// that a dialog naming everything after its own keys cannot agree with itself.
+const IDENTIFIERS: &[&str] = &[
+    "comrak",
+    "pulldown-cmark",
+    "emoji",
+    "math",
+    "mermaid",
+    "system",
+    "light",
+    "dark",
+];
+
+/// The words header capitalisation leaves in lower case when they are not first.
+const MINOR: &[&str] = &[
+    "a", "an", "the", "and", "or", "nor", "but", "as", "at", "by", "for", "from", "in", "of", "on",
+    "to", "with",
+];
+
+/// Every word the preferences dialog says, held to the way GNOME writes them
+/// (issue #31): headings and row titles in header capitals, the line under each one a
+/// sentence that ends like one, and nowhere an identifier that belongs to the code.
+///
+/// Read off the dialog rather than listed here, so a row added later — by a feature, a
+/// plugin or an engine this test has never heard of — is held to the same rules the
+/// moment it appears.
+#[test]
+fn every_word_the_dialog_says_is_the_readers_rather_than_the_codes() {
+    let fixture = Fixture::new("preferences-words");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
+
+    app.activate("app.preferences");
+    let said = app.preferences();
+    assert!(said.len() > 8, "the dialog said almost nothing: {said:?}",);
+
+    for entry in &said {
+        assert!(
+            !entry.title.is_empty(),
+            "something in the dialog is untitled"
+        );
+        for (position, word) in entry.title.split(' ').enumerate() {
+            let minor = position > 0 && MINOR.contains(&word);
+            assert!(
+                minor
+                    || word
+                        .chars()
+                        .next()
+                        .is_some_and(|first| !first.is_lowercase()),
+                "{:?} is not header capitalised: {word:?}",
+                entry.title,
+            );
+        }
+
+        if !entry.subtitle.is_empty() {
+            assert!(
+                entry.subtitle.ends_with('.'),
+                "{:?} says {:?}, which is not a finished sentence",
+                entry.title,
+                entry.subtitle,
+            );
+            assert!(
+                entry
+                    .subtitle
+                    .chars()
+                    .next()
+                    .is_some_and(|first| !first.is_lowercase()),
+                "{:?} says {:?}, which does not start a sentence",
+                entry.title,
+                entry.subtitle,
+            );
+        }
+
+        for shown in std::iter::once(&entry.title)
+            .chain(std::iter::once(&entry.subtitle))
+            .chain(entry.options.iter())
+        {
+            assert!(
+                !IDENTIFIERS.contains(&shown.as_str()),
+                "the dialog shows the reader {shown:?}, which is an identifier",
+            );
+        }
+    }
+
+    // And the row the identifiers were most visible on, by name: every engine this
+    // build has, each one named for a reader.
+    let engines = said
+        .iter()
+        .find(|entry| entry.title == "Markdown Engine")
+        .unwrap_or_else(|| panic!("the dialog has no engine row: {said:?}"));
+    assert_eq!(engines.options, ["Comrak", "Pulldown"]);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// Every row the dialog offers, turned and read back, and the setting behind it
 /// written down where the next launch will find it.
 ///
@@ -156,27 +253,29 @@ fn every_row_the_dialog_offers_turns_and_is_written_down() {
     let rows = [
         ("Theme", "System", "Dark", "theme", "'dark'"),
         (
-            "Limit the reading width",
+            "Limit Reading Width",
             "true",
             "false",
             "reading-width-limited",
             "false",
         ),
-        ("Reading width", "46", "72", "reading-width", "72"),
+        ("Reading Width", "46", "72", "reading-width", "72"),
         ("Autosave", "true", "false", "autosave", "false"),
-        ("Autosave delay", "2", "9", "autosave-delay", "9"),
-        ("Check spelling", "true", "false", "spellcheck", "false"),
+        ("Autosave Delay", "2", "9", "autosave-delay", "9"),
+        ("Check Spelling", "true", "false", "spellcheck", "false"),
         (
-            "Emoji shortcodes",
+            "Emoji Shortcodes",
             "true",
             "false",
             "disabled-plugins",
             "['emoji']",
         ),
+        // The reader picks an engine by its name and the store keeps its identifier:
+        // the two sides of issue #31's rule that no chooser shows a developer id.
         (
-            "Markdown engine",
-            "comrak",
-            "pulldown-cmark",
+            "Markdown Engine",
+            "Comrak",
+            "Pulldown",
             "engine",
             "'pulldown-cmark'",
         ),
@@ -206,7 +305,7 @@ fn a_preference_is_still_there_when_the_reader_comes_back() {
 
     let app = axiomd_e2e::launch_with(&notes, &preferences);
     app.activate("app.preferences");
-    app.set_preference("Reading width", "72");
+    app.set_preference("Reading Width", "72");
     app.set_preference("Theme", "Dark");
     app.wait_until(&format!("{MEASURE} === '1152px'"));
     preferences.wait_until("reading-width", "72");
@@ -222,7 +321,7 @@ fn a_preference_is_still_there_when_the_reader_comes_back() {
 
     // And the dialog agrees with the document.
     returning.activate("app.preferences");
-    assert_eq!(returning.preference("Reading width"), "72");
+    assert_eq!(returning.preference("Reading Width"), "72");
     assert_eq!(returning.preference("Theme"), "Dark");
 
     assert!(
@@ -241,7 +340,7 @@ fn a_preference_reaches_every_window_that_is_open() {
 
     let app = axiomd_e2e::launch(&notes);
     app.activate("app.preferences");
-    app.set_preference("Reading width", "80");
+    app.set_preference("Reading Width", "80");
     app.wait_until(&format!("{MEASURE} === '1280px'"));
 
     app.open(&more);

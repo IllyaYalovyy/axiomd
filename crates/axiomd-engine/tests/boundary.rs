@@ -703,3 +703,37 @@ fn engines_are_usable_as_trait_objects() {
         );
     }
 }
+
+/// Every engine names itself for a reader, and that name is never its identifier.
+///
+/// The identifier is what a setting stores and what a menu item carries as its target;
+/// the name is what the reader is offered. Holding the two apart here is what keeps a
+/// chooser from ever showing "pulldown-cmark" to somebody who is looking for a
+/// markdown parser (issue #31) — including a chooser written after this test, since
+/// every engine in the registry is held to it.
+#[test]
+fn every_engine_names_itself_for_a_reader_rather_than_by_its_identifier() {
+    let mut named: Vec<&'static str> = Vec::new();
+    for engine in engines() {
+        let name = engine.display_name();
+        let id = engine.id().as_str();
+
+        assert_ne!(name, id, "{id} is offered to the reader as its identifier");
+        assert!(!name.is_empty(), "{id} has no name a reader could read");
+        assert!(
+            !name.contains('-') && !name.contains('_'),
+            "{id} is named {name:?}, which is spelled like an identifier",
+        );
+        for word in name.split(' ') {
+            assert!(
+                word.chars().next().is_some_and(char::is_uppercase),
+                "{id} is named {name:?}, which is not header capitalised",
+            );
+        }
+        assert!(
+            !named.contains(&name),
+            "two engines are both offered as {name:?}",
+        );
+        named.push(name);
+    }
+}

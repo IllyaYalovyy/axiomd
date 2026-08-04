@@ -63,6 +63,10 @@ impl MarkdownEngine for PulldownEngine {
         Self::ID
     }
 
+    fn display_name(&self) -> &'static str {
+        "Pulldown"
+    }
+
     fn capabilities(&self) -> Extensions {
         // Everything but GFM extended autolinks, which pulldown-cmark does not
         // implement: `www.example.com` in prose stays prose. Advertising it would make

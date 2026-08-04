@@ -41,8 +41,14 @@ fn notes() -> String {
 const LINKED: &str = "document.querySelector('a[href=\"http://www.example.com\"]') !== null";
 
 /// The engine each of this build's engines is, by what it does to that address.
+///
+/// Twice over, because the two are deliberately not the same word (issue #31): the
+/// identifier a window is switched by and a setting stores, and the name the reader
+/// picks it out by in a menu or a preferences row.
 const LINKS_BARE_ADDRESSES: &str = "comrak";
 const LEAVES_BARE_ADDRESSES: &str = "pulldown-cmark";
+const LINKS_BARE_ADDRESSES_NAMED: &str = "Comrak";
+const LEAVES_BARE_ADDRESSES_NAMED: &str = "Pulldown";
 
 /// The reader switches the engine from the main menu, and the document in front of
 /// them changes where it stands.
@@ -182,8 +188,11 @@ fn the_default_engine_is_a_preference_that_applies_live_and_is_remembered() {
     let loads = app.navigation_count();
 
     app.activate("app.preferences");
-    assert_eq!(app.preference("Markdown engine"), LINKS_BARE_ADDRESSES);
-    app.set_preference("Markdown engine", LEAVES_BARE_ADDRESSES);
+    assert_eq!(
+        app.preference("Markdown Engine"),
+        LINKS_BARE_ADDRESSES_NAMED
+    );
+    app.set_preference("Markdown Engine", LEAVES_BARE_ADDRESSES_NAMED);
 
     // The document the reader is looking at, re-read where it stands.
     app.wait_until(&format!("!({LINKED})"));
@@ -231,7 +240,7 @@ fn a_switched_window_keeps_its_engine_when_the_default_changes() {
 
     // Now the reader changes the default to that same engine and back again.
     app.activate("app.preferences");
-    app.set_preference("Markdown engine", LEAVES_BARE_ADDRESSES);
+    app.set_preference("Markdown Engine", LEAVES_BARE_ADDRESSES_NAMED);
     app.select_window(0);
     app.wait_until(&format!("!({LINKED})"));
     assert_eq!(
@@ -242,7 +251,7 @@ fn a_switched_window_keeps_its_engine_when_the_default_changes() {
 
     app.select_window(1);
     app.activate("app.preferences");
-    app.set_preference("Markdown engine", LINKS_BARE_ADDRESSES);
+    app.set_preference("Markdown Engine", LINKS_BARE_ADDRESSES_NAMED);
 
     app.select_window(0);
     app.wait_until(LINKED);

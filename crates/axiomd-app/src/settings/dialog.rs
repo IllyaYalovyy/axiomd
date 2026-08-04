@@ -7,10 +7,18 @@
 //! dialog is not a confirmation step and there is no Apply button, because there is
 //! nothing left to apply.
 //!
-//! Rows for a capability that has not landed yet (spellcheck) still write their
-//! setting, which is what #18 reads when it arrives. Every later feature with a knob
-//! adds its row here (invariant 14) — a plugin and an engine both do so by existing,
-//! since those two groups are built from what this build has registered.
+//! Every later feature with a knob adds its row here (invariant 14) — a plugin and an
+//! engine both do so by existing, since those two groups are built from what this
+//! build has registered. A row is only ever added for a capability this build actually
+//! has: a switch that changes nothing is not a preference, it is a promise.
+//!
+//! # How the rows are written
+//!
+//! Titles in header capitals and subtitles as finished sentences, the way the HIG
+//! writes a boxed list, and never a developer identifier — an engine and a plugin are
+//! each offered by the name they give themselves, and what a choice stores is separate
+//! from what it shows (issue #31). `preferences.rs` holds every row in this file to
+//! that, including rows written after it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -54,20 +62,20 @@ fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
         settings,
         Key::Theme,
         "Theme",
-        "Follow the desktop's colour scheme, or override it",
+        "Follow the desktop's colour scheme, or override it.",
         &THEMES,
     ));
     let limit = toggle(
         settings,
         Key::ReadingWidthLimited,
-        "Limit the reading width",
-        "Hold text to a comfortable measure instead of filling the window",
+        "Limit Reading Width",
+        "Hold text to a comfortable measure instead of filling the window.",
     );
     let width = number(
         settings,
         Key::ReadingWidth,
-        "Reading width",
-        "The measure text is held to, in multiples of its own size",
+        "Reading Width",
+        "The measure text is held to, in multiples of its own size.",
     );
     // A width that cannot apply is not offered: with the limit off, the number below
     // it would be a control the reader can turn that does nothing.
@@ -80,7 +88,7 @@ fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
     group.add(&toggle(
         settings,
         Key::Outline,
-        "Show the outline",
+        "Show Outline",
         "List a document's headings beside it. F9 shows or hides it in one window.",
     ));
 
@@ -94,13 +102,13 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
         settings,
         Key::Autosave,
         "Autosave",
-        "Write edits back to the file without being asked",
+        "Write edits back to the file without being asked.",
     );
     let delay = number(
         settings,
         Key::AutosaveDelay,
-        "Autosave delay",
-        "Seconds of quiet before an edit is written",
+        "Autosave Delay",
+        "Seconds of quiet before an edit is written.",
     );
     autosave
         .bind_property("active", &delay, "sensitive")
@@ -112,7 +120,7 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
     group.add(&toggle(
         settings,
         Key::Spellcheck,
-        "Check spelling",
+        "Check Spelling",
         "Mark misspelled words while editing. Reading is never affected.",
     ));
 
@@ -123,17 +131,19 @@ fn editing(settings: &Rc<Settings>) -> adw::PreferencesPage {
 /// top of it.
 fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw::PreferencesPage {
     // Named by the engines themselves, so an engine that lands is offered here without
-    // this file learning anything about it — the same shape the plugin group has.
+    // this file learning anything about it — the same shape the plugin group has. The
+    // reader reads the engine's name and the setting keeps its identifier, which is
+    // what a stored preference and a menu item's target both are (issue #31).
     let engines: Vec<(&'static str, &'static str)> = axiomd_engine::engines()
         .iter()
-        .map(|engine| (engine.id().as_str(), engine.id().as_str()))
+        .map(|engine| (engine.display_name(), engine.id().as_str()))
         .collect();
 
     let group = adw::PreferencesGroup::builder().title("Rendering").build();
     group.add(&choice(
         settings,
         Key::Engine,
-        "Markdown engine",
+        "Markdown Engine",
         "The parser documents are read with. One window can be switched to another \
          from its main menu.",
         &engines,
@@ -141,7 +151,7 @@ fn rendering(settings: &Rc<Settings>, watching: &Rc<RefCell<Vec<Watch>>>) -> adw
 
     let plugins = adw::PreferencesGroup::builder()
         .title("Plugins")
-        .description("Rendering capabilities beyond the core, each one optional")
+        .description("Rendering capabilities beyond the core, each one optional.")
         .build();
     // One switch per plugin this build has, named by the plugin itself: a capability
     // that lands is offered here without this file learning anything about it.

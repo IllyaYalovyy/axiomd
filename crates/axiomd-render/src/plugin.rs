@@ -100,9 +100,10 @@ pub struct Manifest {
     /// The name the plugin is stored under — in the reader's settings, and in the URI
     /// of its assets. Stable once the plugin ships.
     pub id: &'static str,
-    /// What the reader calls it, in preferences.
+    /// What the reader calls it, in preferences and in the badge a failure leaves in
+    /// the document. Header capitalised, never the id (issue #31).
     pub name: &'static str,
-    /// What it does for them, in one line, in preferences.
+    /// What it does for them, in preferences: one finished sentence.
     pub description: &'static str,
     /// The code-fence languages this plugin draws instead of highlighting. A language
     /// claimed by two plugins belongs to the first of them in the registry.

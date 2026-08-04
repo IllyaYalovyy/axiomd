@@ -2295,14 +2295,20 @@ fn icon_drawn(widget: &gtk::Widget) -> Option<String> {
 /// Everything `model` offers, appended to `said` as `item<TAB>label<TAB>action`.
 ///
 /// Sections are flattened, because a reader reads one menu rather than the boxes it is
-/// drawn in; a submenu is the words on it, because that is all they see until they
-/// point at it.
+/// drawn in. A submenu is its own words followed by what is inside it, because a reader
+/// who points at it reads that too — and a menu is only free of developer identifiers
+/// (issue #31) if the words behind every arrow are counted.
+///
+/// The action is the detailed name pressing the item fires, target and all, which is
+/// what tells a label apart from the identifier it carries: `win.engine::comrak` under
+/// the word "Comrak".
 fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
     for index in 0..model.n_items() {
         if let Some(section) = model.item_link(index, gio::MENU_LINK_SECTION) {
             offered(&section, said);
             continue;
         }
+        let submenu = model.item_link(index, gio::MENU_LINK_SUBMENU);
         let Some(label) = model
             .item_attribute_value(index, gio::MENU_ATTRIBUTE_LABEL, None)
             .and_then(|label| label.get::<String>())
@@ -2312,9 +2318,16 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
         let action = model
             .item_attribute_value(index, gio::MENU_ATTRIBUTE_ACTION, None)
             .and_then(|action| action.get::<String>())
+            .map(|action| {
+                let target = model.item_attribute_value(index, gio::MENU_ATTRIBUTE_TARGET, None);
+                gio::Action::print_detailed_name(&action, target.as_ref()).to_string()
+            })
             .unwrap_or_default();
         // Without the mnemonic marks: the reader sees "New Window", not "_New Window".
         said.push(format!("item\t{}\t{action}", label.replace('_', "")));
+        if let Some(submenu) = submenu {
+            offered(&submenu, said);
+        }
     }
 }
 
@@ -2336,10 +2349,12 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     reading.append(Some("_Find…"), Some(crate::find::FIND));
     // Which engine this window reads with (issue #17). A submenu of the main menu
     // rather than something buried: it is two presses from any document, and every
-    // engine this build has is in it, named by the engine itself.
+    // engine this build has is in it, named by the engine itself — the name the reader
+    // reads, while the item carries the identifier the window is switched by
+    // (issue #31).
     let parsers = gio::Menu::new();
     for engine in axiomd_engine::engines() {
-        let item = gio::MenuItem::new(Some(engine.id().as_str()), None);
+        let item = gio::MenuItem::new(Some(engine.display_name()), None);
         item.set_action_and_target_value(Some(ENGINE), Some(&engine.id().as_str().to_variant()));
         parsers.append_item(&item);
     }

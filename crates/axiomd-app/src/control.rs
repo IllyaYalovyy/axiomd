@@ -361,6 +361,9 @@ impl Session {
             // so what happens next — the binding, the setting, the document
             // restyling — is the application's own path and nothing here.
             "preference" => read_row(&self.target(shell)?, payload),
+            // And everything it says at once, which is how the words themselves are
+            // held to the way GNOME writes them.
+            "preferences" => dialog_said(&self.target(shell)?),
             "set-preference" => {
                 let (title, value) = payload
                     .split_once('=')
@@ -580,6 +583,51 @@ fn find_button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
         child = candidate.next_sibling();
     }
     None
+}
+
+/// Every word the preferences dialog says to the reader, in the order it says them:
+/// `group<TAB>title<TAB>description` for a heading, `row<TAB>title<TAB>subtitle<TAB>
+/// option|option` for a row.
+///
+/// Read out whole rather than a row at a time, so that the way this dialog is written —
+/// header-capitalised titles, subtitles that are sentences, and never an identifier
+/// (issue #31) — is asserted of everything in it, including rows added after the test
+/// that holds it to that.
+fn dialog_said(window: &Rc<DocumentWindow>) -> Answer {
+    let dialog = window
+        .window()
+        .visible_dialog()
+        .ok_or("no dialog is open, so there is nothing for it to say")?;
+    let mut said = Vec::new();
+    say(dialog.upcast_ref::<gtk::Widget>(), &mut said);
+    Ok(said.join("\n"))
+}
+
+/// Appends what `widget` and everything under it says, depth first.
+fn say(widget: &gtk::Widget, said: &mut Vec<String>) {
+    if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
+        let (title, description) = (group.title(), group.description().unwrap_or_default());
+        // A group with neither is libadwaita's own — the empty box it fills while the
+        // reader is searching the dialog. It says nothing, so it says nothing here.
+        if !title.is_empty() || !description.is_empty() {
+            said.push(format!("group\t{title}\t{description}"));
+        }
+    } else if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
+        let subtitle = row
+            .downcast_ref::<adw::ActionRow>()
+            .map(|row| row.subtitle().unwrap_or_default().to_string())
+            .unwrap_or_default();
+        let options = row
+            .downcast_ref::<adw::ComboRow>()
+            .map(|choice| labels(choice).join("|"))
+            .unwrap_or_default();
+        said.push(format!("row\t{}\t{subtitle}\t{options}", row.title()));
+    }
+    let mut child = widget.first_child();
+    while let Some(candidate) = child {
+        say(&candidate, said);
+        child = candidate.next_sibling();
+    }
 }
 
 /// What a preferences row currently says, as the reader reads it: a switch as

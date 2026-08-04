@@ -41,6 +41,10 @@ impl MarkdownEngine for ComrakEngine {
         Self::ID
     }
 
+    fn display_name(&self) -> &'static str {
+        "Comrak"
+    }
+
     fn capabilities(&self) -> Extensions {
         Extensions::FULL
     }

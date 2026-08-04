@@ -37,8 +37,8 @@ const STYLE: Asset = Asset {
 const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "emoji",
-    name: "Emoji shortcodes",
-    description: "Write :tada: and read 🎉, the way GitHub spells them",
+    name: "Emoji Shortcodes",
+    description: "Write :tada: and read 🎉, the way GitHub spells them.",
     fences: &[],
     assets: &[STYLE],
 };

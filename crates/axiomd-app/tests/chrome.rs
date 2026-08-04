@@ -59,9 +59,12 @@ fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
             ("New Window", "app.new"),
             ("Open…", "app.open"),
             ("Find…", "win.find"),
-            // The submenu of engines, by the words on it: what is inside depends on
-            // what this build was compiled with (issue #17).
+            // The submenu of engines, and what a reader who points at it reads: every
+            // engine this build has, each named for them, each carrying the identifier
+            // the window is switched by (issues #17 and #31).
             ("Markdown Engine", ""),
+            ("Comrak", "win.engine::comrak"),
+            ("Pulldown", "win.engine::pulldown-cmark"),
             ("Edit Source", "win.mode"),
             ("Save", "win.save"),
             ("Save As…", "win.save-as"),

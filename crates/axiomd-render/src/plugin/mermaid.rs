@@ -67,8 +67,8 @@ const STYLE: Asset = Asset {
 const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "mermaid",
-    name: "Mermaid diagrams",
-    description: "Draw ```mermaid fences as diagrams, bundled and offline",
+    name: "Mermaid Diagrams",
+    description: "Draw ```mermaid fences as diagrams, bundled and offline.",
     fences: &["mermaid"],
     assets: &[VIEW, LIBRARY, STYLE],
 };

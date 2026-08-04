@@ -166,6 +166,19 @@ impl Header {
     }
 }
 
+/// One thing the preferences dialog says: a group's heading, or a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    /// Whether this is a heading over rows rather than a row itself.
+    pub heading: bool,
+    /// The words in bold: a group's title, or a row's.
+    pub title: String,
+    /// The line under them, empty when there is none.
+    pub subtitle: String,
+    /// What a choice offers, in the order it offers them; empty for anything else.
+    pub options: Vec<String>,
+}
+
 /// The main menu as the reader meets it.
 ///
 /// One question rather than two, because a menu offering something nobody can open is
@@ -174,9 +187,10 @@ impl Header {
 pub struct Menu {
     /// Whether the menu is open in front of the reader.
     pub open: bool,
-    /// Everything it offers, in order, as the words on it and the action pressing it
-    /// fires — a submenu by its own words and an empty action. The zoom row is a
-    /// widget rather than an item and is not among them.
+    /// Everything it offers, in order, as the words on it and the detailed action
+    /// pressing it fires — a submenu by its own words and an empty action, followed by
+    /// what is inside it. The zoom row is a widget rather than an item and is not
+    /// among them.
     pub items: Vec<(String, String)>,
     /// What the zoom row in the menu says the document is scaled to, or an empty
     /// string when the menu is not showing that row at all.
@@ -757,6 +771,28 @@ impl App {
     /// number for a number, the label showing for a choice.
     pub fn preference(&self, row: &str) -> String {
         self.command("preference", row)
+    }
+
+    /// Everything the open preferences dialog says to the reader, headings and rows
+    /// alike, in the order they read them.
+    pub fn preferences(&self) -> Vec<Said> {
+        self.command("preferences", "")
+            .lines()
+            .filter_map(|line| {
+                let mut said = line.split('\t');
+                let kind = said.next()?;
+                Some(Said {
+                    heading: kind == "group",
+                    title: said.next().unwrap_or_default().to_owned(),
+                    subtitle: said.next().unwrap_or_default().to_owned(),
+                    options: said
+                        .next()
+                        .filter(|options| !options.is_empty())
+                        .map(|options| options.split('|').map(str::to_owned).collect())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect()
     }
 
     /// Turns the preferences row titled `row` to `value`, as the reader turns it.

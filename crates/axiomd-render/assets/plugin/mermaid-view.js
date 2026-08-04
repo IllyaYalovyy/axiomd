@@ -134,7 +134,9 @@
     root.innerHTML = '<slot></slot><p class="plugin-badge"></p>';
     root.adoptedStyleSheets = [SHADOW];
     root.querySelector('.plugin-badge').textContent =
-      'Mermaid diagrams could not draw this diagram: ' + said.split('\n')[0].trim();
+      // The plugin's own name, as preferences shows it (issue #31): the same
+      // capability must not be two different words to one reader.
+      'Mermaid Diagrams could not draw this diagram: ' + said.split('\n')[0].trim();
   };
 
   const show = (block, svg) => {

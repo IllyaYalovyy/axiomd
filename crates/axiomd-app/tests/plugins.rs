@@ -9,7 +9,7 @@
 use axiomd_e2e::{App, Fixture, Preferences};
 
 /// The switch the reader turns, as preferences names it.
-const ROW: &str = "Emoji shortcodes";
+const ROW: &str = "Emoji Shortcodes";
 
 /// What the document says where the shortcode was written.
 const SHORTCODE_TEXT: &str =

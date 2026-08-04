@@ -11,13 +11,15 @@ use std::ops::{BitOr, Range};
 /// Stable identifier of a markdown engine.
 ///
 /// Used by the engine registry and by per-document engine selection; it is what a
-/// preference or a document override stores.
+/// preference or a document override stores, and what a menu item carries as its
+/// action target. It is never what a reader is shown — that is
+/// [`MarkdownEngine::display_name`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EngineId(&'static str);
 
 impl EngineId {
-    /// Names an engine. The name is user-visible and persisted, so treat it as
-    /// stable once an engine ships.
+    /// Names an engine. The name is persisted and carried in action targets, so treat
+    /// it as stable once an engine ships.
     pub const fn new(name: &'static str) -> Self {
         Self(name)
     }
@@ -428,6 +430,15 @@ impl<'a> Parsed<'a> {
 pub trait MarkdownEngine: Send + Sync {
     /// This engine's stable identifier.
     fn id(&self) -> EngineId;
+
+    /// What a reader calls this engine, in a menu or a preferences row.
+    ///
+    /// An engine that is offered has to be named, and naming it belongs here rather
+    /// than in whichever surface happens to offer it: a build that gains an engine
+    /// gains its name everywhere at once, and no chooser can fall back to showing an
+    /// identifier the reader never chose. Header capitalised, because every surface
+    /// that shows it is one the HIG capitalises that way.
+    fn display_name(&self) -> &'static str;
 
     /// Every extension this engine can parse. Requesting more than this is not an
     /// error; the surplus is simply parsed as ordinary markdown.

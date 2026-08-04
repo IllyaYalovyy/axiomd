@@ -63,7 +63,7 @@ const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "math",
     name: "Math",
-    description: "Typeset $inline$ and $$display$$ LaTeX, bundled and offline",
+    description: "Typeset $inline$ and $$display$$ LaTeX, bundled and offline.",
     fences: &[],
     assets: &[STYLE, FONT],
 };

@@ -393,8 +393,8 @@ fn the_reader_can_switch_the_outline_off_and_it_goes_at_once() {
 
     app.activate("app.preferences");
     app.wait_for_dialog_saying("Preferences");
-    assert_eq!(app.preference("Show the outline"), "true");
-    app.set_preference("Show the outline", "false");
+    assert_eq!(app.preference("Show Outline"), "true");
+    app.set_preference("Show Outline", "false");
 
     preferences.wait_until("outline", "false");
     app.wait_for("the outline to go", || !app.outline().shown);

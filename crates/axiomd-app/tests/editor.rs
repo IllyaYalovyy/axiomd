@@ -296,7 +296,7 @@ fn the_reader_can_switch_spell_checking_off_while_they_are_typing() {
     let loads = app.navigation_count();
 
     app.activate("app.preferences");
-    app.set_preference("Check spelling", "false");
+    app.set_preference("Check Spelling", "false");
     app.wait_for("the marks to come off the source", || {
         app.misspelled().is_empty()
     });
@@ -308,7 +308,7 @@ fn the_reader_can_switch_spell_checking_off_while_they_are_typing() {
     );
 
     // And on again, for the reader who changes their mind.
-    app.set_preference("Check spelling", "true");
+    app.set_preference("Check Spelling", "true");
     app.wait_for("the marks to come back", || {
         app.misspelled() == vec![MISSPELT.to_owned()]
     });

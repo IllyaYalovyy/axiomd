@@ -18,7 +18,7 @@ use axiomd_e2e::{App, Fixture, Preferences};
 use support::Origin;
 
 /// The switch the reader turns, as preferences names it.
-const ROW: &str = "Mermaid diagrams";
+const ROW: &str = "Mermaid Diagrams";
 
 /// Every diagram block in the document, drawn or not.
 const BLOCKS: &str = "document.querySelectorAll('article.markdown div.plugin-mermaid').length";
@@ -149,7 +149,7 @@ fn a_diagram_type_this_build_does_not_know_keeps_its_source_and_says_so() {
 
     let badge = app.dom(&format!("({}) ?? ''", badge_text(0)));
     assert!(
-        badge.starts_with("Mermaid diagrams could not draw this diagram:"),
+        badge.starts_with("Mermaid Diagrams could not draw this diagram:"),
         "the badge said {badge:?}",
     );
     assert!(badge.contains("No diagram type detected"), "{badge}");
@@ -186,7 +186,7 @@ fn a_diagram_that_cannot_be_parsed_keeps_its_source_and_says_why() {
 
     let badge = app.dom(&format!("({}) ?? ''", badge_text(0)));
     assert!(
-        badge.starts_with("Mermaid diagrams could not draw this diagram: Parse error"),
+        badge.starts_with("Mermaid Diagrams could not draw this diagram: Parse error"),
         "the badge said {badge:?}",
     );
     // The rest of the document is exactly what it would have been.
