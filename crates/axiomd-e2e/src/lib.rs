@@ -489,8 +489,9 @@ impl App {
     ///
     /// Returns once the window has finished with it.
     pub fn open_here(&self, document: &Path) {
+        let finished = self.render_count();
         self.command("open-here", &document.display().to_string());
-        self.wait_for_a_finished_page();
+        self.wait_for_a_page_after(finished);
     }
 
     /// Directs later commands at the window at `index`, counting from the first one
@@ -1147,13 +1148,31 @@ impl App {
     /// it caught up yet": the window counts the pages it finishes, and a page that
     /// never arrives fails the test rather than being slept past.
     fn wait_for_a_finished_page(&self) {
+        self.wait_for_a_page_after(0);
+    }
+
+    /// The same, for a window that had already finished `rendered` pages when it was
+    /// asked — which is every window given a second document.
+    fn wait_for_a_page_after(&self, rendered: u32) {
         self.settle("a window", || {
             Ok(self.try_command("window", "count")? != "0")
         });
         self.settle("the window to finish a page", || {
-            Ok(self.try_command("window", "renders")? != "0")
+            let finished: u32 = self.try_command("window", "renders")?.parse().unwrap_or(0);
+            Ok(finished > rendered)
         });
         if self.showing_document() {
+            // The page in front of the reader is the one the window published, and not
+            // the document it is leaving. A window given a second file loads it, and
+            // until that load commits the DOM is still the old document — which has an
+            // `article.markdown` and a heading of its own, so every condition below
+            // would be answered by the wrong page. Seen as a one-in-five failure of the
+            // engine suite, where the second document was asserted about and the first
+            // one answered.
+            self.settle("the page to be the one the window published", || {
+                let published = self.try_command("window", "uri")?;
+                Ok(self.try_command("eval", "String(location.href)")? == published)
+            });
             self.wait_until("document.querySelector('article.markdown') !== null");
             // And until its styling has arrived with it. A stylesheet is render
             // blocking, so a complete document is a laid-out one — where a document
