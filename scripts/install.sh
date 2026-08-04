@@ -19,6 +19,12 @@
 # Usage:
 #   scripts/install.sh [--user | --prefix DIR] [--destdir DIR] [--binary FILE]
 #   scripts/install.sh --uninstall [--user | --prefix DIR] [--destdir DIR]
+#
+# Translations (issue #34): a language `po/LINGUAS` names is compiled and installed here
+# too — the message catalogue the application reads, and the same words merged into the
+# desktop entry the shell draws and the AppStream data a software centre shows. With no
+# translations in the repository this does nothing at all, which is where axiomd is
+# today.
 
 set -euo pipefail
 
@@ -113,16 +119,94 @@ payload=(
     "${data}/icons/hicolor/symbolic/apps/${app_id}-symbolic.svg|share/icons/hicolor/symbolic/apps/${app_id}-symbolic.svg|644"
 )
 
+po="${repo_root}/po"
+
+# The languages axiomd is translated into: what `po/LINGUAS` names, comments and blank
+# lines aside.
+#
+# Empty is the normal state today (issue #34 landed the machinery and no translation),
+# and every step below is written so that empty means "install exactly what axiomd
+# installed before any of this existed".
+languages() {
+    local code
+    [[ -f ${po}/LINGUAS ]] || return 0
+    while read -r code; do
+        code=${code%%#*}
+        code=${code//[[:space:]]/}
+        if [[ -n ${code} ]]; then
+            printf '%s\n' "${code}"
+        fi
+    done <"${po}/LINGUAS"
+}
+
+# A language named with no `po/<code>.po` beside it stops the install before it starts.
+#
+# Not skipped: `msgfmt` reads `LINGUAS` itself when it merges the desktop entry and the
+# metainfo, so a language this script passed over would fail there anyway — halfway
+# through, with half an axiomd installed. And it is a mistake in the repository rather
+# than anything about the machine installing it, so it is worth saying plainly.
+check_catalogs() {
+    local code missing=()
+    while read -r code; do
+        [[ -f ${po}/${code}.po ]] || missing+=("${code}")
+    done < <(languages)
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        printf 'install.sh: po/LINGUAS names %s and there is no po/%s.po for it.\n  Either add the translation or take the language out of po/LINGUAS.\n' \
+            "${missing[*]}" "${missing[0]}" >&2
+        exit 1
+    fi
+}
+
 installed_paths() {
-    local entry destination
+    local entry destination code
     for entry in "${payload[@]}"; do
         destination=${entry#*|}
         printf '%s\n' "${root}/${destination%%|*}"
     done
+    while read -r code; do
+        printf '%s\n' "${root}/share/locale/${code}/LC_MESSAGES/axiomd.mo"
+    done < <(languages)
 }
 
 has_command() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# The reader's own language, in the three places axiomd is read in it: the application's
+# message catalogue, the desktop entry the shell draws before axiomd is started, and the
+# AppStream description a software centre shows before it is installed.
+#
+# `msgfmt` compiles all three — `--desktop` and `--xml` merge the translations *into* the
+# files already installed above, so the entry and the metainfo in `data/` stay the whole
+# truth about axiomd and gain their translations here rather than being generated
+# somewhere else. A repository with no translations does none of this and leaves the
+# untranslated originals exactly as they were.
+install_catalogs() {
+    local code any=false
+    while read -r code; do
+        any=true
+        if ! has_command msgfmt; then
+            printf 'install.sh: this repository has translations (po/%s.po) and msgfmt is
+  not here to compile them (Fedora: sudo dnf install gettext,
+  Debian: sudo apt install gettext)\n' "${code}" >&2
+            exit 1
+        fi
+        install -d "${root}/share/locale/${code}/LC_MESSAGES"
+        msgfmt "${po}/${code}.po" \
+            --output-file="${root}/share/locale/${code}/LC_MESSAGES/axiomd.mo"
+    done < <(languages)
+
+    if [[ ${any} == false ]]; then
+        return 0
+    fi
+
+    msgfmt --desktop --template="${data}/${app_id}.desktop" -d "${po}" \
+        --output-file="${root}/share/applications/${app_id}.desktop"
+    chmod 644 "${root}/share/applications/${app_id}.desktop"
+    msgfmt --xml --template="${data}/${app_id}.metainfo.xml" -d "${po}" \
+        --output-file="${root}/share/metainfo/${app_id}.metainfo.xml"
+    chmod 644 "${root}/share/metainfo/${app_id}.metainfo.xml"
 }
 
 # The icon cache is written by whichever of GTK's two cache builders is here; a machine
@@ -197,11 +281,19 @@ refresh_desktop_caches() {
 # uninstall has left it empty. `rmdir` refuses a directory that is not, which is exactly
 # the wanted answer and not an error.
 prune_empty_directories() {
-    local relative
+    local relative code
+    # A language's own two directories first: they sit under `share/locale`, which other
+    # applications' catalogues live in and which therefore survives unless axiomd was the
+    # last thing in it.
+    while read -r code; do
+        rmdir "${root}/share/locale/${code}/LC_MESSAGES" 2>/dev/null || true
+        rmdir "${root}/share/locale/${code}" 2>/dev/null || true
+    done < <(languages)
     for relative in \
         bin \
         share/applications \
         share/metainfo \
+        share/locale \
         share/glib-2.0/schemas share/glib-2.0 \
         share/icons/hicolor/scalable/apps share/icons/hicolor/scalable \
         share/icons/hicolor/symbolic/apps share/icons/hicolor/symbolic \
@@ -238,6 +330,10 @@ install_files() {
         exit 1
     fi
 
+    # Before a single file is written: a half-installed axiomd is worse than an
+    # uninstalled one.
+    check_catalogs
+
     local entry source destination mode
     for entry in "${payload[@]}"; do
         source=${entry%%|*}
@@ -246,6 +342,10 @@ install_files() {
         destination=${destination%%|*}
         install -Dm"${mode}" "${source}" "${root}/${destination}"
     done
+
+    # Before the entry is rewritten below, because this is what writes the entry the
+    # reader's desktop draws when their language is one axiomd has been translated into.
+    install_catalogs
 
     # A per-user prefix's `bin` is not reliably on the session's PATH, and a desktop
     # entry whose Exec is a bare command is a launcher that does nothing at all when it

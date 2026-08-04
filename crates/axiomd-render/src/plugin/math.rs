@@ -39,6 +39,7 @@
 use std::borrow::Cow;
 
 use axiomd_engine::Event;
+use axiomd_i18n::{gettext, gettext_noop};
 use pulldown_latex::config::DisplayMode;
 use pulldown_latex::{Parser, ParserError, RenderConfig, Storage, push_mathml};
 
@@ -62,8 +63,8 @@ const STYLE: Asset = Asset {
 const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "math",
-    name: "Math",
-    description: "Typeset $inline$ and $$display$$ LaTeX, bundled and offline.",
+    name: gettext_noop("Math"),
+    description: gettext_noop("Typeset $inline$ and $$display$$ LaTeX, bundled and offline."),
     fences: &[],
     assets: &[STYLE, FONT],
 };
@@ -158,10 +159,10 @@ fn mathml(display: bool, latex: &str) -> Result<(String, String), String> {
     .map_err(|error| error.to_string())?;
     let (open, rest) = markup
         .split_once('>')
-        .ok_or_else(|| "the equation could not be typeset".to_owned())?;
+        .ok_or_else(|| gettext("the equation could not be typeset"))?;
     let inner = rest
         .strip_suffix("</math>")
-        .ok_or_else(|| "the equation could not be typeset".to_owned())?;
+        .ok_or_else(|| gettext("the equation could not be typeset"))?;
     Ok((format!("{open}>"), inner.to_owned()))
 }
 

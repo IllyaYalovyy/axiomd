@@ -31,6 +31,8 @@
 //! one of those is not a blank box either: it fails the way an unparseable diagram
 //! fails, keeping its source and saying that this build does not know the type.
 
+use axiomd_i18n::gettext_noop;
+
 use super::{Asset, Manifest, PLUGIN_API, Plugin, SCRIPT, STYLESHEET};
 use crate::body::escape_text;
 
@@ -67,8 +69,8 @@ const STYLE: Asset = Asset {
 const MANIFEST: Manifest = Manifest {
     api: PLUGIN_API,
     id: "mermaid",
-    name: "Mermaid Diagrams",
-    description: "Draw ```mermaid fences as diagrams, bundled and offline.",
+    name: gettext_noop("Mermaid Diagrams"),
+    description: gettext_noop("Draw ```mermaid fences as diagrams, bundled and offline."),
     fences: &["mermaid"],
     assets: &[VIEW, LIBRARY, STYLE],
 };

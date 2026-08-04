@@ -1,0 +1,15 @@
+[package]
+name = "axiomd-i18n"
+description = "axiomd's translation domain: where its catalogs are, and the calls that read them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The C library's own gettext, through safe bindings. `gettext-system` is what makes
+# it *the system's*: without that feature the crate builds a second copy of GNU
+# gettext from source and binds to that, which would give axiomd a message catalogue
+# loader that is not the one every other application on the desktop uses.
+gettext-rs = { version = "0.7.7", features = ["gettext-system"] }

@@ -27,6 +27,7 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use axiomd_i18n::gettext;
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -188,9 +189,7 @@ fn write_a_page(document: &Document, file: &Path, then: impl Fn(Outcome) + 'stat
         match written {
             Ok(Ok(())) => then(Outcome::Done(Some(file))),
             Ok(Err(trouble)) => then(Outcome::Failed(trouble)),
-            Err(_) => then(Outcome::Failed(
-                "the export stopped unexpectedly".to_owned(),
-            )),
+            Err(_) => then(Outcome::Failed(gettext("the export stopped unexpectedly"))),
         }
     });
 }

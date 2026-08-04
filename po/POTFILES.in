@@ -1,0 +1,35 @@
+# Every file axiomd says a word to its reader in.
+#
+# `scripts/generate-pot.sh` reads this list and nothing else, so a file missing from it
+# is a screen of axiomd that no translator can ever see. Nothing keeps that from
+# happening by hand — `crates/axiomd-i18n/tests/catalog.rs` sweeps the whole source
+# tree with the same extractor and fails the gate when this list and what it finds have
+# come apart, in either direction.
+#
+# Paths are relative to the repository root.
+
+# What the desktop knows about axiomd before it is started.
+data/io.github.etf.axiomd.desktop
+data/io.github.etf.axiomd.metainfo.xml
+
+# The window, and everything in it.
+crates/axiomd-app/src/chrome.rs
+crates/axiomd-app/src/export.rs
+crates/axiomd-app/src/find.rs
+crates/axiomd-app/src/outline.rs
+crates/axiomd-app/src/remote.rs
+crates/axiomd-app/src/settings/dialog.rs
+crates/axiomd-app/src/shell.rs
+crates/axiomd-app/src/window.rs
+crates/axiomd-app/src/zoom.rs
+
+# What the document model says when a document cannot be read or written.
+crates/axiomd-doc/src/lib.rs
+
+# The rendered document's own chrome, and the optional capabilities named in
+# preferences.
+crates/axiomd-render/src/body.rs
+crates/axiomd-render/src/plugin.rs
+crates/axiomd-render/src/plugin/emoji.rs
+crates/axiomd-render/src/plugin/math.rs
+crates/axiomd-render/src/plugin/mermaid.rs

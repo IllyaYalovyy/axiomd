@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use axiomd_i18n::gettext;
 use gtk::gio;
 use gtk::glib;
 
@@ -134,8 +135,8 @@ impl Shell {
     fn show_unopenable(self: &Rc<Self>, app: &adw::Application, location: &str) {
         let window = self.new_window(app);
         window.show_unavailable(
-            "Could not open this document",
-            &format!("{location} is not a file on this computer."),
+            &gettext("Could not open this document"),
+            &gettext("{location} is not a file on this computer.").replace("{location}", location),
         );
         window.present();
     }
@@ -240,7 +241,7 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
         glib::Char::from(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
-        "Read documents with this markdown engine",
+        &gettext("Read documents with this markdown engine"),
         Some("ENGINE"),
     );
     // Answered here rather than at startup, because this runs before GTK is
@@ -345,7 +346,7 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
 /// set of files from the one the application will open (issue #22).
 fn markdown_filter() -> gtk::FileFilter {
     let markdown = gtk::FileFilter::new();
-    markdown.set_name(Some("Markdown Documents"));
+    markdown.set_name(Some(&gettext("Markdown Documents")));
     markdown.add_mime_type("text/markdown");
     for extension in crate::document::MARKDOWN_EXTENSIONS {
         markdown.add_pattern(&format!("*.{extension}"));
@@ -376,7 +377,7 @@ fn ask_for_a_document(shell: &Rc<Shell>, app: &adw::Application) {
     filters.append(&markdown);
 
     let dialog = gtk::FileDialog::builder()
-        .title("Open Document")
+        .title(gettext("Open Document"))
         .filters(&filters)
         .default_filter(&markdown)
         .modal(true)

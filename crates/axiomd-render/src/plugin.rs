@@ -51,6 +51,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use axiomd_engine::Event;
+use axiomd_i18n::gettext;
 
 use crate::Anchor;
 
@@ -149,7 +150,8 @@ pub trait Plugin: Send + Sync {
     /// sentence about the document rather than an internal message.
     fn fence(&self, language: &str, source: &str) -> Result<String, String> {
         let _ = source;
-        Err(format!("{language} is not a language this plugin draws"))
+        Err(gettext("{language} is not a language this plugin draws")
+            .replace("{language}", language))
     }
 
     /// Decorates the finished document body, or answers `None` to leave it as it is.

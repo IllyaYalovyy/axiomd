@@ -22,6 +22,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use axiomd_i18n::gettext;
 use gtk::glib;
 
 /// The largest image axiomd will hold for a document. A reader pressing a button
@@ -46,13 +47,13 @@ pub(crate) fn load(
     done: impl FnOnce(Result<Fetched, String>) + 'static,
 ) {
     if !is_loadable(url) {
-        done(Err(
-            "axiomd only loads images over http and https.".to_owned()
-        ));
+        done(Err(gettext(
+            "axiomd only loads images over http and https.",
+        )));
         return;
     }
     let Some(download) = session.download_uri(url) else {
-        done(Err("This image could not be requested.".to_owned()));
+        done(Err(gettext("This image could not be requested.")));
         return;
     };
 
@@ -62,7 +63,7 @@ pub(crate) fn load(
         Some(scratch) => scratch,
         None => {
             download.cancel();
-            done(Err("There is nowhere to put this image.".to_owned()));
+            done(Err(gettext("There is nowhere to put this image.")));
             return;
         }
     };
@@ -118,23 +119,25 @@ pub(crate) fn requestable(url: &str) -> String {
 fn finished(download: &webkit6::Download, scratch: &Scratch) -> Result<Fetched, String> {
     let response = download
         .response()
-        .ok_or_else(|| "That address answered with nothing.".to_owned())?;
+        .ok_or_else(|| gettext("That address answered with nothing."))?;
     let content_type = response.mime_type().unwrap_or_default().to_string();
     if !content_type.starts_with("image/") {
-        return Err(format!(
-            "That address answered with {}, which is not an image.",
-            if content_type.is_empty() {
-                "no content type"
-            } else {
-                &content_type
-            }
-        ));
+        let said = if content_type.is_empty() {
+            gettext("no content type")
+        } else {
+            content_type.clone()
+        };
+        return Err(
+            gettext("That address answered with {type}, which is not an image.")
+                .replace("{type}", &said),
+        );
     }
-    let body = scratch
-        .take()
-        .map_err(|error| format!("This image could not be read back: {error}."))?;
+    let body = scratch.take().map_err(|error| {
+        gettext("This image could not be read back: {reason}.")
+            .replace("{reason}", &error.to_string())
+    })?;
     if body.is_empty() {
-        return Err("That address answered with an empty image.".to_owned());
+        return Err(gettext("That address answered with an empty image."));
     }
     Ok(Fetched { body, content_type })
 }
@@ -144,7 +147,7 @@ fn finished(download: &webkit6::Download, scratch: &Scratch) -> Result<Fetched, 
 fn readable(error: &glib::Error) -> String {
     let message = error.message().trim().to_owned();
     if message.is_empty() {
-        "This image could not be loaded.".to_owned()
+        gettext("This image could not be loaded.")
     } else {
         format!("{message}.")
     }

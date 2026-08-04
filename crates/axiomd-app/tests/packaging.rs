@@ -1825,3 +1825,299 @@ fn dirs_flatpak_exports() -> String {
     });
     format!("{data_home}/flatpak/exports/share")
 }
+
+// ---------------------------------------------------------------------------
+// Translations (issue #34).
+//
+// axiomd ships none today; what has to work is that installing a repository which has
+// one puts the reader's language everywhere they read axiomd in it. So the test builds
+// such a repository — the real installer, the real `data/`, and one translation of its
+// own — rather than waiting for the first one to land.
+// ---------------------------------------------------------------------------
+
+/// An Esperanto translation of the three sentences the reader meets first: the two the
+/// desktop shows before axiomd is started, and one from the window itself.
+const ESPERANTO: &str = r#"
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Markdown Viewer"
+msgstr "Rigardilo de Markdown"
+
+msgid "Read and write Markdown documents"
+msgstr "Legu kaj skribu Markdown-dokumentojn"
+
+msgid "Open Document"
+msgstr "Malfermu Dokumenton"
+"#;
+
+/// A repository exactly like this one, with a translation in it — the real installer and
+/// the real `data/`, so what is checked is what a release with a translation would do.
+struct TranslatedRepository {
+    scratch: Scratch,
+}
+
+impl TranslatedRepository {
+    fn new(label: &str) -> TranslatedRepository {
+        let scratch = Scratch::new(label);
+        scratch.write("po/LINGUAS", "# a comment, and a blank line\n\neo\n");
+        scratch.write("po/eo.po", ESPERANTO);
+
+        // Pointed at rather than copied, and for two reasons. It is then demonstrably
+        // *this* repository's installer rather than a copy that could go stale — and a
+        // copy is a file something has just had open for writing, which another test
+        // running beside this one inherits across `fork` and which makes `execve`
+        // answer ETXTBSY. `install.sh` reads its own directory to find the repository
+        // it belongs to, so a link in a scripts directory of this test's own is all it
+        // takes to point it at the translation below.
+        std::fs::create_dir_all(scratch.path.join("scripts")).expect("a scripts directory");
+        std::os::unix::fs::symlink(
+            repository().join("scripts/install.sh"),
+            scratch.path.join("scripts/install.sh"),
+        )
+        .expect("point at this repository's installer");
+        std::os::unix::fs::symlink(repository().join("data"), scratch.path.join("data"))
+            .expect("point at this repository's data");
+
+        TranslatedRepository { scratch }
+    }
+
+    fn run(&self, arguments: &[&str]) -> String {
+        let output = self.attempt(arguments);
+        assert!(
+            output.status.success(),
+            "install.sh {arguments:?} failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        String::from_utf8(output.stdout).expect("the installer prints utf-8")
+    }
+
+    fn install(&self) {
+        self.run(&["--prefix", "/app", "--binary", env!("CARGO_BIN_EXE_axiomd")]);
+    }
+
+    fn uninstall(&self) {
+        self.run(&["--uninstall", "--prefix", "/app"]);
+    }
+
+    fn attempt(&self, arguments: &[&str]) -> std::process::Output {
+        Command::new(self.scratch.path.join("scripts/install.sh"))
+            .args(arguments)
+            .arg("--destdir")
+            .arg(self.scratch.path.join("root"))
+            .output()
+            .expect("run the installer of a repository with a translation in it")
+    }
+
+    /// The same, installed the recommended way — into a home of this test's own.
+    fn install_for_the_user(&self) -> PathBuf {
+        let home = self.scratch.path.join("home");
+        let path = std::env::var("PATH").expect("a PATH to find the packaging tools on");
+        let output = Command::new(self.scratch.path.join("scripts/install.sh"))
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", &home)
+            .args(["--user", "--binary", env!("CARGO_BIN_EXE_axiomd")])
+            .output()
+            .expect("run the installer for a user");
+        assert!(
+            output.status.success(),
+            "install.sh --user failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        home.join(".local")
+    }
+
+    fn prefix(&self) -> PathBuf {
+        self.scratch.path.join("root/app")
+    }
+}
+
+/// The catalogue itself, read back the way the C library reads it.
+fn compiled_catalogue(prefix: &Path, language: &str) -> String {
+    let path = prefix.join(format!("share/locale/{language}/LC_MESSAGES/axiomd.mo"));
+    assert!(
+        path.is_file(),
+        "installing a repository with a translation left no catalogue at {}",
+        path.display(),
+    );
+    let read = tool("msgunfmt", "sudo dnf install gettext")
+        .arg(&path)
+        .output()
+        .expect("run msgunfmt");
+    assert!(
+        read.status.success(),
+        "msgunfmt cannot read the installed catalogue: {}",
+        String::from_utf8_lossy(&read.stderr),
+    );
+    String::from_utf8_lossy(&read.stdout).into_owned()
+}
+
+/// A reader whose language axiomd has been translated into meets it in three places, and
+/// installing has to reach all three: the window's own words, the entry the shell draws
+/// before axiomd is started, and the description a software centre shows before it is
+/// installed.
+#[test]
+fn installing_a_translation_puts_it_where_the_reader_meets_axiomd() {
+    let repository = TranslatedRepository::new("translated");
+    repository.install();
+    let prefix = repository.prefix();
+
+    assert!(
+        compiled_catalogue(&prefix, "eo").contains("Malfermu Dokumenton"),
+        "the installed catalogue does not hold the words that were translated into it",
+    );
+
+    let entry =
+        std::fs::read_to_string(prefix.join(format!("share/applications/{APP_ID}.desktop")))
+            .expect("read the installed desktop entry");
+    assert!(
+        entry.contains("Comment[eo]=Legu kaj skribu Markdown-dokumentojn"),
+        "the installed desktop entry says nothing in the language that was installed:\n{entry}",
+    );
+    assert!(
+        entry.contains("GenericName[eo]=Rigardilo de Markdown"),
+        "the installed desktop entry is missing a translated key:\n{entry}",
+    );
+    assert!(
+        entry.contains("Comment=Read and write Markdown documents"),
+        "merging a translation took the English away from readers who have no other",
+    );
+
+    let metainfo =
+        std::fs::read_to_string(prefix.join(format!("share/metainfo/{APP_ID}.metainfo.xml")))
+            .expect("read the installed metainfo");
+    assert!(
+        metainfo
+            .contains("<summary xml:lang=\"eo\">Legu kaj skribu Markdown-dokumentojn</summary>"),
+        "a software centre would show this reader English:\n{metainfo}",
+    );
+
+    // Still the files the desktop can read, translations and all.
+    let complaints = tool(
+        "desktop-file-validate",
+        "sudo dnf install desktop-file-utils",
+    )
+    .arg(prefix.join(format!("share/applications/{APP_ID}.desktop")))
+    .output()
+    .expect("run desktop-file-validate");
+    assert!(
+        complaints.status.success(),
+        "desktop-file-validate is not happy with the translated entry:\n{}{}",
+        String::from_utf8_lossy(&complaints.stdout),
+        String::from_utf8_lossy(&complaints.stderr),
+    );
+}
+
+/// And takes them all back out again: an uninstall that left a catalogue behind would
+/// leave a reader's next axiomd speaking a language it was never given.
+#[test]
+fn uninstalling_takes_the_translation_away_with_everything_else() {
+    let repository = TranslatedRepository::new("translated-uninstall");
+    repository.install();
+    repository.uninstall();
+    let prefix = repository.prefix();
+
+    assert!(
+        !prefix
+            .join("share/locale/eo/LC_MESSAGES/axiomd.mo")
+            .exists(),
+        "uninstalling left the translation behind",
+    );
+    assert!(
+        !prefix.join("share/locale").exists(),
+        "uninstalling left an empty share/locale behind",
+    );
+    assert!(
+        !prefix.join("bin/axiomd").exists(),
+        "uninstalling a translated install did not remove the rest of it",
+    );
+}
+
+/// This repository has no translation, and installing it must be exactly what it was
+/// before any of this machinery existed: no `share/locale`, and an English entry that
+/// carries no language keys at all.
+#[test]
+fn a_repository_with_no_translation_installs_exactly_what_it_used_to() {
+    let installed = Installed::new("untranslated");
+    let prefix = installed.prefix();
+
+    assert!(
+        !prefix.join("share/locale").exists(),
+        "an install with nothing to translate made a locale directory anyway",
+    );
+
+    let entry =
+        std::fs::read_to_string(prefix.join(format!("share/applications/{APP_ID}.desktop")))
+            .expect("read the installed desktop entry");
+    assert_eq!(
+        entry,
+        std::fs::read_to_string(repository().join(format!("data/{APP_ID}.desktop")))
+            .expect("read the desktop entry in this repository"),
+        "the installed entry is no longer the one this repository holds",
+    );
+}
+
+/// A language named in `po/LINGUAS` with no translation beside it stops the install
+/// before it has written anything.
+///
+/// Said plainly rather than skipped: `msgfmt` reads `LINGUAS` for itself when it merges
+/// the desktop entry, so a language passed over here would fail there instead — halfway
+/// through, leaving a prefix holding part of an axiomd.
+#[test]
+fn a_language_named_with_no_translation_stops_the_install_before_it_starts() {
+    let repository = TranslatedRepository::new("translated-missing");
+    std::fs::write(repository.scratch.path.join("po/LINGUAS"), "eo\nnonesuch\n")
+        .expect("name a language with no translation");
+
+    let attempt =
+        repository.attempt(&["--prefix", "/app", "--binary", env!("CARGO_BIN_EXE_axiomd")]);
+    let said = String::from_utf8_lossy(&attempt.stderr).into_owned();
+
+    assert!(
+        !attempt.status.success(),
+        "the installer accepted a language it has no translation for",
+    );
+    assert!(
+        said.contains("po/nonesuch.po"),
+        "the installer did not say which translation is missing: {said}",
+    );
+    assert!(
+        !repository.prefix().join("bin/axiomd").exists(),
+        "the installer wrote part of an axiomd before refusing",
+    );
+}
+
+/// The per-user install is the recommended one (issue #25), and it rewrites the desktop
+/// entry to name the binary beside it. A translated entry has to come out of that with
+/// both: the reader's language, and an `Exec` that starts the axiomd in their home.
+///
+/// The order is the whole of it — merging the translation writes the entry afresh, so a
+/// merge after the rewrite would put the shipped `Exec=axiomd` back and leave the app
+/// grid starting nothing at all.
+#[test]
+fn a_translated_user_install_keeps_both_its_language_and_its_exec() {
+    let repository = TranslatedRepository::new("translated-user");
+    let prefix = repository.install_for_the_user();
+
+    let entry =
+        std::fs::read_to_string(prefix.join(format!("share/applications/{APP_ID}.desktop")))
+            .expect("read the installed desktop entry");
+
+    assert!(
+        entry.contains("Comment[eo]=Legu kaj skribu Markdown-dokumentojn"),
+        "a per-user install lost the translation:\n{entry}",
+    );
+    assert!(
+        entry.contains(&format!("Exec={}/bin/axiomd", prefix.display())),
+        "a per-user install lost the path to the axiomd beside it:\n{entry}",
+    );
+    assert!(
+        prefix
+            .join("share/locale/eo/LC_MESSAGES/axiomd.mo")
+            .is_file(),
+        "a per-user install left no catalogue in the reader's own files",
+    );
+}

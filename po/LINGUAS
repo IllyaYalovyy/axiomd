@@ -1,0 +1,6 @@
+# The languages axiomd ships translations for, one code per line.
+#
+# Empty on purpose: the machinery is here and no translation is (issue #34). Adding a
+# language means adding its code below and its `<code>.po` beside this file — after
+# which `scripts/install.sh` compiles and installs it, and a reader in that language
+# reads axiomd in it.

@@ -14,6 +14,7 @@
 //! document ever loses content to a missing feature.
 
 use axiomd_engine::{Alignment, Event, Parsed, Span, SpannedEvent, Tag, TagEnd, Task};
+use axiomd_i18n::gettext;
 
 use crate::footnote::Footnotes;
 use crate::plugin::{Asset, Plugins, Used};
@@ -656,10 +657,15 @@ impl Writer {
                     language = escape_attribute(language),
                     code = highlight_or_escape(Some(language), source),
                 ));
+                // One whole sentence rather than a name glued to a phrase: a language
+                // that puts the subject elsewhere has nowhere to put it when the words
+                // around it are already written.
+                let said = gettext("{plugin} could not draw this block: {reason}")
+                    .replace("{plugin}", &gettext(plugins.name_of(at)))
+                    .replace("{reason}", &reason);
                 self.out.push_str(&format!(
-                    "<p class=\"plugin-badge\">{name} could not draw this block: {reason}</p>\n",
-                    name = escape_text(plugins.name_of(at)),
-                    reason = escape_text(&reason),
+                    "<p class=\"plugin-badge\">{}</p>\n",
+                    escape_text(&said),
                 ));
                 self.close("</div>");
             }
@@ -787,8 +793,9 @@ impl Writer {
 /// there, and a button that cannot do anything is worse than no button. So the card
 /// keeps everything it says and stops being one.
 fn remote_placeholder(image: &Image, to: &Destination<'_>) -> String {
+    let unnamed = gettext("Remote image");
     let label = if image.alt.trim().is_empty() {
-        "Remote image"
+        &unnamed
     } else {
         &image.alt
     };
@@ -801,7 +808,10 @@ fn remote_placeholder(image: &Image, to: &Destination<'_>) -> String {
                 title = title_attribute(&image.title),
             ),
             "</a>",
-            "<span class=\"remote-image-action\">Load image</span>".to_owned(),
+            format!(
+                "<span class=\"remote-image-action\">{}</span>",
+                escape_text(&gettext("Load image")),
+            ),
         ),
         Destination::File(_) => (
             format!(
@@ -825,8 +835,9 @@ fn remote_placeholder(image: &Image, to: &Destination<'_>) -> String {
 /// What stands where a picture would have been in a file that could not carry it:
 /// the same card, saying what is missing and where it lived.
 fn missing_picture(image: &Image) -> String {
+    let unnamed = gettext("Image");
     let label = if image.alt.trim().is_empty() {
-        "Image"
+        &unnamed
     } else {
         &image.alt
     };
@@ -945,7 +956,8 @@ fn backrefs(id: &str, defined: Option<(usize, usize)>) -> String {
             };
             format!(
                 " <a class=\"footnote-backref\" href=\"#fnref-{id}-{nth}\" \
-                 title=\"Back to the text\">\u{21a9}{counted}</a>"
+                 title=\"{back}\">\u{21a9}{counted}</a>",
+                back = escape_attribute(&gettext("Back to the text")),
             )
         })
         .collect()
