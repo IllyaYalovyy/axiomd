@@ -1464,7 +1464,42 @@ impl App {
         self.capture("sidebar")
     }
 
+    /// Captures the addressed window whole — the header bar, the outline and the
+    /// document in one picture — and publishes it at `path` as a PNG.
+    ///
+    /// This is the picture a person would take of the application, and the one a
+    /// software centre shows (issue #33). It is written where it is asked for, rather
+    /// than into the launch's scratch directory, because the point of it is the file:
+    /// what comes back is read from the published PNG, so a test asserting the picture
+    /// is asserting the very bytes that were written.
+    ///
+    /// The window must be showing a document, and the picture is of the document as it
+    /// is now: a window resized a moment ago still has a page laid out at its old width
+    /// — the web process relayouts on its own clock — and a picture taken in between
+    /// shows the document at a size the window no longer is. So the page is waited for
+    /// until it is as wide as the surface it is drawn on, and then for a frame, exactly
+    /// as [`App::screenshot`] waits for one.
+    pub fn capture_window(&self, path: &Path) -> Screenshot {
+        let surface = self.layout().document.width;
+        self.wait_until(&format!("window.innerWidth === {surface}"));
+        self.wait_until_the_page_has_drawn_again();
+        let taken = self.capture_file("window");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|error| panic!("create {}: {error}", parent.display()));
+        }
+        std::fs::copy(&taken, path)
+            .unwrap_or_else(|error| panic!("publish the capture at {}: {error}", path.display()));
+        Screenshot::read(path).unwrap_or_else(|error| panic!("{error}"))
+    }
+
     /// Captures one part of the window, once the window has drawn it.
+    fn capture(&self, part: &str) -> Screenshot {
+        let path = self.capture_file(part);
+        Screenshot::read(&path).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Asks the window for a picture of `part` and says where it was left.
     ///
     /// The wait is the widget half of the one a document capture does: a
     /// widget whose look has just changed — a section highlighted, a heading folded away
@@ -1473,14 +1508,14 @@ impl App {
     /// which is a condition with a deadline like every other wait here, and never a
     /// sleep. What comes back is therefore always the window as it is now, never the
     /// frame before the change.
-    fn capture(&self, part: &str) -> Screenshot {
+    fn capture_file(&self, part: &str) -> PathBuf {
         let path = self.scratch.path().join(format!("{part}.png"));
         let _ = std::fs::remove_file(&path);
         self.settle(&format!("the window to draw its {part}"), || {
             self.try_command("screenshot", &format!("{part} {}", path.display()))
                 .map(|_| true)
         });
-        Screenshot::read(&path).unwrap_or_else(|error| panic!("{error}"))
+        path
     }
 
     /// Waits until the page has produced a frame since being asked.

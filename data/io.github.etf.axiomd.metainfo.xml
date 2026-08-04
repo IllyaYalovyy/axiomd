@@ -57,14 +57,19 @@
   <url type="vcs-browser">https://github.com/IllyaYalovyy/axiomd</url>
 
   <!--
-    Placeholder until a rendered window is pinned as a screenshot golden and
-    published (issue #14 keeps flathub polish out of scope; a store listing
-    needs a real image here first).
+    Taken from the running application by `crates/axiomd-app/tests/screenshots.rs`
+    and committed under data/screenshots. A software centre fetches them from this
+    repository, so the URLs, the files and the sizes below are held together by
+    `the_metainfo_publishes_pictures_this_repository_really_has` (issue #33).
   -->
   <screenshots>
-    <screenshot type="default">
-      <caption>A document open in axiomd</caption>
-      <image type="source">https://raw.githubusercontent.com/IllyaYalovyy/axiomd/main/data/screenshots/reading.png</image>
+    <screenshot type="default" environment="gnome">
+      <caption>A document open for reading, with its outline beside it</caption>
+      <image type="source" width="1280" height="720">https://raw.githubusercontent.com/IllyaYalovyy/axiomd/main/data/screenshots/reading-light.png</image>
+    </screenshot>
+    <screenshot environment="gnome:dark">
+      <caption>The same document on a dark desktop</caption>
+      <image type="source" width="1280" height="720">https://raw.githubusercontent.com/IllyaYalovyy/axiomd/main/data/screenshots/reading-dark.png</image>
     </screenshot>
   </screenshots>
 

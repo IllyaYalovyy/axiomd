@@ -214,6 +214,144 @@ fn manifest_array(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The AppStream metainfo, as text — read the way the manifest above is, and for the
+/// same reason: it is this project's own file and every value in it is a plain string,
+/// so an XML dependency the application does not otherwise need would buy nothing.
+/// `appstreamcli validate` is what checks it is well-formed AppStream.
+fn metainfo() -> String {
+    let path = repository().join(format!("data/{APP_ID}.metainfo.xml"));
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"))
+}
+
+/// One picture the metainfo publishes, as a software centre reads it.
+struct Published {
+    /// The sentence shown under the picture.
+    caption: String,
+    /// Where a software centre fetches it from.
+    url: String,
+    /// The size the entry declares, which a catalogue lays its page out with before it
+    /// has fetched anything.
+    declared: (i32, i32),
+    /// The desktop the picture was taken on, in AppStream's words — `gnome:dark` for
+    /// the dark one. Empty when the entry does not say.
+    environment: String,
+    /// Whether this is the one a listing leads with.
+    default: bool,
+}
+
+/// Every `<screenshot>` of the metainfo, in the order a listing shows them.
+fn published_screenshots() -> Vec<Published> {
+    let metainfo = metainfo();
+    let opening = metainfo
+        .find("<screenshots>")
+        .expect("the metainfo publishes no screenshots at all")
+        + "<screenshots>".len();
+    let closing = metainfo
+        .find("</screenshots>")
+        .expect("an unterminated <screenshots> in the metainfo");
+    metainfo[opening..closing]
+        .split("<screenshot")
+        .skip(1)
+        .map(|entry| {
+            let image = between(entry, "<image", "</image>");
+            let (attributes, url) = image
+                .split_once('>')
+                .expect("an unterminated <image> in the metainfo");
+            let (tag, _) = entry.split_once('>').expect("an unterminated <screenshot>");
+            Published {
+                caption: between(entry, "<caption>", "</caption>").trim().to_owned(),
+                url: url.trim().to_owned(),
+                declared: (
+                    attribute(attributes, "width").parse().unwrap_or(0),
+                    attribute(attributes, "height").parse().unwrap_or(0),
+                ),
+                environment: attribute(tag, "environment"),
+                default: attribute(tag, "type") == "default",
+            }
+        })
+        .collect()
+}
+
+/// What every screenshot URL has to start with: this repository's own files, on the
+/// branch a listing reads, as `raw.githubusercontent.com` serves them.
+///
+/// Built from the homepage the metainfo already gives rather than written out again,
+/// so a project that moves does not leave a URL pointing at where it used to be.
+fn raw_file_prefix() -> String {
+    let homepage = between(&metainfo(), "<url type=\"homepage\">", "</url>");
+    format!(
+        "{}/main/",
+        homepage
+            .trim()
+            .replace("https://github.com/", "https://raw.githubusercontent.com/")
+    )
+}
+
+impl Published {
+    /// The file of this repository the URL names, relative to its root — and the whole
+    /// of what makes a URL checkable: a listing fetches what the URL says, and nothing
+    /// but this keeps that in step with the tree.
+    fn path(&self) -> String {
+        self.url
+            .strip_prefix(&raw_file_prefix())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} is not a file of this repository on its main branch, which is \
+                     what {} serves",
+                    self.url,
+                    raw_file_prefix(),
+                )
+            })
+            .to_owned()
+    }
+
+    /// Where that file is in this working tree.
+    fn file(&self) -> PathBuf {
+        repository().join(self.path())
+    }
+}
+
+/// How bright a picture is, from 0 for black to 1 for white — each channel weighted
+/// the way an eye weights it.
+fn brightness(picture: &Path) -> f64 {
+    let pixels = gtk::gdk_pixbuf::Pixbuf::from_file(picture)
+        .unwrap_or_else(|error| panic!("{} is not a picture: {error}", picture.display()));
+    let bytes = pixels.read_pixel_bytes();
+    let channels = pixels.n_channels() as usize;
+    let rowstride = pixels.rowstride() as usize;
+    let (width, height) = (pixels.width() as usize, pixels.height() as usize);
+
+    let mut total = 0.0;
+    for row in 0..height {
+        for column in 0..width {
+            let at = row * rowstride + column * channels;
+            total += (0.2126 * f64::from(bytes[at])
+                + 0.7152 * f64::from(bytes[at + 1])
+                + 0.0722 * f64::from(bytes[at + 2]))
+                / 255.0;
+        }
+    }
+    total / (width * height) as f64
+}
+
+/// What `opening` and `closing` have between them, or an empty string when they are not
+/// both there.
+fn between(text: &str, opening: &str, closing: &str) -> String {
+    let Some(start) = text.find(opening).map(|at| at + opening.len()) else {
+        return String::new();
+    };
+    match text[start..].find(closing) {
+        Some(end) => text[start..start + end].to_owned(),
+        None => String::new(),
+    }
+}
+
+/// The value of `name="…"` in an XML tag, or an empty string when the tag has no such
+/// attribute.
+fn attribute(tag: &str, name: &str) -> String {
+    between(tag, &format!("{name}=\""), "\"")
+}
+
 /// A `"key": "value"` of the manifest's top level.
 fn manifest_value(key: &str) -> String {
     let manifest = manifest();
@@ -281,6 +419,108 @@ fn the_metainfo_is_valid_appstream() {
         "appstreamcli is not happy with the metainfo:\n{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// The pictures a software centre shows are fetched from this repository over the
+/// network, so nothing but this says whether they are there (issue #33).
+///
+/// The listing pointed at a `reading.png` that was never committed: the metainfo was
+/// valid AppStream, the gate was green, and every visitor to the listing got a broken
+/// image. What that costs is a URL away from what the file tree says, so the URL is
+/// taken apart here and held to the tree — including the size each entry declares,
+/// which a catalogue lays its page out with before it has fetched anything.
+///
+/// The other direction too: a picture nobody publishes is a picture nobody looks at
+/// and nobody regenerates, so an unreferenced file under `data/screenshots` fails as
+/// well.
+#[test]
+fn the_metainfo_publishes_pictures_this_repository_really_has() {
+    let published = published_screenshots();
+    assert!(
+        published.len() >= 2,
+        "a listing shows the app on a light desktop and on a dark one; this metainfo \
+         publishes {} picture(s)",
+        published.len(),
+    );
+    assert_eq!(
+        published.iter().filter(|shot| shot.default).count(),
+        1,
+        "exactly one screenshot is the one a listing leads with",
+    );
+
+    let directory = repository().join("data/screenshots");
+    let mut referenced = Vec::new();
+    for shot in &published {
+        assert!(
+            !shot.caption.is_empty(),
+            "the screenshot at {} has no caption to read under it",
+            shot.url,
+        );
+        let path = shot.path();
+        assert!(
+            path.starts_with("data/screenshots/"),
+            "{path} is published as a screenshot but is not one of the files under \
+             data/screenshots",
+        );
+
+        let file = shot.file();
+        let picture = gtk::gdk_pixbuf::Pixbuf::from_file(&file).unwrap_or_else(|error| {
+            panic!("the listing publishes {path}, which is not a picture here: {error}")
+        });
+        assert_eq!(
+            (picture.width(), picture.height()),
+            shot.declared,
+            "{path} is not the size the metainfo declares it to be",
+        );
+        referenced.push(file);
+    }
+
+    let mut unpublished: Vec<String> = std::fs::read_dir(&directory)
+        .unwrap_or_else(|error| panic!("read {directory:?}: {error}"))
+        .map(|entry| entry.expect("a file under data/screenshots").path())
+        .filter(|path| path.extension().is_some_and(|kind| kind == "png"))
+        .filter(|path| !referenced.contains(path))
+        .map(|path| path.display().to_string())
+        .collect();
+    unpublished.sort();
+    assert!(
+        unpublished.is_empty(),
+        "these pictures are committed but published nowhere: {}",
+        unpublished.join(", "),
+    );
+}
+
+/// The pair is only a pair if the two are the light and the dark of the same view: a
+/// software centre picks between them by the desktop the reader is on, so a dark entry
+/// showing the light window is worse than no dark entry at all.
+///
+/// Asserted of the pixels rather than of the file names, because the name is exactly
+/// what a regeneration that lost the theme would keep.
+#[test]
+fn the_picture_the_metainfo_calls_dark_is_the_dark_one() {
+    let published = published_screenshots();
+    let dark = published
+        .iter()
+        .find(|shot| shot.environment.contains("dark"))
+        .expect("a listing on a dark desktop needs a screenshot marked as one");
+    let light = published
+        .iter()
+        .find(|shot| !shot.environment.contains("dark"))
+        .expect("a listing on a light desktop needs a screenshot that is not the dark one");
+
+    let (dark, light) = (dark.file(), light.file());
+    let (dim, bright) = (brightness(&dark), brightness(&light));
+
+    assert!(
+        bright > 0.7,
+        "{} is published as the light picture and is {bright:.2} bright",
+        light.display(),
+    );
+    assert!(
+        dim < 0.3,
+        "{} is published as the dark picture and is {dim:.2} bright",
+        dark.display(),
     );
 }
 

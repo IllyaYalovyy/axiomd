@@ -242,10 +242,20 @@ impl Environment {
             make_private_dir(directory);
         }
         pin_the_default_handler(scratch, &config, &data);
+        let home = home_dir(scratch);
+        make_private_dir(&home);
         pin_the_documents_directory(scratch, &config);
 
         Environment {
             values: [
+                // The launch's own home. Everything the application is told to keep is
+                // already pinned below, so this is what is left: the folder GLib
+                // answers `g_get_home_dir` with, which the developer's home must never
+                // be — a launch that wrote there would write into the person running
+                // the suite. It is also what a window shows under a document's name, so
+                // the picture of a launch says `~/Documents` rather than a path with
+                // this process's id in it (issue #33).
+                ("HOME", home),
                 ("XDG_CONFIG_HOME", config),
                 ("XDG_DATA_HOME", data),
                 ("XDG_CACHE_HOME", cache),
@@ -434,10 +444,18 @@ fn pin_the_documents_directory(scratch: &Path, config: &Path) {
     .expect("write the pinned user directories");
 }
 
+/// This launch's home: private, inside its scratch, and gone with it.
+pub(crate) fn home_dir(scratch: &Path) -> PathBuf {
+    scratch.join("home")
+}
+
 /// Where this launch's desktop keeps documents — and so where its print dialog
 /// offers to write a file.
+///
+/// Inside the launch's home rather than beside it, as it is on a real desktop: a
+/// window showing a document from here says `~/Documents`.
 pub(crate) fn documents_dir(scratch: &Path) -> PathBuf {
-    scratch.join("documents")
+    home_dir(scratch).join("Documents")
 }
 
 fn make_private_dir(path: &Path) {

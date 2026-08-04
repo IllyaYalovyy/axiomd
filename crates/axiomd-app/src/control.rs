@@ -421,6 +421,15 @@ impl Session {
                         drawn(&sidebar).await;
                         capture(&sidebar, path)
                     }
+                    // The window entire — the header bar, the outline and the document
+                    // in one picture, which is what a person sees and what a software
+                    // centre shows (issue #33).
+                    "window" => {
+                        let window = self.target(shell)?.window().clone();
+                        let widget: gtk::Widget = window.upcast();
+                        drawn(&widget).await;
+                        capture_whole(&widget, path)
+                    }
                     other => Err(format!("no such part to capture: {other}")),
                 }
             }
@@ -615,6 +624,54 @@ fn capture(widget: &gtk::Widget, path: &str) -> Answer {
         .ok_or("the widget has been changed and not drawn again yet")?;
     renderer
         .render_texture(&drawn, Some(&bounds))
+        .save_to_png(path)
+        .map(|()| String::new())
+        .map_err(|error| error.to_string())
+}
+
+/// Writes a whole window to `path` as the pixels it is drawn as, background and all.
+///
+/// [`capture`] above cannot do this: it draws a widget through its parent, and a
+/// toplevel has none. Drawing the window's content instead loses the window's own CSS
+/// node — the background every widget in it sits on — and what comes back has a
+/// transparent strip wherever nothing else painted. In the dark palette that is the
+/// whole header bar: its white title and icons drawn on nothing (probed on GTK 4.20.4
+/// and libadwaita 1.8.6, where the same window in the light palette merely looked
+/// right by accident, its content being white too).
+///
+/// A `GtkWidgetPaintable` of the window paints the window node and everything under
+/// it. It hands back what the widget last painted, which is what [`drawn`] above has
+/// just waited for.
+fn capture_whole(window: &gtk::Widget, path: &str) -> Answer {
+    let (width, height) = (window.width(), window.height());
+    if width <= 0 || height <= 0 {
+        return Err(format!(
+            "the window has not been laid out yet, so it is {width}x{height}",
+        ));
+    }
+    let renderer = window
+        .native()
+        .and_then(|native| native.renderer())
+        .ok_or("the window has no renderer to draw with")?;
+    let snapshot = gtk::Snapshot::new();
+    gtk::WidgetPaintable::new(Some(window)).snapshot(
+        &snapshot,
+        f64::from(width),
+        f64::from(height),
+    );
+    let drawn = snapshot
+        .to_node()
+        .ok_or("the window has been changed and not drawn again yet")?;
+    renderer
+        .render_texture(
+            &drawn,
+            Some(&gtk::graphene::Rect::new(
+                0.0,
+                0.0,
+                width as f32,
+                height as f32,
+            )),
+        )
         .save_to_png(path)
         .map(|()| String::new())
         .map_err(|error| error.to_string())
