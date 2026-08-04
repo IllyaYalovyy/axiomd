@@ -13,7 +13,7 @@
 //! nowhere on the page and once in the source — which is what "search the rendered text,
 //! not the markup" means when it is true.
 
-use axiomd_e2e::{App, Fixture, Preferences};
+use axiomd_e2e::{App, Fixture, Layout, Preferences};
 
 /// The test document. Five `needle`s to read, six to edit.
 const DOCUMENT: &str = "\
@@ -52,6 +52,17 @@ fn current_mark(app: &App) -> i32 {
 fn search(app: &App, text: &str) {
     app.activate("win.find");
     app.search_for(text);
+}
+
+/// Where the window draws its parts once the bar the reader asked for is on screen.
+///
+/// The bar is revealed with an animation, so its height is waited for rather than read
+/// on the turn the action was activated.
+fn laid_out_with_the_bar_up(app: &App) -> Layout {
+    app.wait_for("the search bar to be drawn", || {
+        app.layout().search.height > 0
+    });
+    app.layout()
 }
 
 /// The whole of UT-006's first two steps: `Ctrl+F`, a word, and the document says how
@@ -446,6 +457,141 @@ fn opening_another_document_puts_the_search_away() {
     // the document being left.
     app.wait_until("document.querySelector('h1').textContent === 'Other'");
     assert_eq!(app.dom_text("h1"), "Other");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The bar belongs to the document, not to the window (issue #26): it is drawn over the
+/// document pane, exactly as wide as it, and the outline sidebar beside it does not move
+/// by a pixel when the reader opens or closes the search.
+///
+/// Asserted as geometry because that is what the reader sees: a bar that reaches back
+/// over the sidebar is one that pushed the headings down the screen to make room for
+/// itself.
+#[test]
+fn the_search_bar_is_drawn_over_the_document_and_leaves_the_sidebar_where_it_was() {
+    let fixture = Fixture::new("search-placement");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", DOCUMENT));
+    assert!(
+        app.outline().shown,
+        "the outline was not beside the document"
+    );
+    app.wait_for("the window to have laid its parts out", || {
+        app.layout().sidebar.width > 0
+    });
+    let shut = app.layout();
+
+    search(&app, "needle");
+    app.wait_until_counter("1 of 5");
+    let open = laid_out_with_the_bar_up(&app);
+
+    assert_eq!(
+        open.sidebar, shut.sidebar,
+        "opening the search moved the outline sidebar",
+    );
+    assert!(
+        open.search.x >= shut.sidebar.right(),
+        "the search bar reaches back over the sidebar: it starts at {} and the sidebar \
+         ends at {}",
+        open.search.x,
+        shut.sidebar.right(),
+    );
+    assert_eq!(
+        (open.search.x, open.search.width),
+        (open.document.x, open.document.width),
+        "the search bar is not the document pane's width: {open:?}",
+    );
+    assert!(
+        open.search.y <= open.document.y,
+        "the search bar is not at the top of the document pane: {open:?}",
+    );
+
+    // And putting it away leaves the window exactly as it found it.
+    app.activate("win.find-close");
+    app.wait_for("the search to be put away", || !app.search().shown);
+    assert_eq!(
+        app.layout().sidebar,
+        shut.sidebar,
+        "closing the search moved the outline sidebar",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The bar fits the room the document pane has at the widths a narrow window has: just
+/// above the breakpoint, where the outline still takes its share beside the document,
+/// and at the narrowest window a GNOME application is expected to work in.
+///
+/// The narrowest the bar can be drawn is what settles this rather than what it was
+/// allocated: the bar is the widest thing in its pane, so a bar that needs more than
+/// the pane has does not get squeezed — it makes the pane wider than the window and the
+/// reader loses its end off the edge. The wrap notice is up for the second half of each
+/// width because it is the longest thing the bar ever says.
+#[test]
+fn the_search_bar_fits_the_document_pane_at_narrow_window_widths() {
+    let fixture = Fixture::new("search-narrow");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", DOCUMENT));
+    search(&app, "needle");
+    app.wait_until_counter("1 of 5");
+    laid_out_with_the_bar_up(&app);
+
+    // 620: the outline is still beside the document, so the pane is the window less the
+    // sidebar. 360: the breakpoint has taken the outline away and the pane is the whole
+    // of a window as narrow as GNOME asks an application to be usable in.
+    for (width, outline_beside) in [(620, true), (360, false)] {
+        app.resize(width, 700);
+        app.wait_for(&format!("the window to settle at {width}px wide"), || {
+            let laid_out = app.layout();
+            laid_out.window.width == width
+                && app.outline().shown == outline_beside
+                && laid_out.document.x
+                    == if outline_beside {
+                        laid_out.sidebar.right()
+                    } else {
+                        0
+                    }
+        });
+
+        // How much of the window is left for the pane once the outline has taken its
+        // share of it — all of it in a window too narrow to hold both.
+        let room = |laid_out: &Layout| {
+            if outline_beside {
+                laid_out.window.width - laid_out.sidebar.width
+            } else {
+                laid_out.window.width
+            }
+        };
+
+        let narrow = app.layout();
+        assert_eq!(
+            (narrow.search.x, narrow.search.width),
+            (narrow.document.x, narrow.document.width),
+            "at {width}px the search bar is not the document pane's width: {narrow:?}",
+        );
+        assert!(
+            narrow.search.least <= room(&narrow),
+            "at {width}px the search bar needs {}px and the document pane has {}px: \
+             {narrow:?}",
+            narrow.search.least,
+            room(&narrow),
+        );
+
+        // And with the longest thing the bar ever says showing: walking past the end of
+        // the document puts "Wrapped to the top" beside the counter.
+        for _ in 0..5 {
+            app.activate("win.find-next");
+        }
+        app.wait_until_counter("1 of 5");
+        assert_eq!(app.search().wrap, "Wrapped to the top");
+        let wrapped = app.layout();
+        assert!(
+            wrapped.search.least <= room(&wrapped),
+            "at {width}px the bar with its wrap notice needs {}px and the document pane \
+             has {}px",
+            wrapped.search.least,
+            room(&wrapped),
+        );
+    }
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

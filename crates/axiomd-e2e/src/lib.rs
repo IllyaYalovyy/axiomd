@@ -119,6 +119,47 @@ pub struct Search {
     pub cased: bool,
 }
 
+/// Where one part of a window is drawn, in window coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bounds {
+    /// How far from the window's left edge the part starts.
+    pub x: i32,
+    /// How far from its top edge.
+    pub y: i32,
+    /// How wide the part is drawn.
+    pub width: i32,
+    /// How tall.
+    pub height: i32,
+    /// The narrowest this part can be drawn. A part whose `least` is wider than the
+    /// room it is given is one the reader sees with its ends cut off.
+    pub least: i32,
+}
+
+impl Bounds {
+    /// The coordinate just past this part's right edge.
+    pub fn right(&self) -> i32 {
+        self.x + self.width
+    }
+}
+
+/// Where the parts of a window that share its width are, all measured at one moment.
+///
+/// One question rather than four, because the four only mean anything against each
+/// other: a search bar is over the document exactly when it starts where the outline
+/// ends and is as wide as the document beneath it, and it fits exactly when it needs no
+/// more room than the window has left over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The window itself — what everything else has to fit inside.
+    pub window: Bounds,
+    /// The outline sidebar, or all zeroes when the window is not showing one.
+    pub sidebar: Bounds,
+    /// The surface the document itself is on — the rendered page or the source.
+    pub document: Bounds,
+    /// The search bar. Zero height while it is shut.
+    pub search: Bounds,
+}
+
 /// The settings store one or more launches share.
 ///
 /// Preferences outlive the application that changed them, so a test about them needs
@@ -798,6 +839,43 @@ impl App {
             counter: self.property("find-counter"),
             wrap: self.property("find-wrap"),
             cased: self.property("find-cased") == "true",
+        }
+    }
+
+    /// Where the addressed window draws the parts that share its width: the window
+    /// itself, the outline sidebar, the surface the document is on, and the search bar.
+    ///
+    /// All four at one moment, because what they say is about each other — the search
+    /// bar is over the document exactly when it starts where the sidebar ends — and
+    /// separate questions could fall either side of a relayout.
+    pub fn layout(&self) -> Layout {
+        let measured = self.property("geometry");
+        let part = |wanted: &str| {
+            let line = measured
+                .lines()
+                .find(|line| line.starts_with(&format!("{wanted} ")))
+                .unwrap_or_else(|| panic!("no {wanted} in the window's geometry: {measured:?}"));
+            let numbers: Vec<i32> = line
+                .split_whitespace()
+                .skip(1)
+                .map(|number| number.parse().expect("a coordinate"))
+                .collect();
+            match numbers[..] {
+                [x, y, width, height, least] => Bounds {
+                    x,
+                    y,
+                    width,
+                    height,
+                    least,
+                },
+                _ => panic!("{wanted} is not a rectangle: {line:?}"),
+            }
+        };
+        Layout {
+            window: part("window"),
+            sidebar: part("sidebar"),
+            document: part("document"),
+            search: part("search"),
         }
     }
 

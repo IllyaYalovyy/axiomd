@@ -175,6 +175,12 @@ impl Outline {
         self.split.upcast_ref()
     }
 
+    /// The sidebar on its own — the panel the reader sees the headings in, for the
+    /// window to say where on screen it is.
+    pub(crate) fn panel(&self) -> &gtk::Widget {
+        self.faces.upcast_ref()
+    }
+
     /// Calls `handler` with the source line of the heading the reader picked.
     pub(crate) fn connect_chosen(&self, handler: impl Fn(u32) + 'static) {
         *self.chosen.borrow_mut() = Some(Rc::new(handler));

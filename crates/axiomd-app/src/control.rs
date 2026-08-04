@@ -395,6 +395,10 @@ impl Session {
             return Ok(answer);
         }
         match name {
+            // Where the parts of the window that share its width are drawn, which is
+            // how a test settles what belongs over the document and what belongs over
+            // the whole window.
+            "geometry" => Ok(window.geometry()),
             "title" => Ok(window.window().title().unwrap_or_default().to_string()),
             "uri" => Ok(window.webview().uri().unwrap_or_default().to_string()),
             "navigations" => Ok(window.navigations().to_string()),

@@ -347,10 +347,8 @@ impl DocumentWindow {
         header.pack_end(&primary_menu_button(&zoom));
         header.pack_end(&mode_button());
 
-        // The search bar goes directly under the header and above everything the app
-        // has to say, because it is the reader's own doing rather than the app's. It
-        // holds both surfaces and asks whichever one the reader is looking at, so the
-        // window only has to tell it when that changes.
+        // The search bar holds both surfaces and asks whichever one the reader is
+        // looking at, so the window only has to tell it when that changes.
         let find = Find::new(
             &window,
             view.clone() as Rc<dyn Searchable>,
@@ -358,13 +356,22 @@ impl DocumentWindow {
         );
 
         layout.add_top_bar(&header);
-        layout.add_top_bar(find.widget());
         layout.add_top_bar(notice.widget());
 
-        // The outline goes between the header and the document: it owns the split the
-        // two surfaces sit in, the `F9` action, and the breakpoint that gets it out of
-        // a narrow window's way.
-        let outline = Outline::new(&window, &surfaces, OUTLINE);
+        // The bar searches the document, so it belongs to the document: it goes at the
+        // top of the pane the two surfaces are in, inside the split, rather than across
+        // the window above it (issue #26, `ux_decisions.md`). What that buys the reader
+        // is that pressing Ctrl+F leaves the outline beside them exactly where it was —
+        // a bar spanning the window pushes every heading down the screen to make room
+        // for itself, which is the defect this undoes.
+        let pane = adw::ToolbarView::new();
+        pane.add_top_bar(find.widget());
+        pane.set_content(Some(&surfaces));
+
+        // The outline goes between the header and that pane: it owns the split the two
+        // surfaces sit in, the `F9` action, and the breakpoint that gets it out of a
+        // narrow window's way.
+        let outline = Outline::new(&window, &pane, OUTLINE);
         layout.set_content(Some(outline.widget()));
 
         let document_window = Rc::new(Self {
@@ -791,6 +798,29 @@ impl DocumentWindow {
     /// How many pages this window has finished showing since it was built.
     pub(crate) fn renders(&self) -> u32 {
         self.renders.get()
+    }
+
+    /// Where the parts of the window that share its width are, as the reader sees
+    /// them: one line per part — `<part> <x> <y> <width> <height> <least>` — in window
+    /// coordinates, with `least` the narrowest that part can be drawn.
+    ///
+    /// One question rather than four, because the four only mean anything against each
+    /// other: a search bar is over the document exactly when it starts where the
+    /// outline ends, a sidebar is undisturbed exactly when it is where it was, and a
+    /// part is cut off exactly when it reaches past the window's own edge. Separate
+    /// questions could also fall either side of a relayout and answer about different
+    /// moments.
+    pub(crate) fn geometry(&self) -> String {
+        [
+            ("window", self.window.upcast_ref::<gtk::Widget>()),
+            ("sidebar", self.outline.panel()),
+            ("document", self.surfaces.upcast_ref::<gtk::Widget>()),
+            ("search", self.find.widget()),
+        ]
+        .into_iter()
+        .map(|(part, widget)| format!("{part} {}", placed(widget, &self.window)))
+        .collect::<Vec<String>>()
+        .join("\n")
     }
 
     /// Which of the three things a window can show it is showing.
@@ -1702,6 +1732,29 @@ fn ticked(text: &str, at: usize) -> Option<char> {
         Some(b'x') | Some(b'X') => Some(' '),
         _ => None,
     }
+}
+
+/// Where one widget is drawn inside `window`, and how narrow it could be drawn:
+/// `x y width height least`, in window coordinates.
+///
+/// All zeroes for a part that is not on screen at all, which is an answer rather than
+/// a failure: a sidebar a narrow window has taken away is nowhere, and a test asking
+/// where it is should read that rather than a stale rectangle.
+fn placed(widget: &gtk::Widget, window: &adw::ApplicationWindow) -> String {
+    let Some(box_) = widget.compute_bounds(window) else {
+        return "0 0 0 0 0".to_owned();
+    };
+    // The narrowest the part can be drawn, which is what says a bar fits the pane it
+    // is in: a row whose minimum is wider than its pane is one the reader sees with
+    // its ends cut off, whatever its allocation says.
+    let (least, _, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+    format!(
+        "{} {} {} {} {least}",
+        box_.x().round(),
+        box_.y().round(),
+        box_.width().round(),
+        box_.height().round(),
+    )
 }
 
 /// An action's bare name, as a window registers it, from the full one a widget uses.

@@ -149,7 +149,8 @@ impl Find {
     /// Builds the bar and gives `window` the four actions it, the keyboard and the menu
     /// share.
     ///
-    /// The returned widget goes under the header bar; the bar shows and hides itself.
+    /// The returned widget goes at the top of the document pane; the bar shows and
+    /// hides itself.
     pub(crate) fn new(
         window: &adw::ApplicationWindow,
         reading: Rc<dyn Searchable>,
@@ -164,7 +165,16 @@ impl Find {
         counter.add_css_class("dim-label");
         counter.add_css_class("numeric");
 
-        let wrap = gtk::Label::builder().xalign(0.0).build();
+        // Ellipsized, and it is the only thing in the bar that is: the bar now has a
+        // document pane to fit inside rather than a whole window (issue #26), and this
+        // sentence is the longest thing in it by far. A narrow window shortens the
+        // hint about having just wrapped; it never takes the entry, the counter or the
+        // buttons off the edge of the pane, which is what the reader would otherwise
+        // be left with.
+        let wrap = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
         wrap.add_css_class("dim-label");
         wrap.add_css_class("caption");
 
@@ -322,7 +332,7 @@ impl Find {
         });
     }
 
-    /// The bar, for the window to put under its header.
+    /// The bar, for the window to put at the top of the pane the document is in.
     pub(crate) fn widget(&self) -> &gtk::Widget {
         self.bar.upcast_ref()
     }
