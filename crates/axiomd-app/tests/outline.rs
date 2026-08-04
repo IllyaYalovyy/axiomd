@@ -69,7 +69,7 @@ fn the_outline_lists_the_documents_headings_beside_it() {
     let outline = app.outline();
     assert!(outline.shown, "the outline was not beside the document");
     assert_eq!(
-        outline.headings,
+        outline.headings(),
         [
             "h1 Guide",
             "h2 Getting started",
@@ -260,10 +260,10 @@ fn the_outline_follows_a_live_reload_without_losing_the_readers_section() {
     std::fs::write(&document, &grown).expect("save the document");
 
     app.wait_for("the outline to gain the new section", || {
-        app.outline().headings.contains(&"h2 Preface".to_owned())
+        app.outline().headings().contains(&"h2 Preface".to_owned())
     });
     assert_eq!(
-        app.outline().headings,
+        app.outline().headings(),
         [
             "h1 Guide",
             "h2 Preface",
@@ -297,7 +297,7 @@ fn a_document_with_no_headings_says_so_where_its_headings_would_be() {
 
     let outline = app.outline();
     assert!(outline.shown, "the sidebar went away instead of saying so");
-    assert!(outline.headings.is_empty(), "{:?}", outline.headings);
+    assert!(outline.headings().is_empty(), "{:?}", outline.headings());
     assert_eq!(outline.notice, "No headings");
     assert_eq!(outline.section, "");
     assert_eq!(
@@ -334,7 +334,7 @@ fn a_window_with_nothing_in_it_yet_reads_without_an_empty_sidebar_beside_it() {
     app.type_text("# Notes\n\nThe first line.\n");
     app.wait_for(
         "the sidebar to come back with the new heading in it",
-        || app.outline().headings == ["h1 Notes"],
+        || app.outline().headings() == ["h1 Notes"],
     );
     assert!(app.outline().shown, "the sidebar listed a heading unseen");
 
@@ -362,7 +362,7 @@ fn the_reader_can_call_up_the_sidebar_of_an_untitled_window_and_it_stays_theirs(
     app.activate("win.outline");
     app.type_text("# Notes\n");
     app.wait_for("the window to render what was typed", || {
-        app.outline().headings == ["h1 Notes"]
+        app.outline().headings() == ["h1 Notes"]
     });
     assert!(
         !app.outline().shown,
@@ -408,7 +408,7 @@ fn a_document_opened_into_an_untitled_window_is_read_with_its_outline_beside_it(
 
     app.wait_for("the opened document's sidebar", || app.outline().shown);
     assert_eq!(
-        app.outline().headings.first().map(String::as_str),
+        app.outline().headings().first().map(String::as_str),
         Some("h1 Guide"),
     );
 
@@ -455,7 +455,7 @@ fn a_narrow_window_reads_without_the_outline_taking_the_document_s_room() {
     app.activate("win.outline");
     assert!(app.outline().shown, "the outline could not be called up");
     assert_eq!(
-        app.outline().headings.first().map(String::as_str),
+        app.outline().headings().first().map(String::as_str),
         Some("h1 Guide"),
     );
 
@@ -567,7 +567,7 @@ fn dragging_the_divider_widens_the_outline_and_the_width_comes_back_next_time() 
         "the outline and the document are not meeting at the divider",
     );
     assert_eq!(
-        app.outline().headings.first().map(String::as_str),
+        app.outline().headings().first().map(String::as_str),
         Some("h1 Guide"),
         "the outline stopped listing the document it was widened beside",
     );
@@ -615,7 +615,7 @@ fn the_divider_stops_before_either_pane_is_crushed() {
     app.drag_divider(-10_000);
     app.wait_until_sidebar_width(NARROWEST);
     assert_eq!(
-        app.outline().headings.first().map(String::as_str),
+        app.outline().headings().first().map(String::as_str),
         Some("h1 Guide"),
         "the narrowest outline stopped being a list of headings",
     );
@@ -680,6 +680,327 @@ fn a_width_chosen_while_wide_comes_back_when_the_window_is_wide_again() {
         app.outline().shown
     });
     app.wait_until_sidebar_width(USUAL + 90);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Issue #35, the fold: a section with sections under it carries a chevron, turning it
+/// takes those sections off the screen, and turning it back brings them home.
+///
+/// The chevron is turned by the very action `GtkTreeExpander` puts on its own gesture
+/// and on `Ctrl+Space`, so this is the reader's own path to it rather than a shortcut
+/// into the model behind it.
+#[test]
+fn a_section_with_sections_under_it_folds_away_and_comes_back() {
+    let fixture = Fixture::new("outline-fold");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    let opened = app.outline();
+    assert_eq!(
+        opened.headings(),
+        [
+            "h1 Guide",
+            "h2 Getting started",
+            "h3 Requirements",
+            "h2 Reference",
+            "h2 Notes",
+        ],
+        "a document opens with its sections showing",
+    );
+    let holder = opened.row("Getting started");
+    assert!(
+        holder.expandable && holder.expanded,
+        "the section holding another one has no chevron turned down: {holder:?}",
+    );
+    let leaf = opened.row("Notes");
+    assert!(
+        !leaf.expandable,
+        "a section with nothing under it was given a chevron: {leaf:?}",
+    );
+
+    app.toggle_section("Getting started");
+
+    let folded = app.outline();
+    assert_eq!(
+        folded.headings(),
+        ["h1 Guide", "h2 Getting started", "h2 Reference", "h2 Notes"],
+        "folding a section left its own sections on screen",
+    );
+    let holder = folded.row("Getting started");
+    assert!(
+        holder.expandable && !holder.expanded,
+        "the folded section's chevron is still turned down: {holder:?}",
+    );
+
+    app.toggle_section("Getting started");
+    assert_eq!(
+        app.outline().headings(),
+        [
+            "h1 Guide",
+            "h2 Getting started",
+            "h3 Requirements",
+            "h2 Reference",
+            "h2 Notes",
+        ],
+        "unfolding the section did not bring its sections back",
+    );
+
+    // A fold belongs to the document it was made in. The next document opened here is
+    // read whole, not with a section missing because the last one happened to have a
+    // section called the same thing.
+    app.toggle_section("Getting started");
+    app.wait_for("the section to fold away", || {
+        !app.outline()
+            .headings()
+            .contains(&"h3 Requirements".to_owned())
+    });
+    app.open_here(&fixture.write("again.md", &guide()));
+    app.wait_for("the second document's outline", || {
+        app.outline().headings().len() == 5
+    });
+    assert!(
+        app.outline().row("Getting started").expanded,
+        "a fold made in one document was carried into the next",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The #7 rule meets the fold (issue #35): the file changes under the reader, the
+/// outline follows it, and what the reader folded away stays folded away.
+///
+/// A rebuild that forgot it would unfold the whole document under them on every save,
+/// which in edit mode is every keystroke.
+#[test]
+fn a_folded_section_is_still_folded_when_the_file_changes_under_the_reader() {
+    let fixture = Fixture::new("outline-fold-reload");
+    let document = fixture.write("guide.md", &guide());
+    let app = axiomd_e2e::launch(&document);
+
+    app.toggle_section("Getting started");
+    app.wait_for("the section to fold away", || {
+        !app.outline()
+            .headings()
+            .contains(&"h3 Requirements".to_owned())
+    });
+
+    // A section inserted above everything, which moves every source line below it and
+    // rebuilds the whole sidebar.
+    let grown = guide().replace(
+        "# Guide\n\nOpening words.\n\n",
+        "# Guide\n\nOpening words.\n\n## Preface\n\nAdded later.\n\n",
+    );
+    std::fs::write(&document, &grown).expect("save the document");
+
+    app.wait_for("the outline to gain the new section", || {
+        app.outline().headings().contains(&"h2 Preface".to_owned())
+    });
+    assert_eq!(
+        app.outline().headings(),
+        [
+            "h1 Guide",
+            "h2 Preface",
+            "h2 Getting started",
+            "h2 Reference",
+            "h2 Notes",
+        ],
+        "the reload unfolded the section the reader had folded away",
+    );
+    assert!(
+        !app.outline().row("Getting started").expanded,
+        "the chevron came back turned down",
+    );
+
+    // And unfolding it after the reload still works, so what survived is the fold and
+    // not a row that has stopped answering.
+    app.toggle_section("Getting started");
+    assert!(
+        app.outline()
+            .headings()
+            .contains(&"h3 Requirements".to_owned()),
+        "the section could not be unfolded after the document changed",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The non-happy path of the fold: the reader reads on into a section they have folded
+/// away. Their place is still shown — on the section that holds it, which is the row
+/// they can actually see.
+#[test]
+fn a_reader_inside_a_folded_section_is_shown_the_section_that_holds_it() {
+    let fixture = Fixture::new("outline-fold-place");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    app.dom("document.querySelector('h3[id=\"requirements\"]').scrollIntoView(true)");
+    app.wait_until_section("Requirements");
+
+    app.toggle_section("Getting started");
+
+    app.wait_until_section("Getting started");
+    let folded = app.outline();
+    assert!(
+        !folded.headings().contains(&"h3 Requirements".to_owned()),
+        "the section the reader is in was not folded away at all",
+    );
+    assert_eq!(
+        folded
+            .rows
+            .iter()
+            .filter(|row| row.current)
+            .map(|row| row.text.clone())
+            .collect::<Vec<_>>(),
+        ["Getting started"],
+        "the reader's place is drawn on no row, or on more than one",
+    );
+
+    // Unfolding it hands their place back to the section they are really in.
+    app.toggle_section("Getting started");
+    app.wait_until_section("Requirements");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The panel reads as a panel (issue #35): over the sections is the document they are
+/// the sections of, and how many of them there are.
+#[test]
+fn the_sidebar_says_which_document_it_is_the_index_of_and_how_many_sections_it_has() {
+    let fixture = Fixture::new("outline-titled");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    let outline = app.outline();
+    assert_eq!(outline.title, "guide.md");
+    assert_eq!(outline.count, "5 headings");
+
+    // Folding takes rows off the screen and changes nothing about the document, so the
+    // count is still the document's.
+    app.toggle_section("Getting started");
+    assert_eq!(app.outline().count, "5 headings");
+
+    // A document with no sections says whose sidebar it is all the same, and leaves the
+    // counting to the empty state beneath it.
+    let plain = axiomd_e2e::launch(&fixture.write("plain.md", "Just words.\n"));
+    let bare = plain.outline();
+    assert_eq!(bare.title, "plain.md");
+    assert_eq!(bare.count, "");
+    assert_eq!(bare.notice, "No headings");
+
+    assert!(plain.close().is_empty(), "the launch left processes behind");
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// libadwaita's own default accent colour, which is what a desktop that has never
+/// chosen one is drawn in — `--accent-blue`, `#3584e4`
+/// (`/usr/share/doc/libadwaita-1/css-variables.html`, libadwaita 1.8.6). Every launch
+/// here runs on a settings store of its own with no accent in it, so this is the colour
+/// the pill comes out.
+const ACCENT: (u8, u8, u8) = (0x35, 0x84, 0xe4);
+
+/// The live position indicator, in pixels (issue #35): the sidebar really draws the
+/// reader's place, and it really redraws when they move.
+///
+/// Pixels rather than the model, because "the row is selected" is not what the reader
+/// is promised — being able to see where they are is. A picture taken at the top of the
+/// document, one taken inside a section, and one taken back at the top again: the first
+/// two must differ, and the third must be the first one again.
+#[test]
+fn the_sidebar_draws_the_readers_place_and_redraws_it_as_they_read() {
+    let fixture = Fixture::new("outline-pill");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.wait_for("the page to say where the reader is", || {
+        app.section_reports() > 0
+    });
+    app.wait_until_section("");
+
+    let above_everything = app.sidebar_screenshot();
+    assert!(
+        !above_everything.is_blank(),
+        "the sidebar was captured as a blank rectangle",
+    );
+    assert_eq!(
+        above_everything.pixels_coloured(ACCENT),
+        0,
+        "a reader above every section was drawn a pill anyway",
+    );
+
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+    let reading = app.sidebar_screenshot();
+    assert!(
+        !reading.looks_like(&above_everything),
+        "the sidebar drew the same picture whether or not the reader was in a section",
+    );
+    // And the pill is the accent pill: `.navigation-sidebar` makes selection neutral by
+    // design, so a sidebar drawing the reader's place in grey is one whose stylesheet
+    // never took (issue #35). One row of it is some thousands of pixels.
+    let pill = reading.pixels_coloured(ACCENT);
+    assert!(
+        pill > 1_000,
+        "the reader's place is drawn in {pill} pixels of the accent colour",
+    );
+
+    app.dom("document.scrollingElement.scrollTop = 0");
+    app.wait_until_section("");
+    assert!(
+        app.sidebar_screenshot().looks_like(&above_everything),
+        "the sidebar did not go back to the picture it draws above every section",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The visual specification of the sidebar on a light desktop (issue #35).
+///
+/// Ignored until the owner has looked at the picture and pinned it: they are the arbiter
+/// of "beautiful", and approving a rendered surface for the first time is theirs to do
+/// rather than the harness's (`docs/TESTING.md`). To pin it, look at
+/// `target/debug/e2e-artifacts/outline-light.actual.png` from a failing run and, if it
+/// is right, re-run this test with `AXIOMD_PIN_GOLDENS=1` set, then remove the
+/// `#[ignore]`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_light_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-light");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.sidebar_screenshot().assert_matches("outline-light");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The same panel on a dark desktop. Pinned the same way, from
+/// `outline-dark.actual.png`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_dark_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-dark");
+    let dark = Preferences::with("outline-golden-dark", "theme", "'dark'");
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &dark);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.sidebar_screenshot().assert_matches("outline-dark");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// And on a desktop asking for high contrast, which is the one no colour value can show
+/// is legible rather than merely different. Pinned from
+/// `outline-high-contrast.actual.png`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_high_contrast_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-contrast");
+    let desktop = Preferences::new("outline-golden-contrast");
+    desktop.set_high_contrast(true);
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &desktop);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.sidebar_screenshot()
+        .assert_matches("outline-high-contrast");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

@@ -8,6 +8,8 @@
 //!   (VISION) means this one.
 //! * [`of_size`] — the same vocabulary grown to any size, which is how the 10 MB
 //!   document exists without a 10 MB file in the repository.
+//! * [`with_headings`] — a thousand sections and almost nothing else, which is what
+//!   the outline sidebar costs money on (issue #35).
 //! * [`deeply_nested`] — the pathological case: block structure nested far past
 //!   anything a person writes, which is where a recursive parser or renderer goes
 //!   quadratic if it is going to.
@@ -54,6 +56,31 @@ pub fn of_size(bytes: usize) -> String {
     while document.len() < bytes {
         write_section(&mut document, section);
         section += 1;
+    }
+    document
+}
+
+/// A document of `headings` sections, nested three levels deep — the shape the outline
+/// sidebar itself costs money on.
+///
+/// Every other kind of block is left out on purpose: this is the document that says
+/// what a thousand rows in the sidebar cost, and prose around them would only bury that
+/// number under the renderer's.
+///
+/// The levels cycle `##`, `###`, `###`, so most sections have sections under them and
+/// the tree is a tree rather than a list. Every heading is distinct, because a thousand
+/// identical rows would not be an outline.
+pub fn with_headings(headings: usize) -> String {
+    let mut document =
+        String::from("# Heading corpus\n\nA generated document, written to be measured.\n\n");
+    for section in 1..=headings.saturating_sub(1) {
+        let level = match section % 3 {
+            1 => "##",
+            _ => "###",
+        };
+        document.push_str(&format!(
+            "{level} Section {section}\n\nWhat section {section} says.\n\n"
+        ));
     }
     document
 }
@@ -152,6 +179,24 @@ mod tests {
         assert!(document.contains("| Field | Value |"), "no tables");
         assert!(document.contains("> What section 1 is"), "no block quotes");
         assert!(document.contains("- The first thing"), "no lists");
+    }
+
+    /// A budget on a thousand rows has to be measured on a thousand rows, nested.
+    #[test]
+    fn the_heading_corpus_holds_the_headings_it_claims_at_the_levels_it_claims() {
+        let document = with_headings(1_000);
+        let headings: Vec<&str> = document
+            .lines()
+            .filter(|line| line.starts_with('#'))
+            .collect();
+
+        assert_eq!(headings.len(), 1_000);
+        assert_eq!(headings[0], "# Heading corpus");
+        assert_eq!(headings[1], "## Section 1");
+        assert_eq!(headings[2], "### Section 2");
+        assert_eq!(headings[3], "### Section 3");
+        assert_eq!(headings[4], "## Section 4");
+        assert_eq!(headings[999], "### Section 999");
     }
 
     /// The pathological document has to actually be deep, or it is only a document.

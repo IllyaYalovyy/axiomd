@@ -91,6 +91,21 @@ mod budgets {
     /// block, and the ceiling says by how much until it stops.
     pub(super) const STALL_WHILE_RENDERING: Budget = Budget::millis(4_000, 250);
 
+    /// Cold start to a document of a thousand sections served — the outline's own
+    /// document (issue #35). Not a startup budget so much as a guard on the sidebar:
+    /// a panel that builds its tree in anything worse than a pass over the headings
+    /// shows it here, against the same launch measured for a typical file. Measured at
+    /// 409-423 ms on 2026-08-04, against 411 ms for a typical document: a thousand rows
+    /// cost about a hundredth of a launch.
+    pub(super) const THOUSAND_HEADING_START: Budget = Budget::millis(580, 300);
+
+    /// Folding a thousand-section outline down to its top row and opening it again —
+    /// nine hundred and ninety-nine rows out of the list and back in, which is the
+    /// worst a chevron can cost. Two frames at 60 Hz is what a reader would call
+    /// instant, and it is what this is aimed at. Measured at 32-35 ms for the pair on
+    /// 2026-08-04 — a frame each way, including the round trip that asks for it.
+    pub(super) const OUTLINE_FOLD: Budget = Budget::millis(50, 33);
+
     /// One window showing a typical document — the application, the web process its
     /// document is rendered in, and the network process beside them. Measured at
     /// 544 MB; WebKit's own floor dominates it (RFC-001 measured 200–300 MB for a web
@@ -115,6 +130,10 @@ const MANY_WINDOWS: usize = 10;
 /// screen, which the reload budget beside it measures at about 18 seconds. It is how
 /// long the stall budget watches the application for after an edit.
 const A_WHOLE_HEAVY_RE_RENDER: Duration = Duration::from_secs(25);
+
+/// How many sections the outline budgets are measured on. Issue #35's number, and far
+/// past anything but a generated document.
+const MANY_HEADINGS: usize = 1_000;
 
 /// The document the 10 MB budgets are measured on.
 fn ten_megabytes() -> String {
@@ -141,6 +160,64 @@ fn a_typical_document_is_served_within_the_cold_start_budget() {
             assert!(
                 app.dom_text("h1").contains("Performance corpus"),
                 "the launch that was timed had not rendered the document",
+            );
+            took
+        },
+    );
+}
+
+/// A thousand sections in the sidebar, from a standing start (issue #35).
+///
+/// The outline is rebuilt on every render, so the shape of that rebuild is on the path
+/// of every keystroke in edit mode as well as of the launch measured here.
+#[test]
+#[ignore = "a perf budget; run ./scripts/quality.d/20-perf.sh, which builds release"]
+fn a_thousand_section_outline_is_built_within_its_budget() {
+    let fixture = Fixture::new("perf-outline-build");
+    let document = fixture.write("sections.md", &corpus::with_headings(MANY_HEADINGS));
+
+    budget::time(
+        "cold start to a 1000-section document served",
+        budgets::THOUSAND_HEADING_START,
+        || {
+            let app = launch(&document);
+            let took = app.startup();
+            assert_eq!(
+                app.outline().rows.len(),
+                MANY_HEADINGS,
+                "the launch that was timed had not listed the document's sections",
+            );
+            took
+        },
+    );
+}
+
+/// Folding that outline away and opening it again, which is the sidebar's own
+/// interaction and the one that moves the most rows at once (issue #35).
+///
+/// Measured as the pair, so every sample is the same work: the fold takes 999 rows out
+/// of the list and the unfold puts them back. The number includes the round trip over
+/// the control channel, which is what a press costs on top of the work itself.
+#[test]
+#[ignore = "a perf budget; run ./scripts/quality.d/20-perf.sh, which builds release"]
+fn folding_a_thousand_section_outline_stays_within_a_frame_or_two() {
+    let fixture = Fixture::new("perf-outline-fold");
+    let document = fixture.write("sections.md", &corpus::with_headings(MANY_HEADINGS));
+    let app = launch(&document);
+    assert_eq!(app.outline().rows.len(), MANY_HEADINGS);
+
+    budget::time(
+        "a 1000-section outline folded away and opened again",
+        budgets::OUTLINE_FOLD,
+        || {
+            let began = Instant::now();
+            app.toggle_section("Heading corpus");
+            app.toggle_section("Heading corpus");
+            let took = began.elapsed();
+            assert_eq!(
+                app.outline().rows.len(),
+                MANY_HEADINGS,
+                "the outline did not come back from being folded away",
             );
             took
         },

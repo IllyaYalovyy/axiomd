@@ -1,0 +1,100 @@
+/*
+ * The outline sidebar (issue #35), styled the way a modern GNOME sidebar is.
+ *
+ * Every colour and every opacity here is a libadwaita variable rather than a value,
+ * which is what makes light, dark and high contrast three designs instead of one:
+ * --accent-bg-color follows the desktop's accent, --dim-opacity rises from 55% to 90%
+ * under high contrast so a dimmed level stays legible, and --border-color is derived
+ * from the current foreground so a hairline is a hairline on both.
+ *
+ * Loaded once per display at APPLICATION priority, which in GTK's cascade outranks the
+ * theme whatever its selectors are — that is what lets the row below take the accent
+ * pill back from .navigation-sidebar, which deliberately makes selection neutral.
+ */
+
+/* The panel: its own surface, so the sidebar reads as a designed thing rather than as
+   a list floating on the window. */
+.axiomd-outline-panel {
+  background-color: var(--sidebar-bg-color);
+  color: var(--sidebar-fg-color);
+}
+
+/* The title row over the sections: what document these are the sections of, and how
+   many of them there are. */
+.axiomd-outline-header {
+  padding: 9px 12px 8px 12px;
+  box-shadow: inset 0 -1px var(--border-color);
+}
+
+.axiomd-outline-name {
+  font-weight: 700;
+}
+
+.axiomd-outline-count {
+  font-size: 0.85em;
+  opacity: var(--dim-opacity);
+}
+
+/* The sections themselves. */
+listview.axiomd-outline {
+  padding: 6px;
+}
+
+listview.axiomd-outline > row {
+  border-radius: 9px;
+  padding: 5px 8px;
+  min-height: 24px;
+}
+
+/* Where the reader is: the GNOME pill, in the accent colour, following the document as
+   they read. .navigation-sidebar makes selection neutral by design; here the selection
+   IS the position indicator, so it takes the accent back. */
+listview.axiomd-outline > row:selected {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+}
+
+listview.axiomd-outline > row:selected label {
+  opacity: 1;
+  color: var(--accent-fg-color);
+}
+
+listview.axiomd-outline > row:hover:not(:selected) {
+  background-color: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+listview.axiomd-outline > row:active:not(:selected) {
+  background-color: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* Typographic hierarchy: a heading's level is its weight, its size and how much of the
+   page's ink it is given — read at a glance, with no # marks to read. */
+listview.axiomd-outline label.axiomd-outline-level-1 {
+  font-weight: 700;
+}
+
+listview.axiomd-outline label.axiomd-outline-level-2 {
+  font-weight: 600;
+}
+
+listview.axiomd-outline label.axiomd-outline-level-3 {
+  font-weight: 400;
+  font-size: 0.94em;
+}
+
+listview.axiomd-outline label.axiomd-outline-level-4,
+listview.axiomd-outline label.axiomd-outline-level-5,
+listview.axiomd-outline label.axiomd-outline-level-6 {
+  font-weight: 400;
+  font-size: 0.9em;
+  opacity: var(--dim-opacity);
+}
+
+/* The chevron: present, quiet, and never the loudest thing in the row. */
+listview.axiomd-outline expander {
+  opacity: var(--dim-opacity);
+}
+
+listview.axiomd-outline > row:selected expander {
+  opacity: 1;
+}

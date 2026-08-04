@@ -253,6 +253,17 @@ impl Session {
             // Pressing a button the window is showing — in an inline notice or in a
             // dialog — by the words on it, which is all the reader has to go on.
             "press" => press(&self.target(shell)?, payload),
+            // Turning a section's chevron in the outline, as clicking it does: the
+            // action `GtkTreeExpander` puts on its own gesture and on `Ctrl+Space`. A
+            // section the sidebar is not showing, or one with nothing under it to fold,
+            // is a failure rather than a quiet nothing.
+            "toggle-section" => match self.target(shell)?.fold_section(payload) {
+                true => Ok(String::new()),
+                false => Err(format!(
+                    "the outline is showing no section called {payload:?} with anything \
+                     under it to fold"
+                )),
+            },
             // Pressing one of the window's own controls, found by the name a screen
             // reader announces it as — a control nobody can name is a failure rather
             // than a press that quietly went nowhere.
@@ -400,7 +411,16 @@ impl Session {
                             .map(|()| String::new())
                             .map_err(|error| error.to_string())
                     }
-                    "header" => capture(self.target(shell)?.header(), path),
+                    "header" => {
+                        let header = self.target(shell)?.header().clone();
+                        drawn(&header).await;
+                        capture(&header, path)
+                    }
+                    "sidebar" => {
+                        let sidebar = self.target(shell)?.sidebar().clone();
+                        drawn(&sidebar).await;
+                        capture(&sidebar, path)
+                    }
                     other => Err(format!("no such part to capture: {other}")),
                 }
             }
@@ -518,11 +538,57 @@ impl Session {
     }
 }
 
+/// Waits until the window has painted a frame with `widget` in it.
+///
+/// What a widget looks like changes on the main loop — a section is highlighted, a
+/// chevron turned — and reaches the screen on the frame after. A capture taken in
+/// between draws the widget as it was, because the list has not restyled its rows yet
+/// (probed on GTK 4.20.4: a sidebar captured immediately after the reader left a section
+/// still had the pill on it). So a capture waits for a frame first, which is the widget
+/// half of what a document capture does with `document.timeline`.
+///
+/// `begin_updating` is what makes the frame happen at all: a window with nothing moving
+/// in it paints only when something asks, and this is the asking.
+async fn drawn(widget: &gtk::Widget) {
+    let Some(clock) = widget.frame_clock() else {
+        return;
+    };
+    let painted = Rc::new(Cell::new(false));
+    let waiting: Rc<std::cell::RefCell<Option<std::task::Waker>>> = Rc::default();
+    let handler = clock.connect_after_paint({
+        let painted = painted.clone();
+        let waiting = waiting.clone();
+        move |_| {
+            painted.set(true);
+            if let Some(waker) = waiting.borrow_mut().take() {
+                waker.wake();
+            }
+        }
+    });
+    clock.begin_updating();
+    std::future::poll_fn(|context| match painted.get() {
+        true => std::task::Poll::Ready(()),
+        false => {
+            *waiting.borrow_mut() = Some(context.waker().clone());
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    clock.end_updating();
+    clock.disconnect(handler);
+}
+
 /// Writes `widget` to `path` as the pixels it is drawn as.
 ///
-/// Through the window's own renderer, which draws the widget again there and then —
-/// so, unlike the page, there is no last-painted frame to race and a capture taken
-/// before the window has been laid out is a failure rather than a blank picture.
+/// The widget is asked to draw itself, through its parent, and the picture is rendered
+/// by the window's own renderer. Not through a `GtkWidgetPaintable`, which hands back
+/// the frame the widget last *painted*: a sidebar captured that way just after the
+/// reader's place moved came back showing where they were before (probed on GTK
+/// 4.20.4). `gtk_widget_snapshot_child` draws the widget tree as it stands now.
+///
+/// A window that has not laid the widget out yet is a failure rather than a blank
+/// picture, and so is one that has invalidated it and not drawn it again — which is
+/// what [`drawn`] above waits for.
 fn capture(widget: &gtk::Widget, path: &str) -> Answer {
     let (width, height) = (widget.width(), widget.height());
     if width <= 0 || height <= 0 {
@@ -534,19 +600,21 @@ fn capture(widget: &gtk::Widget, path: &str) -> Answer {
         .native()
         .and_then(|native| native.renderer())
         .ok_or("the window has no renderer to draw with")?;
+    let parent = widget
+        .parent()
+        .ok_or("the widget is not in the window, so nothing draws it")?;
+    // The snapshot below is drawn in the parent's coordinates, so the part of it the
+    // widget is, is where the widget sits inside that parent.
+    let bounds = widget
+        .compute_bounds(&parent)
+        .ok_or("the window has not laid this out yet")?;
     let snapshot = gtk::Snapshot::new();
-    gtk::WidgetPaintable::new(Some(widget)).snapshot(&snapshot, width as f64, height as f64);
-    let drawn = snapshot.to_node().ok_or("the widget drew nothing")?;
+    parent.snapshot_child(widget, &snapshot);
+    let drawn = snapshot
+        .to_node()
+        .ok_or("the widget has been changed and not drawn again yet")?;
     renderer
-        .render_texture(
-            &drawn,
-            Some(&gtk::graphene::Rect::new(
-                0.0,
-                0.0,
-                width as f32,
-                height as f32,
-            )),
-        )
+        .render_texture(&drawn, Some(&bounds))
         .save_to_png(path)
         .map(|()| String::new())
         .map_err(|error| error.to_string())

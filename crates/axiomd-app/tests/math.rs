@@ -415,7 +415,7 @@ fn an_equation_in_a_heading_still_names_its_section() {
 
     assert!(outline.shown, "the sidebar is not beside the document");
     assert_eq!(
-        outline.headings,
+        outline.headings(),
         vec![
             "h1 Notes".to_owned(),
             "h2 The limit \\lim_{n \\to \\infty} a_n".to_owned(),

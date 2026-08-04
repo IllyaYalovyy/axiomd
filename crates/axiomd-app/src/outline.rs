@@ -1,11 +1,11 @@
 //! The document's headings, beside the document (UT-005).
 //!
-//! One module owns the whole sidebar: the split view the document sits in, the list of
+//! One module owns the whole sidebar: the split view the document sits in, the panel of
 //! headings, the empty state for a document that has none, the action `F9` and the
 //! header-bar button share, and what a window too narrow to hold both means for it,
 //! which is the whole of what stops such a window from being all sidebar. What the
-//! window has to know is four calls — here is the document's outline, the reader is
-//! here, tell me when they pick a section, show or hide it.
+//! window has to know is five calls — here is the document and its outline, the reader
+//! is here, tell me when they pick a section, show or hide it.
 //!
 //! # Nothing here re-reads the document
 //!
@@ -15,13 +15,49 @@
 //! same map already carries scroll sync, search and live-reload position preservation
 //! (invariant 3). Nothing is parsed, scanned or measured to build this.
 //!
+//! # What the reader sees
+//!
+//! A panel rather than a list (issue #35): a title row saying which document these are
+//! the sections of and how many there are, and under it the sections themselves — the
+//! level a heading is written at said by its weight, its size and its indentation, with
+//! no `#` marks and no markup. A section with sections under it carries a chevron and
+//! folds away; a section with none carries the space where the chevron would be, so the
+//! words all start on the same line. Everything about how that is drawn is in
+//! `outline.css` and every colour in it is a libadwaita variable, which is what makes
+//! light, dark and high contrast three designs rather than one.
+//!
+//! The tree is a [`gtk::TreeListModel`] over the flat outline, so what the list draws is
+//! the rows the reader can see and nothing else: folding a section takes its rows out of
+//! the model, and the [`gtk::ListView`] under it still builds widgets only for the rows
+//! on screen. A thousand-section document is a thousand small objects and a screenful of
+//! widgets.
+//!
 //! # Where the reader is
 //!
 //! [`Outline::follow`] is given a source line and highlights the section it falls in —
-//! the last heading at or before it, and none at all above the first one. It is told
-//! that line by whichever surface the reader is on: the page, over the message bridge
-//! and only on a frame in which the answer can have changed (`view.rs`, `track.js`), or
-//! the editor's caret. Nothing here polls, measures a height, or reads the file.
+//! the last row at or before it, and none at all above the first one. Because the rows
+//! are in document order, that is also the answer for a reader who has folded away the
+//! section they are in: the last *visible* row at or before them is the section that
+//! holds it, so their place is always drawn on a row they can see. It is told that line
+//! by whichever surface the reader is on: the page, over the message bridge and only on
+//! a frame in which the answer can have changed (`view.rs`, `track.js`), or the editor's
+//! caret. Nothing here polls, measures a height, or reads the file.
+//!
+//! # What survives a rebuild
+//!
+//! Every render rebuilds the panel, including the renders nobody asked for — a file that
+//! changed under the reader, a keystroke in the editor. Two things survive that: the
+//! section they were reading, and the sections they had folded away. Both are found
+//! again by what they are called rather than by where they were — a heading inserted
+//! above them moves every source line in the document and neither of these.
+//!
+//! The folds are this module's own record rather than the list's, because the list
+//! forgets: `GtkTreeListModel` throws away the rows under a section that is folded and
+//! builds them folded again when it is opened. So [`Outline::folds_changed`] keeps what
+//! the reader meant, and [`Outline::unfold`] puts the rows back in agreement with it —
+//! which is what makes opening a section give back exactly the tree that was under it,
+//! and what carries a fold through a live reload. The record belongs to the document it
+//! was made in and is dropped when another one is opened here.
 //!
 //! # How wide it is
 //!
@@ -42,15 +78,18 @@
 //! The one thing no test here drives is a real pointer: a headless compositor has none
 //! and GTK 4 offers no way to inject one. So a drag arrives as the divider's own
 //! gesture signals ([`Outline::drag`], [`Outline::restore`]) — the very signals a
-//! press, a move and a release emit — exactly as picking a section emits the list's
-//! own `activate`.
+//! press, a move and a release emit — a chevron is turned by `listitem.toggle-expand`,
+//! the action `GtkTreeExpander` itself puts on its gesture and on `Ctrl+Space`
+//! (GTK 4.20, `Gtk-4.0.gir`), and picking a section emits the list's own `activate`.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use axiomd_render::Heading;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 
@@ -73,8 +112,8 @@ const ROOM_FOR_THE_DOCUMENT: i32 = 480;
 /// as `GtkPaned`'s own handle does.
 const GRIP: i32 = 5;
 
-/// How far one heading level is indented under the one above it.
-const NESTING: i32 = 12;
+/// How the panel is drawn. Loaded once per display, over the theme.
+const STYLE: &str = include_str!("outline.css");
 
 /// Which of the sidebar's two faces is showing.
 const HEADINGS: &str = "headings";
@@ -86,12 +125,20 @@ const NO_HEADINGS: &str = "No headings";
 /// One window's outline sidebar.
 pub(crate) struct Outline {
     split: adw::OverlaySplitView,
-    entries: gio::ListStore,
+    /// The top-level sections. Every other section hangs off one of these.
+    roots: gio::ListStore,
+    /// Those sections as the reader sees them: the rows on screen, in document order,
+    /// with a folded section's own rows absent.
+    tree: gtk::TreeListModel,
     selection: gtk::SingleSelection,
     list: gtk::ListView,
     faces: gtk::Stack,
-    /// The sidebar the split view holds: the headings, and the grip on their edge.
+    /// The sidebar the split view holds: the panel, and the grip on its edge.
     sidebar: gtk::Box,
+    /// The title row: which document this is the outline of, and how many sections it
+    /// has.
+    name: gtk::Label,
+    count: gtk::Label,
     /// The two gestures the grip answers — held so a test can emit what a pointer
     /// emits, there being no pointer to move.
     divider: gtk::GestureDrag,
@@ -108,11 +155,22 @@ pub(crate) struct Outline {
     /// has just been re-rendered under them highlights the same section rather than
     /// none (live reload, and every keystroke in edit mode).
     at: Cell<u32>,
+    /// Whether the panel is already putting itself in order. While it is, the rows
+    /// coming and going are this module's own doing rather than the reader's, so they
+    /// are not read as the reader having folded anything and the work is done once
+    /// rather than once per row.
+    settling: Cell<bool>,
     /// Whether the sidebar is out of the way for want of anything to put in it — a
     /// window opened with no document (issue #32). Set while that is true and cleared
     /// the moment it stops being: a heading arrives, or the reader asks for the sidebar
     /// themselves.
     held: Cell<bool>,
+    /// The sections the reader has folded away, by what they are called — this
+    /// document's, dropped when another is opened here. What the panel is put back into
+    /// agreement with whenever its rows change, so a fold outlives both the reader
+    /// opening the section above it and every render, including the ones a keystroke
+    /// causes.
+    folded: RefCell<HashSet<String>>,
     chosen: RefCell<Option<Chosen>>,
 }
 
@@ -132,11 +190,22 @@ impl Outline {
         settings: &Rc<Settings>,
         narrow: &adw::Breakpoint,
     ) -> Rc<Self> {
-        let entries = gio::ListStore::new::<Entry>();
+        style_the_panel();
+
+        let roots = gio::ListStore::new::<Entry>();
+        // Not passthrough, because the rows the list draws have to be `GtkTreeListRow`s
+        // for the expander to watch, and not autoexpand, because what is expanded is
+        // this module's answer rather than GTK's: a section the reader folded away stays
+        // folded when the document is rebuilt under it.
+        let tree = gtk::TreeListModel::new(roots.clone(), false, false, |item| {
+            item.downcast_ref::<Entry>()
+                .and_then(Entry::offspring)
+                .map(Cast::upcast)
+        });
         // Nothing is selected until the reader is somewhere: a document open at its
         // first paragraph is in no section yet, and a highlight would be a lie.
         let selection = gtk::SingleSelection::builder()
-            .model(&entries)
+            .model(&tree)
             .autoselect(false)
             .can_unselect(true)
             .build();
@@ -150,6 +219,7 @@ impl Outline {
             .factory(&factory())
             .build();
         list.add_css_class("navigation-sidebar");
+        list.add_css_class("axiomd-outline");
 
         let scroller = gtk::ScrolledWindow::builder()
             .child(&list)
@@ -170,7 +240,33 @@ impl Outline {
         faces.add_named(&scroller, Some(HEADINGS));
         faces.add_named(&nothing, Some(NOTHING));
         faces.set_visible_child_name(NOTHING);
-        faces.set_hexpand(true);
+        faces.set_vexpand(true);
+
+        // The title row, so the sidebar reads as a panel about a document rather than as
+        // a list of words: what it is called, and how much of it there is.
+        let name = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["axiomd-outline-name"])
+            .build();
+        let count = gtk::Label::builder()
+            .css_classes(["axiomd-outline-count"])
+            .build();
+        let header = gtk::Box::builder()
+            .spacing(6)
+            .css_classes(["axiomd-outline-header"])
+            .build();
+        header.append(&name);
+        header.append(&count);
+
+        let panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .css_classes(["axiomd-outline-panel"])
+            .build();
+        panel.append(&header);
+        panel.append(&faces);
 
         // The divider the reader drags, on the outline's inner edge, where the split
         // view already draws the line between the two panes. It is the pointer's
@@ -183,7 +279,7 @@ impl Outline {
         grip.set_cursor_from_name(Some("col-resize"));
 
         let sidebar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        sidebar.append(&faces);
+        sidebar.append(&panel);
         sidebar.append(&grip);
 
         let split = adw::OverlaySplitView::builder()
@@ -222,11 +318,14 @@ impl Outline {
 
         let outline = Rc::new(Self {
             split,
-            entries,
+            roots,
+            tree,
             selection,
             list,
             faces,
             sidebar,
+            name,
+            count,
             divider: gtk::GestureDrag::new(),
             restorer: gtk::GestureClick::new(),
             settings: settings.clone(),
@@ -234,8 +333,21 @@ impl Outline {
             grabbed: Cell::new(BOUNDS.0),
             at: Cell::new(0),
             held: Cell::new(false),
+            settling: Cell::new(false),
+            folded: RefCell::new(HashSet::new()),
             chosen: RefCell::new(None),
         });
+
+        // The reader folding a section away, or opening one: what they did arrives as
+        // rows coming and going, whichever way they did it.
+        let folding = Rc::downgrade(&outline);
+        outline
+            .tree
+            .connect_items_changed(move |_, from, _, added| {
+                if let Some(outline) = folding.upgrade() {
+                    outline.folds_changed(from, added);
+                }
+            });
 
         // A sidebar the reader has in front of them is no longer being held back for
         // want of anything to put in it, however it got there — `F9`, the header-bar
@@ -314,7 +426,7 @@ impl Outline {
     }
 
     /// The sidebar on its own — the panel the reader sees the headings in, for the
-    /// window to say where on screen it is.
+    /// window to say where on screen it is and to capture what it looks like.
     pub(crate) fn panel(&self) -> &gtk::Widget {
         self.sidebar.upcast_ref()
     }
@@ -373,22 +485,25 @@ impl Outline {
         *self.chosen.borrow_mut() = Some(Rc::new(handler));
     }
 
-    /// Shows `headings` as the outline of the document now on screen.
+    /// Shows `headings` as the outline of the document called `name`.
     ///
     /// Called for every render, including the ones nobody asked for — a file that
-    /// changed under the reader, a keystroke in the editor — so the highlight survives
-    /// it: the section the reader was in stays the section they are in, found again by
-    /// what it is called rather than by where it was. A heading inserted above them
-    /// moves every source line in the document and none of this.
+    /// changed under the reader, a keystroke in the editor — so what the reader has
+    /// done to the panel survives it: the section they were in stays the section they
+    /// are in, and the sections they folded away stay folded, both found again by what
+    /// they are called rather than by where they were.
     ///
     /// The page says where they are afterwards in any case; this is what keeps the
     /// sidebar from flickering through a wrong answer while it does.
-    pub(crate) fn show(&self, headings: &[Heading]) {
+    pub(crate) fn show(&self, name: &str, headings: &[Heading]) {
         let reading = self.reading();
-        self.entries.remove_all();
-        for heading in headings {
-            self.entries.append(&Entry::of(heading));
-        }
+        self.settling.set(true);
+        self.rebuild(headings);
+        self.unfold();
+        self.settling.set(false);
+
+        self.name.set_label(name);
+        self.count.set_label(&counted(headings.len()));
         self.faces.set_visible_child_name(if headings.is_empty() {
             NOTHING
         } else {
@@ -402,6 +517,112 @@ impl Outline {
         match reading.and_then(|reading| self.find_section(&reading)) {
             Some(position) => self.select(position),
             None => self.highlight(),
+        }
+    }
+
+    /// Builds the tree the panel draws: every heading under the nearest heading above it
+    /// written at a shallower level, and the rest at the top.
+    ///
+    /// A document that skips a level — `#` then `###` — nests the way it reads: the
+    /// deeper heading goes under the shallower one, whatever the distance between them.
+    ///
+    /// The whole document is built before a single row of it reaches the model, and that
+    /// is not a nicety. `gtk_tree_list_row_is_expandable` asks this module for a
+    /// section's children once and remembers the answer for the life of the row (probed
+    /// on GTK 4.20.4: a row asked before its children exist is a leaf for ever after),
+    /// and the list on screen asks the moment an item appears. A section appended before
+    /// its own sections were hung off it would therefore lose its chevron — every
+    /// document flat, and only in the running application, never in a model built beside
+    /// a test. One splice at the end also means one change signal for a document rather
+    /// than one per heading.
+    fn rebuild(&self, headings: &[Heading]) {
+        let mut roots: Vec<Entry> = Vec::new();
+        let mut holders: Vec<(u8, Entry)> = Vec::new();
+        let mut seen: HashMap<(u8, &str), usize> = HashMap::new();
+        for heading in headings {
+            // Two sections of a document may be called the same thing at the same level,
+            // so which of them this is is part of what it is called.
+            let ordinal = seen
+                .entry((heading.level, heading.text.as_str()))
+                .and_modify(|counted| *counted += 1)
+                .or_insert(0);
+            let entry = Entry::of(heading, *ordinal);
+            while holders
+                .last()
+                .is_some_and(|(level, _)| *level >= heading.level)
+            {
+                holders.pop();
+            }
+            match holders.last() {
+                Some((_, holder)) => holder.adopt(&entry),
+                None => roots.push(entry.clone()),
+            }
+            holders.push((heading.level, entry));
+        }
+        self.roots.splice(0, self.roots.n_items(), &roots);
+    }
+
+    /// The rows have changed: `added` of them appeared at `from`. Works out what the
+    /// reader meant by it and puts the panel back in agreement with them.
+    ///
+    /// This is the only place a fold is recorded, and it is read from the rows rather
+    /// than from the chevron, because a chevron can be turned by the pointer, by
+    /// `Ctrl+Space` and by a drag hovering over it — a change to the rows is the one
+    /// thing all three produce.
+    ///
+    /// The rows that just appeared are not asked what the reader wants, because they
+    /// were not there to be asked: `GtkTreeListModel` throws away a folded section's
+    /// rows and builds them folded again when it is opened (probed on GTK 4.20.4), so
+    /// reading them would take the reader's own tree apart every time they opened a
+    /// section above it. They are told instead, by [`Outline::unfold`], which is what
+    /// makes opening a section give back exactly what was under it.
+    fn folds_changed(&self, from: u32, added: u32) {
+        if self.settling.replace(true) {
+            return;
+        }
+        {
+            let mut folded = self.folded.borrow_mut();
+            for position in (0..self.tree.n_items())
+                .filter(|position| !(from..from.saturating_add(added)).contains(position))
+            {
+                let (Some(row), Some(key)) = (self.row_at(position), self.key_at(position)) else {
+                    continue;
+                };
+                if !row.is_expandable() {
+                    continue;
+                }
+                match row.is_expanded() {
+                    true => folded.remove(&key),
+                    false => folded.insert(key),
+                };
+            }
+        }
+        self.unfold();
+        self.settling.set(false);
+        // Which rows there are decides which one the reader's place is drawn on: a
+        // section folded away hands their place to the section that holds it, and
+        // opening it hands it back.
+        self.highlight();
+    }
+
+    /// Opens every section the reader has not folded away.
+    ///
+    /// Walking forwards is what makes this one pass: opening a section puts its own rows
+    /// in immediately after it, so the loop meets them next and asks the same question
+    /// of them. A folded section's rows never appear at all, so a document folded down
+    /// to its top level costs its top level and nothing more.
+    fn unfold(&self) {
+        let mut position = 0;
+        while position < self.tree.n_items() {
+            if let Some(row) = self.row_at(position)
+                && row.is_expandable()
+            {
+                let wanted = self
+                    .key_at(position)
+                    .is_none_or(|key| !self.folded.borrow().contains(&key));
+                row.set_expanded(wanted);
+            }
+            position += 1;
         }
     }
 
@@ -432,7 +653,12 @@ impl Outline {
     /// not reopen it — and a heading-less document that was *opened* still says "No
     /// headings" where its headings would be, which is the empty state that is right
     /// for it.
+    ///
+    /// The folds go with the document that was folded: a second file opened in this
+    /// window is read whole, not with a section of it missing because the last document
+    /// happened to have a section called the same thing.
     pub(crate) fn opened(&self, a_document: bool) {
+        self.folded.borrow_mut().clear();
         match a_document {
             true => self.let_go(),
             false => {
@@ -456,13 +682,37 @@ impl Outline {
         self.split.shows_sidebar()
     }
 
-    /// The sections listed, in order, each as its level and its words — what a reader
-    /// sees as an indented row.
-    pub(crate) fn listed(&self) -> Vec<String> {
-        (0..self.entries.n_items())
-            .filter_map(|position| self.entry_at(position))
-            .map(|entry| format!("h{} {}", entry.level(), entry.text()))
-            .collect()
+    /// The whole panel as the reader reads it, top to bottom: the title row, then one
+    /// line per row on screen — its level, its chevron, whether it is drawn as the
+    /// reader's place, and its words.
+    ///
+    /// One answer rather than four, because the four are one moment: a chevron turned
+    /// down is a claim about the rows under it, and the reader's place is a claim about
+    /// which of the rows on screen it is.
+    pub(crate) fn shown(&self) -> String {
+        let mut said = vec![format!(
+            "title\t{}\t{}",
+            self.name.label(),
+            self.count.label(),
+        )];
+        let here = self.selection.selected();
+        for position in 0..self.tree.n_items() {
+            let (Some(row), Some(entry)) = (self.row_at(position), self.entry_at(position)) else {
+                continue;
+            };
+            let chevron = match (row.is_expandable(), row.is_expanded()) {
+                (false, _) => "leaf",
+                (true, true) => "expanded",
+                (true, false) => "collapsed",
+            };
+            let drawn_as_here = if position == here { "here" } else { "-" };
+            said.push(format!(
+                "row\t{}\t{chevron}\t{drawn_as_here}\t{}",
+                entry.level(),
+                entry.text(),
+            ));
+        }
+        said.join("\n")
     }
 
     /// What the sidebar says instead of a list, or an empty string while it is showing
@@ -477,16 +727,27 @@ impl Outline {
     /// Picks the section called `section`, exactly as clicking its row does: the list's
     /// own activation, which is what a single click on a row emits.
     ///
-    /// Answers whether there was such a section to pick.
+    /// Answers whether there was such a section on screen to pick — a section folded
+    /// away is not one, for the same reason it is not one the pointer could reach.
     pub(crate) fn pick(&self, section: &str) -> bool {
-        let Some(position) = (0..self.entries.n_items()).find(|position| {
-            self.entry_at(*position)
-                .is_some_and(|entry| entry.text() == section)
-        }) else {
+        let Some(position) = self.position_of(section) else {
             return false;
         };
         self.list.emit_by_name::<()>("activate", &[&position]);
         true
+    }
+
+    /// Turns the chevron of the section called `section`, exactly as clicking it does.
+    ///
+    /// `listitem.toggle-expand` is `GtkTreeExpander`'s own action — what its gesture
+    /// activates and what `Ctrl+Space` is bound to (GTK 4.20, documented on the class) —
+    /// so this is the reader's path and not a way round it. Answers whether the sidebar
+    /// is showing a section by that name with anything under it to fold.
+    pub(crate) fn fold(&self, section: &str) -> bool {
+        let Some(expander) = self.expander_of(section) else {
+            return false;
+        };
+        WidgetExt::activate_action(&expander, "listitem.toggle-expand", None).is_ok()
     }
 
     /// The section the reader is in, as the sidebar shows it highlighted, or an empty
@@ -497,12 +758,16 @@ impl Outline {
             .unwrap_or_default()
     }
 
-    /// Puts the highlight on the section the reader's line falls in: the last heading
-    /// at or before it, and none at all while they are still above the first one —
-    /// which is where a document that opens with a paragraph starts.
+    /// Puts the highlight on the section the reader's line falls in: the last row at or
+    /// before it, and none at all while they are still above the first one — which is
+    /// where a document that opens with a paragraph starts.
+    ///
+    /// The rows are the ones on screen, in document order, so a reader inside a section
+    /// they have folded away is shown the section that holds it: their place is always
+    /// on a row they can see.
     fn highlight(&self) {
         let line = self.at.get();
-        let wanted = (0..self.entries.n_items())
+        let wanted = (0..self.tree.n_items())
             .take_while(|position| self.line_at(*position).is_some_and(|start| start <= line))
             .last()
             .unwrap_or(gtk::INVALID_LIST_POSITION);
@@ -522,31 +787,60 @@ impl Outline {
         }
     }
 
-    /// The section being read, as what it is rather than where it is: its level, its
-    /// words, and — because two sections may be called the same thing — which of the
-    /// sections called that it is.
-    fn reading(&self) -> Option<(u8, String, usize)> {
-        let position = self.selection.selected();
-        let entry = self.entry_at(position)?;
-        let earlier = (0..position)
-            .filter_map(|before| self.entry_at(before))
-            .filter(|other| other.level() == entry.level() && other.text() == entry.text())
-            .count();
-        Some((entry.level(), entry.text(), earlier))
+    /// The section being read, as what it is called rather than where it is.
+    fn reading(&self) -> Option<String> {
+        self.key_at(self.selection.selected())
     }
 
-    /// Where that section is in the document now, if the document still has it.
-    fn find_section(&self, (level, text, ordinal): &(u8, String, usize)) -> Option<u32> {
-        (0..self.entries.n_items())
-            .filter(|position| {
-                self.entry_at(*position)
-                    .is_some_and(|entry| entry.level() == *level && entry.text() == *text)
-            })
-            .nth(*ordinal)
+    /// Where that section is on screen now, if the document still has it and nothing is
+    /// hiding it.
+    fn find_section(&self, key: &str) -> Option<u32> {
+        (0..self.tree.n_items()).find(|position| self.key_at(*position).as_deref() == Some(key))
+    }
+
+    /// The first row on screen reading `section`.
+    fn position_of(&self, section: &str) -> Option<u32> {
+        (0..self.tree.n_items()).find(|position| {
+            self.entry_at(*position)
+                .is_some_and(|entry| entry.text() == section)
+        })
+    }
+
+    /// The expander of the row reading `section`, from the widgets the list has built —
+    /// which are the rows on screen, because that is where a chevron the reader could
+    /// turn is.
+    fn expander_of(&self, section: &str) -> Option<gtk::Widget> {
+        fn search(widget: &gtk::Widget, section: &str) -> Option<gtk::Widget> {
+            if let Some(expander) = widget.downcast_ref::<gtk::TreeExpander>()
+                && expander
+                    .child()
+                    .and_downcast::<gtk::Label>()
+                    .is_some_and(|label| label.label() == section)
+            {
+                return Some(expander.clone().upcast());
+            }
+            let mut child = widget.first_child();
+            while let Some(candidate) = child {
+                if let Some(found) = search(&candidate, section) {
+                    return Some(found);
+                }
+                child = candidate.next_sibling();
+            }
+            None
+        }
+        search(self.list.upcast_ref(), section)
+    }
+
+    fn row_at(&self, position: u32) -> Option<gtk::TreeListRow> {
+        self.tree.item(position).and_downcast::<gtk::TreeListRow>()
     }
 
     fn entry_at(&self, position: u32) -> Option<Entry> {
-        self.entries.item(position).and_downcast::<Entry>()
+        self.row_at(position)?.item().and_downcast::<Entry>()
+    }
+
+    fn key_at(&self, position: u32) -> Option<String> {
+        self.entry_at(position).map(|entry| entry.key())
     }
 
     fn line_at(&self, position: u32) -> Option<u32> {
@@ -554,7 +848,50 @@ impl Outline {
     }
 }
 
-/// How one heading is drawn: its words, indented under the level above it.
+/// What the title row says beside the document's name, or nothing at all for a document
+/// with no sections — the empty state under it already says so, and saying it twice is
+/// noise.
+fn counted(headings: usize) -> String {
+    match headings {
+        0 => String::new(),
+        1 => "1 heading".to_owned(),
+        many => format!("{many} headings"),
+    }
+}
+
+/// Loads `outline.css` over the theme, once for the display every window is on.
+///
+/// A stylesheet is a specification rather than state, so one provider serves every
+/// window and nothing is shared between them (invariant 7). A stylesheet GTK cannot read
+/// is said out loud rather than silently ignored: it would otherwise be a panel that
+/// looks almost right.
+fn style_the_panel() {
+    thread_local! {
+        static LOADED: Cell<bool> = const { Cell::new(false) };
+    }
+    LOADED.with(|loaded| {
+        if loaded.replace(true) {
+            return;
+        }
+        let Some(display) = gdk::Display::default() else {
+            return;
+        };
+        let provider = gtk::CssProvider::new();
+        provider.connect_parsing_error(|_, section, error| {
+            eprintln!("axiomd: outline.css {section}: {error}");
+        });
+        provider.load_from_string(STYLE);
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    });
+}
+
+/// How one heading is drawn: a chevron for a section with sections under it, the space
+/// where one would be for a section without, and then its words at the weight and size
+/// its level is written at.
 fn factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
@@ -565,22 +902,44 @@ fn factory() -> gtk::SignalListItemFactory {
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .build();
-        item.set_child(Some(&label));
+        let expander = gtk::TreeExpander::builder()
+            .child(&label)
+            // The words of every row start on the same line, whether or not the row has
+            // a chevron — an index whose entries do not line up is not an index.
+            .indent_for_icon(true)
+            .indent_for_depth(true)
+            .build();
+        item.set_child(Some(&expander));
+        // GTK's own instruction for a list of expanders: the keyboard belongs to the
+        // expander, or its shortcuts never reach it (GTK 4.20, `GtkTreeExpander`).
+        item.set_focusable(false);
     });
     factory.connect_bind(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
-        let (Some(label), Some(entry)) = (
-            item.child().and_downcast::<gtk::Label>(),
-            item.item().and_downcast::<Entry>(),
+        let (Some(expander), Some(row)) = (
+            item.child().and_downcast::<gtk::TreeExpander>(),
+            item.item().and_downcast::<gtk::TreeListRow>(),
         ) else {
             return;
         };
-        label.set_label(&entry.text());
-        // The whole heading, for one too long to fit the sidebar.
-        label.set_tooltip_text(Some(&entry.text()));
-        label.set_margin_start(NESTING * i32::from(entry.level().saturating_sub(1)));
+        let Some(entry) = row.item().and_downcast::<Entry>() else {
+            return;
+        };
+        // A section with nothing under it keeps the chevron's room and loses the
+        // chevron: there is nothing to fold, so there is nothing to press.
+        expander.set_hide_expander(!row.is_expandable());
+        expander.set_list_row(Some(&row));
+        if let Some(label) = expander.child().and_downcast::<gtk::Label>() {
+            label.set_label(&entry.text());
+            // The whole heading, for one too long to fit the sidebar.
+            label.set_tooltip_text(Some(&entry.text()));
+            label.set_css_classes(&[&format!(
+                "axiomd-outline-level-{}",
+                entry.level().clamp(1, 6)
+            )]);
+        }
     });
     factory
 }
@@ -593,11 +952,16 @@ glib::wrapper! {
 }
 
 impl Entry {
-    fn of(heading: &Heading) -> Entry {
+    /// One heading, and which of the headings called that it is.
+    fn of(heading: &Heading, ordinal: usize) -> Entry {
         let entry: Entry = glib::Object::new();
         entry.imp().level.set(heading.level);
         entry.imp().line.set(heading.line);
         *entry.imp().text.borrow_mut() = heading.text.clone();
+        // Unit separator: a character no heading holds, so two headings cannot spell
+        // one another's name.
+        *entry.imp().key.borrow_mut() =
+            format!("{}\u{1f}{}\u{1f}{ordinal}", heading.level, heading.text);
         entry
     }
 
@@ -612,23 +976,51 @@ impl Entry {
     fn line(&self) -> u32 {
         self.imp().line.get()
     }
+
+    /// What this section is called, in the sense that survives the document being
+    /// rebuilt under it: its level, its words, and which of the sections called that it
+    /// is.
+    fn key(&self) -> String {
+        self.imp().key.borrow().clone()
+    }
+
+    /// Puts `child` under this section.
+    fn adopt(&self, child: &Entry) {
+        self.imp()
+            .children
+            .borrow_mut()
+            .get_or_insert_with(gio::ListStore::new::<Entry>)
+            .append(child);
+    }
+
+    /// The sections under this one, or `None` for a section with none — which is what
+    /// makes its row a leaf and takes its chevron away.
+    fn offspring(&self) -> Option<gio::ListStore> {
+        self.imp().children.borrow().clone()
+    }
 }
 
 mod imp {
     use std::cell::{Cell, RefCell};
 
+    use gtk::gio;
     use gtk::glib;
     use gtk::subclass::prelude::*;
 
     /// A heading as a `GObject`, because a `GtkListView` takes a `GListModel` and
-    /// nothing else. It carries no properties: nothing binds to it, the list is
+    /// nothing else. It carries no properties: nothing binds to it, the panel is
     /// rebuilt whole on every render, and a property is a promise of change
     /// notification this has no use for.
+    ///
+    /// The store of children is made only for a heading that has any, so a document of
+    /// leaves costs no stores at all.
     #[derive(Default)]
     pub struct Entry {
         pub level: Cell<u8>,
         pub line: Cell<u32>,
         pub text: RefCell<String>,
+        pub key: RefCell<String>,
+        pub children: RefCell<Option<gio::ListStore>>,
     }
 
     #[glib::object_subclass]

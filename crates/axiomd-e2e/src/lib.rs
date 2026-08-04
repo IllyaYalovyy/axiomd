@@ -91,15 +91,63 @@ impl Fixture {
 pub struct Outline {
     /// Whether the sidebar is beside the document at all.
     pub shown: bool,
-    /// The sections listed, in document order, each as its heading level and its
-    /// words — `h2 Getting started`.
-    pub headings: Vec<String>,
+    /// The name in the title row over the list — the document the sidebar is an index
+    /// of.
+    pub title: String,
+    /// What the title row says beside that name: how many sections the document has,
+    /// or an empty string for a document with none.
+    pub count: String,
+    /// The rows the reader can see, top to bottom. A section folded away takes its own
+    /// rows out of this, exactly as it takes them off the screen.
+    pub rows: Vec<Row>,
     /// The words of the section highlighted as the one the reader is in, or an empty
     /// string when none is.
     pub section: String,
     /// What the sidebar says in place of a list — a document with no headings — or an
     /// empty string while it is listing them.
     pub notice: String,
+}
+
+impl Outline {
+    /// The sections on screen, in document order, each as its heading level and its
+    /// words — `h2 Getting started`.
+    pub fn headings(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(|row| format!("h{} {}", row.level, row.text))
+            .collect()
+    }
+
+    /// The row reading `text`, for a test that is about one section of the outline.
+    pub fn row(&self, text: &str) -> Row {
+        self.rows
+            .iter()
+            .find(|row| row.text == text)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the sidebar is not showing a section called {text:?}, only {:?}",
+                    self.headings()
+                )
+            })
+            .clone()
+    }
+}
+
+/// One row of the outline, as the reader meets it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// The heading level it is written at, which is what its weight, its size and its
+    /// indentation say.
+    pub level: u8,
+    /// Its words, as the row shows them — no `#` marks and no markup.
+    pub text: String,
+    /// Whether it has a chevron: a section with sections under it.
+    pub expandable: bool,
+    /// Whether that chevron is turned down, so the sections under it are on screen.
+    /// Always false for a row that has none.
+    pub expanded: bool,
+    /// Whether this is the row drawn as the reader's place.
+    pub current: bool,
 }
 
 /// The search bar as one moment of searching leaves it.
@@ -1075,16 +1123,30 @@ impl App {
     /// and a notice standing where a list of headings would be is the same panel
     /// saying something else.
     pub fn outline(&self) -> Outline {
+        let panel = self.property("outline");
+        let titled: Vec<&str> = panel
+            .lines()
+            .find_map(|line| line.strip_prefix("title\t"))
+            .unwrap_or_default()
+            .split('\t')
+            .collect();
         Outline {
             shown: self.property("outline-shown") == "true",
-            headings: self
-                .property("outline")
-                .lines()
-                .map(str::to_owned)
-                .collect(),
+            title: titled.first().copied().unwrap_or_default().to_owned(),
+            count: titled.get(1).copied().unwrap_or_default().to_owned(),
+            rows: panel.lines().filter_map(row_of).collect(),
             section: self.property("outline-section"),
             notice: self.property("outline-notice"),
         }
+    }
+
+    /// Turns the chevron of the section called `section`, exactly as clicking it does:
+    /// the very action `GtkTreeExpander` puts on `Ctrl+Space` and on its own gesture.
+    ///
+    /// A section the sidebar is not showing is a failure rather than a quiet nothing —
+    /// a test asserting that folding works must not pass by folding nothing.
+    pub fn toggle_section(&self, section: &str) {
+        self.command("toggle-section", section);
     }
 
     /// Waits until the outline highlights `wanted`, and fails saying what it
@@ -1347,10 +1409,31 @@ impl App {
         self.capture("header")
     }
 
+    /// Captures the addressed window's outline sidebar as pixels — the title row, the
+    /// sections under it, and whichever of them is drawn as the reader's place.
+    ///
+    /// Drawn by the window's own renderer when it is asked for, like the header bar and
+    /// for the same reason.
+    pub fn sidebar_screenshot(&self) -> Screenshot {
+        self.capture("sidebar")
+    }
+
+    /// Captures one part of the window, once the window has drawn it.
+    ///
+    /// The wait is the widget half of the one a document capture does: a
+    /// widget whose look has just changed — a section highlighted, a heading folded away
+    /// — is invalidated and drawn again on the next frame, and asked for in between it
+    /// has nothing to copy. So the capture is asked for until the window has drawn,
+    /// which is a condition with a deadline like every other wait here, and never a
+    /// sleep. What comes back is therefore always the window as it is now, never the
+    /// frame before the change.
     fn capture(&self, part: &str) -> Screenshot {
         let path = self.scratch.path().join(format!("{part}.png"));
         let _ = std::fs::remove_file(&path);
-        self.command("screenshot", &format!("{part} {}", path.display()));
+        self.settle(&format!("the window to draw its {part}"), || {
+            self.try_command("screenshot", &format!("{part} {}", path.display()))
+                .map(|_| true)
+        });
         Screenshot::read(&path).unwrap_or_else(|error| panic!("{error}"))
     }
 
@@ -1496,6 +1579,23 @@ impl Drop for App {
         self.control.borrow_mut().hang_up();
         self.wait_for_exit();
     }
+}
+
+/// One row of the outline, from the line the window answered with, or `None` for a
+/// line that is not a row at all.
+fn row_of(line: &str) -> Option<Row> {
+    let mut said = line.strip_prefix("row\t")?.splitn(4, '\t');
+    let mut next = || said.next().unwrap_or_default();
+    let level = next().parse().unwrap_or(0);
+    let chevron = next();
+    let here = next();
+    Some(Row {
+        level,
+        expandable: chevron != "leaf",
+        expanded: chevron == "expanded",
+        current: here == "here",
+        text: next().to_owned(),
+    })
 }
 
 /// What `answer` says after the word `named` — the shape every answer made of several

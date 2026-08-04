@@ -101,6 +101,39 @@ impl Screenshot {
             .all(|pixel| pixel == &self.pixels[..4])
     }
 
+    /// Whether this is the same picture as `other`, to the tolerance a golden is
+    /// compared with.
+    ///
+    /// What lets a *change* be asserted without pinning anything: a surface that must
+    /// redraw when the reader moves is tested by taking it twice and asking whether it
+    /// moved, which needs nobody's approval and cannot go stale.
+    pub fn looks_like(&self, other: &Screenshot) -> bool {
+        if self.size() != other.size() {
+            return false;
+        }
+        let budget = (self.pixels.len() / 4) as f64 * CHANGED_PIXEL_BUDGET;
+        (self.changed_pixels(other) as f64) <= budget
+    }
+
+    /// How many pixels are drawn in `colour`, to the same tolerance a golden is
+    /// compared with.
+    ///
+    /// What makes "it is drawn in the accent colour" a test rather than a claim: a
+    /// stylesheet whose colour did not resolve leaves the surface the theme's own, which
+    /// looks almost right and counts zero here.
+    pub fn pixels_coloured(&self, colour: (u8, u8, u8)) -> usize {
+        let (red, green, blue) = colour;
+        self.pixels
+            .chunks_exact(4)
+            // The layout is the one `gdk` downloads in: blue, green, red, alpha.
+            .filter(|pixel| {
+                pixel[0].abs_diff(blue) <= CHANNEL_TOLERANCE
+                    && pixel[1].abs_diff(green) <= CHANNEL_TOLERANCE
+                    && pixel[2].abs_diff(red) <= CHANNEL_TOLERANCE
+            })
+            .count()
+    }
+
     /// Fails the test unless this is still the picture a human approved as `golden`.
     ///
     /// On a mismatch the captured picture and a map of what moved are written under
@@ -463,6 +496,58 @@ mod tests {
         assert_eq!(Pinning::of(Some(OsString::from("0"))), Pinning::Blocked);
         assert_eq!(Pinning::of(Some(OsString::from("true"))), Pinning::Blocked);
         assert_eq!(Pinning::of(Some(OsString::from("1"))), Pinning::Allowed);
+    }
+
+    /// The colour count, which is how a test says "drawn in the accent colour" without
+    /// a human having to look.
+    #[test]
+    fn the_pixels_of_one_colour_are_counted_and_no_others_are() {
+        // The picture is a dark panel on a light field: 24 x 18 dark pixels.
+        assert_eq!(picture().pixels_coloured((32, 32, 32)), 24 * 18);
+        assert_eq!(
+            picture().pixels_coloured((240, 240, 240)),
+            40 * 30 - 24 * 18
+        );
+        assert_eq!(picture().pixels_coloured((53, 132, 228)), 0);
+        // And the channels are counted in the order a caller writes a colour in, not
+        // the order the bytes happen to be in: a picture of accent blue is found by
+        // asking for accent blue and never by asking for its mirror.
+        let accent = Screenshot {
+            width: 2,
+            height: 1,
+            pixels: vec![0xe4, 0x84, 0x35, 255, 0xe4, 0x84, 0x35, 255],
+        };
+        assert_eq!(accent.pixels_coloured((0x35, 0x84, 0xe4)), 2);
+        assert_eq!(accent.pixels_coloured((0xe4, 0x84, 0x35)), 0);
+        // And a channel nudged within tolerance is still that colour, as it is for a
+        // golden.
+        assert_eq!(
+            anti_aliased_twin(&picture()).pixels_coloured((32, 32, 32)),
+            24 * 18,
+        );
+    }
+
+    /// The unpinned comparison, which a test of a surface that must redraw when the
+    /// reader moves rests on: the same tolerance as a golden, and no approval.
+    #[test]
+    fn two_pictures_are_the_same_picture_exactly_when_a_golden_would_say_so() {
+        assert!(picture().looks_like(&picture()));
+        assert!(
+            picture().looks_like(&anti_aliased_twin(&picture())),
+            "a hinting difference must not read as a redraw",
+        );
+        assert!(
+            !picture().looks_like(&perturbed(&picture())),
+            "a moved panel must read as a redraw",
+        );
+        assert!(
+            !picture().looks_like(&Screenshot {
+                width: 40,
+                height: 31,
+                pixels: vec![240; 40 * 31 * 4],
+            }),
+            "a picture of another size is not the same picture",
+        );
     }
 
     /// A capture of a window that never drew is all one colour, and a test that

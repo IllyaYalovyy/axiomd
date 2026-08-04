@@ -800,6 +800,12 @@ impl DocumentWindow {
         self.header.upcast_ref()
     }
 
+    /// The outline panel beside the document — what a sidebar golden is a picture of,
+    /// and where the reader's place is drawn (issue #35).
+    pub(crate) fn sidebar(&self) -> &gtk::Widget {
+        self.outline.panel()
+    }
+
     /// The switch between reading and editing as the reader and a screen reader meet
     /// it: what it draws, what hovering it says, what it announces, and whether it
     /// reads as pressed.
@@ -999,7 +1005,7 @@ impl DocumentWindow {
     /// and which section is highlighted.
     pub(crate) fn outline(&self, of: &str) -> Option<String> {
         match of {
-            "outline" => Some(self.outline.listed().join("\n")),
+            "outline" => Some(self.outline.shown()),
             "outline-notice" => Some(self.outline.notice()),
             "outline-section" => Some(self.outline.current()),
             "outline-shown" => Some(self.outline.is_revealed().to_string()),
@@ -1126,6 +1132,12 @@ impl DocumentWindow {
     /// Answers whether the sidebar is listing one.
     pub(crate) fn pick_section(&self, section: &str) -> bool {
         self.outline.pick(section)
+    }
+
+    /// Turns that section's chevron, as clicking it does. Answers whether the sidebar is
+    /// showing a section by that name with anything under it to fold.
+    pub(crate) fn fold_section(&self, section: &str) -> bool {
+        self.outline.fold(section)
     }
 
     /// What the reader has in front of them in edit mode.
@@ -1932,7 +1944,8 @@ impl DocumentWindow {
         }
         // Beside the document before it is on screen: the outline is the page's own
         // heading map (invariant 3), never a second reading of the file.
-        self.outline.show(page.outline());
+        self.outline
+            .show(&self.document.borrow().name(), page.outline());
         if let Some(open) = self.open.borrow().as_ref() {
             self.view.show(&open.publication, &page, &open.fragment);
             // A save may have been a replacement, which gives the path a new identity
@@ -1965,7 +1978,7 @@ impl DocumentWindow {
             self.status.set_description(Some(detail));
             self.surfaces.set_visible_child_name(STATUS_PAGE);
             // There is no document, so there are no sections in it.
-            self.outline.show(&[]);
+            self.outline.show(&self.document.borrow().name(), &[]);
         }
         self.renders.set(self.renders.get() + 1);
     }
