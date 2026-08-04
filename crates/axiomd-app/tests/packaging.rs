@@ -69,14 +69,48 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str) -> Scratch {
+        Scratch::under(&std::env::temp_dir(), label)
+    }
+
+    /// The same, among the reader's own files instead of the machine's `/tmp`.
+    ///
+    /// The sandbox's one filesystem grant is `host:ro`, and `host` is not everything:
+    /// a flatpak has a `/tmp` of its own and the machine's is not in it, while the
+    /// reader's home is (probed on flatpak 1.16.6, 2026-08-04, by reading a file back
+    /// from each through `flatpak run --filesystem=host:ro --command=sh`). A probe of
+    /// what a document kept beside its pictures does in the sandbox therefore has to
+    /// keep them where the reader keeps things, or it would be proving nothing about
+    /// the grant it is there to check.
+    ///
+    /// Under `~/.cache` rather than at the top of the home directory: it is the
+    /// reader's home either way, and a suite that scattered folders across the one
+    /// they look at every day would not be run twice.
+    fn in_the_readers_own_files(label: &str) -> Scratch {
+        let home = PathBuf::from(std::env::var_os("HOME").expect("a home directory"));
+        Scratch::under(&home.join(".cache"), label)
+    }
+
+    fn under(directory: &Path, label: &str) -> Scratch {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
+        let path = directory.join(format!(
             "axiomd-packaging-{label}-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&path).unwrap_or_else(|error| panic!("create {path:?}: {error}"));
         Scratch { path }
+    }
+
+    /// Writes a file into this directory — `name` may lead through folders that do not
+    /// exist yet — and answers with its path.
+    fn write(&self, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+        let path = self.path.join(name);
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)
+                .unwrap_or_else(|error| panic!("create {folder:?}: {error}"));
+        }
+        std::fs::write(&path, contents).unwrap_or_else(|error| panic!("write {path:?}: {error}"));
+        path
     }
 }
 
@@ -144,8 +178,8 @@ fn permission_lines(listing: &str) -> Vec<String> {
 /// thing, derived from the pinned file rather than repeated beside it.
 ///
 /// `shared=network;ipc;` becomes `--share=network`, `--share=ipc`; `sockets=` becomes
-/// `--socket=`; `devices=` becomes `--device=`; `filesystems=` becomes
-/// `--filesystem=`, of which axiomd has none.
+/// `--socket=`; `devices=` becomes `--device=`; `filesystems=host:ro;` becomes
+/// `--filesystem=host:ro`, which is the whole of what axiomd asks of the host.
 fn pinned_finish_args() -> Vec<String> {
     let mut arguments = Vec::new();
     for line in pinned_permissions() {
@@ -600,14 +634,18 @@ fn installing_leaves_everything_an_installed_axiomd_reads() {
     );
 }
 
-/// The sandbox reaches no host filesystem — not the home directory, not `host`, not a
-/// single `xdg-` directory. Documents arrive through the portal instead.
+/// The sandbox reaches the host read-only and no other way: `host:ro` is the one
+/// filesystem grant the owner sanctioned (issue #23, 2026-08-03), so that the pictures
+/// an author keeps beside a document are there when the document is opened from Files.
 ///
 /// Pinned rather than merely asserted about: the manifest's `finish-args` have to add
 /// up to exactly `build-aux/flatpak/permissions.pinned`, so widening the sandbox is a
-/// failing test and not a diff nobody read.
+/// failing test and not a diff nobody read. The check below is what makes the *next*
+/// widening fail even if somebody moves the pin with it: `host` without the suffix is
+/// write access to everything the reader has, and axiomd writes the one document it was
+/// given.
 #[test]
-fn the_manifest_grants_exactly_the_pinned_permissions_and_no_filesystem() {
+fn the_manifest_grants_exactly_the_pinned_permissions_and_no_writable_filesystem() {
     let mut granted = manifest_array("finish-args");
     let mut pinned = pinned_finish_args();
     granted.sort();
@@ -617,15 +655,19 @@ fn the_manifest_grants_exactly_the_pinned_permissions_and_no_filesystem() {
         granted, pinned,
         "the manifest's finish-args are no longer the pinned permission set.\n  \
          Widening the sandbox is a decision recorded in build-aux/flatpak/permissions.pinned,\n  \
-         and `--filesystem=host` is ruled out (issue #14).",
+         and `--filesystem=host:ro` is the whole of what was ruled (issue #23).",
     );
 
-    for argument in &granted {
-        assert!(
-            !argument.starts_with("--filesystem="),
-            "the sandbox was given {argument}; axiomd reaches documents through the portal",
-        );
-    }
+    let filesystems: Vec<&String> = granted
+        .iter()
+        .filter(|argument| argument.starts_with("--filesystem="))
+        .collect();
+    assert_eq!(
+        filesystems,
+        vec!["--filesystem=host:ro"],
+        "the sandbox's filesystem access is `host:ro` and nothing else; anything more \
+         is a decision for the project owner",
+    );
 }
 
 /// The runtime is pinned, and pinned to the one the code's GTK and libadwaita feature
@@ -1233,10 +1275,21 @@ fn the_installed_sandbox_has_exactly_the_pinned_permissions() {
         "the installed sandbox's permissions are not the pinned ones. \
          `flatpak info --show-permissions {APP_ID}` says:\n{shown}",
     );
-    assert!(
-        !shown.contains("filesystems="),
-        "the installed sandbox can reach the host filesystem:\n{shown}",
-    );
+    // And the rule the pin itself is held to, so that moving the pin is not enough to
+    // grant the sandbox a way to write the reader's files: every filesystem axiomd is
+    // given is read-only. `host:ro` is what the owner ruled (issue #23); `host` is not.
+    for line in permission_lines(&shown) {
+        let Some(filesystems) = line.strip_prefix("filesystems=") else {
+            continue;
+        };
+        for granted in filesystems.split(';').filter(|value| !value.is_empty()) {
+            assert!(
+                granted.ends_with(":ro"),
+                "the installed sandbox can write {granted}; axiomd writes the one \
+                 document it was given and nothing else:\n{shown}",
+            );
+        }
+    }
 }
 
 /// The probe `docs/TESTING.md` category 3 asks for, and the exit criterion of issue
@@ -1319,10 +1372,10 @@ fn the_installed_flatpak_renders_a_document_and_fetches_nothing_until_asked() {
 ///
 /// Nothing about the route is faked. `--file-forwarding` is the flag the exported
 /// desktop entry carries, so flatpak exports the document to the portal itself and the
-/// application is launched with the fuse path it answers with; the sandbox is shown no
-/// folder the document is in, because a package with no filesystem permission has none.
-/// What is asserted is what the reader sees: rendered elements, and not one character of
-/// Markdown syntax left in the page.
+/// application is launched with the fuse path it answers with, and the folder the
+/// document is in is handed to the sandbox by nobody. What is asserted is what the
+/// reader sees: rendered elements, and not one character of Markdown syntax left in the
+/// page.
 ///
 /// Two names, because the portal keeps the one the reader's file has (probed on flatpak
 /// 1.16.2: forwarding `article.medium.md` arrives as
@@ -1339,6 +1392,20 @@ fn the_installed_flatpak_renders_a_document_opened_through_the_document_portal()
         let document = fixture.write(
             name,
             "# Through the portal\n\n## A section\n\nA paragraph with **bold**.\n",
+        );
+
+        // The portal is the route only while it is the *only* route: flatpak forwards
+        // a file through the document portal when the sandbox cannot already reach it,
+        // and since `host:ro` that turns on where the document is kept (issue #23,
+        // RFC-001 Q5). This fixture is under `/tmp`, which a sandbox has its own of and
+        // `host` does not carry — asserted rather than trusted, because a fixture moved
+        // into the reader's home would leave this test passing and testing nothing.
+        let reachable = in_the_sandbox(&format!("cat {}", document.display()));
+        assert!(
+            !reachable.status.success(),
+            "the sandbox can read {} without the portal, so this test is no longer \
+             about the portal",
+            document.display(),
         );
 
         let app = axiomd_e2e::launch_installed_flatpak_from_the_desktop(&document);
@@ -1410,6 +1477,208 @@ fn the_installed_flatpak_renders_a_document_opened_through_the_document_portal()
             "the sandboxed launch left something running",
         );
     }
+}
+
+/// Runs `script` in the installed sandbox and answers with what it did.
+///
+/// Nothing is granted for the occasion: no `--filesystem`, no socket, no environment —
+/// what this shell can reach is exactly what the packaged axiomd can reach, which is
+/// the only reason its answer is worth anything. The shell is the runtime's own:
+/// org.gnome.Platform//49 has an `sh` and `--command=sh` runs it (probed 2026-08-04).
+fn in_the_sandbox(script: &str) -> std::process::Output {
+    tool("flatpak", "sudo dnf install flatpak")
+        .args(["run", "--command=sh", APP_ID, "-c"])
+        .arg(script)
+        .output()
+        .expect("run a shell inside the installed sandbox")
+}
+
+/// Issue #23, and the scenario the owner met the flatpak with: a document kept among
+/// the reader's own files with a picture beside it, opened the way Files opens it, and
+/// the picture is *there*.
+///
+/// Nothing about the route is arranged. The launch is the one the exported desktop
+/// entry makes — `--file-forwarding`, the flag a double-click in Files goes through —
+/// and what the sandbox is handed is whatever flatpak decides to hand it: since
+/// `host:ro` that is the document's own host path rather than a portal one, because
+/// flatpak forwards through the document portal only what the sandbox cannot already
+/// reach (probed; RFC-001 Q5). The folder the document is in is granted by nobody: this
+/// launch grants only the harness's own directory, and the sandbox reads the reader's
+/// files because the *package* carries `--filesystem=host:ro`. That is the whole of
+/// what makes the picture arrive.
+///
+/// The second picture is the other half of the ruling. `host:ro` let axiomd read
+/// everything the reader can read; it did not let a *document* reach past its own
+/// folder. `elsewhere/secret.png` is a real file, and this test proves the sandbox can
+/// read it before asserting that the document cannot.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_shows_the_picture_kept_beside_the_document() {
+    installed_flatpak();
+
+    let kept = Scratch::in_the_readers_own_files("beside");
+    let beside = kept.write("article/diagram.png", support::png());
+    let outside = kept.write("elsewhere/secret.png", support::png());
+    let document = kept.write(
+        "article/article.md",
+        "# Beside\n\n![a diagram](diagram.png)\n\n![somewhere else](../elsewhere/secret.png)\n",
+    );
+
+    let reachable = in_the_sandbox(&format!("cat {}", outside.display()));
+    assert!(
+        reachable.status.success() && reachable.stdout == support::png(),
+        "the sandbox cannot read {}, so what this test asserts about the document \
+         reaching it would prove nothing",
+        outside.display(),
+    );
+
+    let app = axiomd_e2e::launch_installed_flatpak_from_the_desktop(&document);
+
+    // `complete` is true whether a picture decoded or failed to, so waiting on it is
+    // what makes the sizes below the answer rather than a race (`links.rs`).
+    app.wait_until(
+        "document.querySelectorAll('img').length === 2 && \
+         [...document.querySelectorAll('img')].every(picture => picture.complete)",
+    );
+
+    assert_eq!(
+        app.dom("document.querySelectorAll('img')[0].naturalWidth"),
+        "40",
+        "the picture the author kept beside the document is broken in the package — \
+         the whole of issue #23",
+    );
+    assert_eq!(
+        app.dom("document.querySelectorAll('img')[1].naturalWidth"),
+        "0",
+        "a document reached a file outside its own folder; `host:ro` is what the \
+         sandbox may read, never what a document may name",
+    );
+    assert_eq!(
+        std::fs::read(&beside).expect("read the picture back"),
+        support::png(),
+        "showing the picture changed it",
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
+/// The other half of the ruling, asked of the sandbox rather than read off a permission
+/// listing: `host:ro` is read capability and nothing more.
+///
+/// A listing that says `host:ro` is a string. What it has to mean is that the reader's
+/// files can be read and cannot be changed, and that is asserted on the files
+/// themselves — through a shell with exactly the package's own permissions, so what it
+/// may do is what axiomd may do.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_sandbox_reads_the_readers_files_and_writes_none_of_them() {
+    installed_flatpak();
+
+    let kept = Scratch::in_the_readers_own_files("read-only");
+    let beside = kept.write("beside.md", "# Beside\n");
+
+    let read = in_the_sandbox(&format!("cat {}", beside.display()));
+    assert!(
+        read.status.success() && read.stdout == b"# Beside\n",
+        "the sandbox cannot read the reader's own files, which is what the owner \
+         ruled it may do (issue #23): {}",
+        String::from_utf8_lossy(&read.stderr),
+    );
+
+    // Over a file the reader has, and beside it: the two ways a write would land
+    // somewhere no portal ever granted.
+    for scribbling in [
+        format!("echo scribbled >> {}", beside.display()),
+        format!("echo scribbled > {}/invented.md", kept.path.display()),
+    ] {
+        let refused = in_the_sandbox(&scribbling);
+        assert!(
+            !refused.status.success(),
+            "the sandbox wrote the reader's files: `{scribbling}` succeeded",
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&beside).expect("read the file back"),
+        "# Beside\n",
+        "the sandbox changed a file beside the document",
+    );
+    assert!(
+        !kept.path.join("invented.md").exists(),
+        "the sandbox left a file of its own among the reader's",
+    );
+}
+
+/// What a reader meets when the document they opened is one the package may read and
+/// not write — which, since `host:ro`, is every document Files hands a packaged axiomd
+/// from the reader's own home.
+///
+/// Probed on flatpak 1.16.6, 2026-08-04: `--file-forwarding` — the flag the exported
+/// desktop entry carries — puts a file in the document portal *only when the sandbox
+/// cannot already reach it*. Before `host:ro` that was every document, and the fuse
+/// path the portal answered with was writable; now a document under the reader's home
+/// arrives as its own host path, and that path is read-only. A document under `/tmp`,
+/// which `host` does not carry, still arrives through the portal.
+///
+/// So Ctrl+S on a document opened from Files cannot reach the file, and what this pins
+/// is that it fails the way this project requires a failure to look (invariant 12): the
+/// reader is told where they are looking, their work is still in front of them, and the
+/// file is untouched — no dialog, and nothing half-written. **Whether that is where the
+/// story ends is an open question for the owner: RFC-001 Q5.** Settling it will change
+/// this test, which is the point of writing it down.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn a_save_the_package_cannot_make_is_said_inline_and_costs_the_reader_nothing() {
+    installed_flatpak();
+
+    let kept = Scratch::in_the_readers_own_files("unwritable");
+    let document = kept.write("article.md", "# Kept\n\nA paragraph.\n");
+
+    let app = axiomd_e2e::launch_installed_flatpak_from_the_desktop(&document);
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    app.type_text("Edited in the sandbox.\n\n");
+    app.activate("win.save");
+
+    let said = app.wait_for_banner("article.md");
+    assert!(
+        said.contains("Could not save article.md"),
+        "the reader was not told their document did not reach the file: {said:?}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&document).expect("read the document back"),
+        "# Kept\n\nA paragraph.\n",
+        "the file changed although the save failed",
+    );
+    let mut left_behind: Vec<String> = std::fs::read_dir(&kept.path)
+        .expect("read the folder back")
+        .map(|entry| entry.expect("a file in the folder").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    left_behind.sort();
+    assert_eq!(
+        left_behind,
+        vec!["article.md".to_owned()],
+        "a failed save left something of its own beside the reader's document",
+    );
+    assert_eq!(
+        app.window_title(),
+        "• article.md",
+        "the window says the document is saved when it is not",
+    );
+
+    // And the work itself is still in hand: the reader can go on reading what they
+    // typed, and take it somewhere writable with Save As.
+    app.activate("win.mode");
+    app.wait_until_mode("read");
+    app.wait_until("document.body.textContent.includes('Edited in the sandbox.')");
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
 }
 
 /// The mechanism issue #24 rests on, asked of the desktop's own document portal rather

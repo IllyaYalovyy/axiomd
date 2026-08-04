@@ -85,21 +85,38 @@ activation only.
 
 ## What can the packaged sandbox reach?
 
-**Exactly what `build-aux/flatpak/permissions.pinned` says, and no host
-filesystem at all** (issue #14, 2026-08-03). Not `host`, not `home`, not one
-`xdg-` directory: a document arrives through the document portal, which grants
-that one file. Network is granted solely so D4's placeholder button can load
-an image; the probe in `crates/axiomd-app/tests/packaging.rs` counts requests
-from the far end to prove nothing else uses it. The pinned file is checked
-against both the manifest and the installed application, so widening the
-sandbox — in the manifest or by a local `flatpak override` — fails the gate.
+**Exactly what `build-aux/flatpak/permissions.pinned` says, and of the host
+`host:ro` and nothing else** (issue #14, 2026-08-03; Q3 ruled by the owner
+2026-08-03 and implemented in issue #23). Network is granted solely so D4's
+placeholder button can load an image; the probe in
+`crates/axiomd-app/tests/packaging.rs` counts requests from the far end to
+prove nothing else uses it. The pinned file is checked against both the
+manifest and the installed application, so widening the sandbox — in the
+manifest or by a local `flatpak override` — fails the gate.
 
-Q3 is RULED (owner, 2026-08-03): the sandbox gains **read-only filesystem
-access** (`--filesystem=host:ro`, issue #23) so images beside a document
-render with zero friction — the owner chose working images over the sealed
-sandbox. This is the one sanctioned widening; the pinned-permissions gate
-remains to catch any further drift. Writes still go only through the
-portal-granted document, and zero-implicit-network is unchanged.
+`--filesystem=host:ro` is the one sanctioned widening, and it exists for one
+reason: under the document portal alone a document arrives in a directory
+holding that one file, so the pictures its author kept beside it were broken
+in the package and no portal would hand them over. The owner chose working
+images over the sealed sandbox. Read is the whole of the grant — axiomd may
+read what the reader can read, and writes nothing but the one document the
+portal granted, which is still how every save goes out. `host` without the
+suffix, `home`, or an `xdg-` directory are each a *further* widening and each
+fails the gate, in the manifest and on the installed application.
+
+One consequence of the grant is open and belongs to the owner (**RFC-001 Q5**,
+found 2026-08-04 while implementing this): flatpak forwards a file through the
+document portal only when the sandbox cannot already reach it, so since
+`host:ro` a document opened from Files arrives as its own read-only host path
+and Ctrl+S fails on it — said inline, with the reader's work kept, and Save As
+still open to them. Nothing above changes until that is settled.
+
+Reading the host is not the same as a document reaching it: a document still
+resolves relative pictures and links under its own folder only, and the
+`axiomd://` origin refuses everything else (`crates/axiomd-app/src/scheme.rs`).
+The packaged probes assert both halves on the same document — the picture
+beside it arrives, the one a folder above it does not, and the sandbox is shown
+to be able to read the second before the document is asked to.
 
 ## How is scroll sync / outline tracking mapped?
 

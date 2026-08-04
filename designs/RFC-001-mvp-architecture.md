@@ -465,8 +465,21 @@ Mirrors the GitHub issues; order is the ktask queue order.
   when it exports. Revisit if translations or GResource bundles land, which
   is when meson's machinery starts paying for itself.
 
-- [ ] **Q3** — **A document opened through the document portal cannot reach
-  the images beside it.** Probed live on flatpak 1.16 (2026-08-03) by
+- [x] **Q3** — **A document opened through the document portal cannot reach
+  the images beside it.** **Ruled by the owner on 2026-08-03: option (2),
+  `--filesystem=host:ro`** — recorded in issue #23, which is the ratifying
+  document, and implemented there. The recommendation below was (1); the owner
+  chose working images everywhere over the sealed sandbox and accepted that
+  axiomd can read what the reader can read. The grant is read-only and that is
+  load-bearing: writes still go out through the portal-granted document alone.
+  It is the one sanctioned widening — the pinned permission set and its gate
+  stay exactly as they were, now to catch the *next* one — and a document is
+  still confined to its own folder by the `axiomd://` origin, which the sandbox
+  reading more does not change. See `design_decisions.md`, "What can the
+  packaged sandbox reach?". The question and its options are kept below as the
+  record of what was chosen against.
+
+  Probed live on flatpak 1.16 (2026-08-03) by
   launching the installed package exactly as the desktop does —
   `flatpak run --file-forwarding io.github.etf.axiomd @@ <doc.md> @@`: the
   document arrives as `/run/user/1000/doc/<id>/doc.md`, a directory
@@ -494,12 +507,51 @@ Mirrors the GitHub issues; order is the ktask queue order.
   4. **Accept it**: relative images do not load in the flatpak. Cheapest,
      and a visible fidelity regression against the development build.
 
-  Recommendation: (1), as a follow-up issue; it is the only option that
-  keeps "no host filesystem" true and still shows the reader their images.
-  Not implemented, not decided — the owner's call.
+  Recommendation at the time: (1), as a follow-up issue; it was the only
+  option that kept "no host filesystem" true and still showed the reader their
+  images. Overtaken by the owner's ruling above.
 - [ ] **Q2** — When the block-cache lands (Step 9's budgets decide), does
   the DOM patch move to morphdom-style diffing or anchor-keyed block
   replacement?
+
+- [ ] **Q5** — **Since `host:ro`, a document Files hands the packaged axiomd
+  cannot be saved with Ctrl+S.** Found while implementing Q3's ruling (issue
+  #23) and probed on flatpak 1.16.6, 2026-08-04: `--file-forwarding`, the flag
+  the exported desktop entry carries, puts a file in the document portal *only
+  when the sandbox cannot already reach it*. Before the widening that was every
+  document, and the portal's fuse path was writable — the route was probed
+  writable, temporary file and rename included. With `host:ro` a document under
+  the reader's home arrives as its own host path instead, on a read-only mount,
+  so the save fails with `EROFS`. (A document under `/tmp`, which `host` does
+  not carry, still arrives through the portal and is still writable.)
+
+  The failure is honest — an inline banner, "Could not save article.md —
+  Read-only file system", with the reader's work still in front of them and the
+  file untouched, pinned by
+  `a_save_the_package_cannot_make_is_said_inline_and_costs_the_reader_nothing`
+  in `packaging.rs` — but a reader who opened a document from Files can only
+  get it back to disk through Save As. Issue #23's own text assumed the
+  opposite ("writes still only through the portal-granted document"); the
+  premise turns out not to survive the grant. Options, cheapest first:
+
+  1. **`--filesystem=host` (read-write).** One character. Everything works,
+     including Ctrl+S from Files. It is a wider grant than the one ruled: axiomd
+     could write every file the reader can.
+  2. **Ask the document portal for the write, at save time.** When the file is
+     one axiomd may read and not write, export it to the document portal
+     (`Documents.AddFull`) and write through the fuse path it answers with —
+     which is literally "writes only through the portal-granted document". Not
+     probed: whether the portal will export a file the caller can only open
+     read-only is unknown and has to be established before this is costed.
+  3. **Save As only**, with the read-only state said inline before the reader
+     types rather than after they press Ctrl+S. Keeps the sandbox as ruled and
+     makes the flatpak a reader more than an editor.
+  4. **Undo Q3's ruling** and go back to a portal-only sandbox with broken
+     sibling images.
+
+  Not implemented, not decided — the owner's call. Recommendation: probe (2)
+  first, since it is the only option that keeps both halves of the ruling, and
+  fall back to (1) if the portal will not grant it.
 
 ## References
 

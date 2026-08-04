@@ -12,7 +12,8 @@
         "--socket=fallback-x11",
         "--share=ipc",
         "--device=dri",
-        "--share=network"
+        "--share=network",
+        "--filesystem=host:ro"
     ],
     "cleanup": [
         "/include",

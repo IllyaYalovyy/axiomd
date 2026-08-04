@@ -78,11 +78,10 @@ sudo scripts/install.sh --uninstall     # and back out again
 
 ### Flatpak (secondary)
 
-Supported and maintained, but second in recommendation order: the sandbox
-costs integration axiomd would rather have — the open defects are #22–#24
-— and an overhead against native that is being measured and worked down
-(#36). Prefer the native install above unless you specifically want the
-packaged form.
+Supported and maintained, but second in recommendation order: the defects
+the sandbox cost are fixed (#22–#24), and what is left is an overhead
+against native that is being measured and worked down (#36). Prefer the
+native install above unless you specifically want the packaged form.
 
 It needs `flatpak-builder` and, once,
 
@@ -109,8 +108,11 @@ build-aux/flatpak/cargo-sources.py Cargo.lock -o build-aux/flatpak/cargo-sources
 ```
 
 What the sandbox may reach is pinned in
-`build-aux/flatpak/permissions.pinned` — no host filesystem at all, and
-network solely so that pressing a remote image's placeholder can load it.
+`build-aux/flatpak/permissions.pinned` — the host read-only, so that the
+pictures an author keeps beside a document are there when it is opened
+(issue #23), and network solely so that pressing a remote image's
+placeholder can load it. Read is the whole of the host grant: every save
+goes out through the one document the desktop's portal granted.
 Both the manifest and the installed application are held to that file by
 `crates/axiomd-app/tests/packaging.rs`; `scripts/quality.d/40-flatpak.sh`
 builds the package, installs it, and probes it in its own sandbox.

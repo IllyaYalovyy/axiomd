@@ -529,8 +529,10 @@ pub fn launch_installed_flatpak(document: &Path) -> App {
 /// directory holding that one file and nothing else, on a filesystem that is not the
 /// reader's.
 ///
-/// That is the route a double-click in Files takes into a packaged axiomd, and it is
-/// the only route a package with no filesystem permission has.
+/// That is the route a double-click in Files takes into a packaged axiomd. Whatever the
+/// sandbox can reach beyond that one file is the package's own pinned permission and
+/// nothing this launch arranged — which is what lets a probe assert that the pictures
+/// beside the document arrive (issue #23) and mean it.
 pub fn launch_installed_flatpak_from_the_desktop(document: &Path) -> App {
     let app = App::start_under(Under::PortalFlatpak, Some(document), None, None);
     app.wait_for_a_rendered_document();
