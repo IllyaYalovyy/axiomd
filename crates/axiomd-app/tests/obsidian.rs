@@ -48,6 +48,173 @@ fn press(app: &App, nth: usize) {
     ));
 }
 
+/// A tracker long enough to scroll through: the owner's own shape (issue #38), loose
+/// items in one list, which is what makes the whole list a single block.
+fn long_tracker() -> String {
+    let mut source = String::from("# Tracker\n\n");
+    for item in 1..=TRACKED {
+        source.push_str(&format!("- [ ] item {item}\n\n"));
+    }
+    source
+}
+
+/// How many items the tracker has: several screens of them, so that a press can be
+/// watched at the top of the document, in the middle of it, and at the very end.
+const TRACKED: usize = 120;
+
+/// Watches the page for as long as it takes to press a box, sampling where the
+/// document stands on every frame the browser draws.
+///
+/// A scroll listener would be the obvious instrument and it cannot be used: a document
+/// is displayed with `enable-javascript = false`, and under that setting WebKitGTK
+/// 2.52.5 delivers no event to a listener added from any world — probed on this
+/// machine for this issue, a real 300 px scroll firing zero events into three
+/// listeners, and already the reason `track.js` is built out of observers. What that
+/// setting does still run is the rendering steps, so this counts frames instead — a
+/// stronger assertion than counting events, because it sees a movement that was put
+/// back before the reader could have noticed as well as one that stayed.
+///
+/// Everything it knows lives in the document rather than in a variable, because a
+/// world's globals do not outlive the evaluation that set them — probed for this issue
+/// on WebKitGTK 2.52.5: a counter kept on `window` reads back as one however many times
+/// it is incremented. What does outlive an evaluation is a callback it registered, so
+/// each watch takes a number and the watch before it stops on its next frame.
+const WATCH: &str = "(() => { \
+     const scroller = document.scrollingElement; \
+     const seen = document.documentElement.dataset; \
+     const start = scroller.scrollTop; \
+     const mine = String(Number(seen.watchGeneration || 0) + 1); \
+     seen.watchGeneration = mine; \
+     seen.watchFrames = '0'; \
+     seen.watchWorst = '0'; \
+     const frame = () => { \
+       if (seen.watchGeneration !== mine) { return; } \
+       seen.watchFrames = String(Number(seen.watchFrames) + 1); \
+       seen.watchWorst = String(Math.max(Number(seen.watchWorst), \
+         Math.abs(scroller.scrollTop - start))); \
+       requestAnimationFrame(frame); }; \
+     requestAnimationFrame(frame); \
+     return String(Math.round(start)); })()";
+
+/// What the watch saw: where the page stood before and after the press, how far it
+/// moved at its worst in between, and over how many frames that was watched.
+struct Moved {
+    before: f64,
+    after: f64,
+    worst: f64,
+    frames: u32,
+}
+
+/// The reader presses the box of item `nth`, counting from zero, and this says what
+/// the page did while they were pressing it.
+///
+/// Settling is a condition and not a sleep, as everywhere else in this suite: the
+/// watch is running before the press — waited for, so that a movement has something
+/// watching it — the press has landed when the box on screen shows it, and the watch
+/// is read a few frames after that, so that a movement arriving late is still counted.
+fn press_and_watch(app: &App, nth: usize) -> Moved {
+    let before: f64 = app.dom(WATCH).parse().expect("a scroll offset");
+    app.wait_until("Number(document.documentElement.dataset.watchFrames) > 0");
+
+    press(app, nth);
+    app.wait_until(&format!(
+        "document.querySelectorAll('li.task-list-item input')[{nth}].checked"
+    ));
+    let settled: u32 = app
+        .dom("document.documentElement.dataset.watchFrames")
+        .parse()
+        .expect("a frame count");
+    app.wait_until(&format!(
+        "Number(document.documentElement.dataset.watchFrames) > {settled} + 3"
+    ));
+
+    Moved {
+        before,
+        after: app
+            .dom("Math.round(document.scrollingElement.scrollTop)")
+            .parse()
+            .expect("a scroll offset"),
+        worst: app
+            .dom("document.documentElement.dataset.watchWorst")
+            .parse()
+            .expect("a distance"),
+        frames: app
+            .dom("document.documentElement.dataset.watchFrames")
+            .parse()
+            .expect("a frame count"),
+    }
+}
+
+/// The whole ruling about one press, at one place in the document: the page ended
+/// where it began, and no frame in between showed it anywhere else.
+fn assert_the_page_stood_still(moved: &Moved, pressed: &str) {
+    assert_eq!(
+        moved.after, moved.before,
+        "a press {pressed} left the page at {}px, not at {}px",
+        moved.after, moved.before,
+    );
+    assert_eq!(
+        moved.worst, 0.0,
+        "a press {pressed} moved the page by {}px on some frame before putting it back",
+        moved.worst,
+    );
+    assert!(
+        moved.frames >= 4,
+        "a press {pressed} was watched over only {} frames, \
+         which is not enough of a watch to believe",
+        moved.frames,
+    );
+}
+
+/// The whole of issue #38: pressing a box does not move the document the reader is
+/// reading — not at the end of it, and not for a single frame in between.
+///
+/// Asserted three times over one document, because the three places a reader can be
+/// fail differently: at the top there is nothing above to re-anchor against, in the
+/// middle the block being patched is the one they are looking at, and at the bottom
+/// the browser's own clamp is what would move them.
+#[test]
+fn pressing_a_task_box_leaves_the_page_exactly_where_it_was() {
+    let fixture = Fixture::new("task-toggle-still");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", &long_tracker()));
+    app.wait_until(&format!(
+        "document.querySelectorAll('li.task-list-item').length === {TRACKED}"
+    ));
+    assert_eq!(
+        app.dom(
+            "document.scrollingElement.scrollHeight > \
+                 document.scrollingElement.clientHeight * 2"
+        ),
+        "true",
+        "the tracker is not long enough to scroll, so there is nothing to hold still",
+    );
+
+    // At the top of the document, where the reader opened it.
+    assert_the_page_stood_still(&press_and_watch(&app, 0), "at the top of the document");
+
+    // In the middle of it, where the block being patched is the one on screen.
+    app.dom("document.querySelectorAll('li.task-list-item')[60].scrollIntoView(true)");
+    assert_the_page_stood_still(&press_and_watch(&app, 60), "in the middle of the document");
+
+    // And at the very end, where there is nothing below to give back.
+    app.dom("document.scrollingElement.scrollTop = document.scrollingElement.scrollHeight");
+    assert_the_page_stood_still(
+        &press_and_watch(&app, TRACKED - 1),
+        "at the end of the document",
+    );
+
+    // The presses were real ones: the source says so, in all three places.
+    let source = app.source();
+    for item in [1, 61, TRACKED] {
+        assert!(
+            source.contains(&format!("- [x] item {item}\n")),
+            "item {item} was not ticked off in the source",
+        );
+    }
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// The whole of the interactive checkbox ruling: a press in read mode changes the
 /// source at the right place, the page shows it, and the reader is still reading.
 #[test]
