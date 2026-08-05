@@ -361,7 +361,7 @@ impl DocumentWindow {
         // documentation on keeping the split-view door open).
         let surfaces = gtk::Stack::new();
         surfaces.add_named(&status, Some(STATUS_PAGE));
-        surfaces.add_named(view.widget(), Some(DOCUMENT_PAGE));
+        surfaces.add_named(view.pane(), Some(DOCUMENT_PAGE));
         surfaces.add_named(editor.widget(), Some(EDITOR_PAGE));
         surfaces.set_visible_child_name(STATUS_PAGE);
 
@@ -754,6 +754,21 @@ impl DocumentWindow {
 
     pub(crate) fn webview(&self) -> &webkit6::WebView {
         self.view.widget()
+    }
+
+    /// The pane a document is shown in, as the window's own renderer draws it — the
+    /// webview and the page a document arrives on together (issue #41).
+    pub(crate) fn pane(&self) -> &gtk::Widget {
+        self.view.pane()
+    }
+
+    /// Which of the two the reader is looking at: `"document"` once the page behind has
+    /// said it has been drawn, and `"placeholder"` — the page itself — until then.
+    pub(crate) fn pane_showing(&self) -> &'static str {
+        match self.view.showing_the_document() {
+            true => "document",
+            false => "placeholder",
+        }
     }
 
     /// How many loads this window's view has committed since it was built.

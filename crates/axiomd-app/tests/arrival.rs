@@ -1,4 +1,4 @@
-//! How a document arrives in front of the reader (issue #40).
+//! How a document arrives in front of the reader (issues #40 and #41).
 //!
 //! Opening a document used to show a black rectangle and then the document popping
 //! into it. Two things are asserted here against the running application, and the
@@ -14,6 +14,19 @@
 //! whose desktop asks for less movement is shown the document at once instead, which
 //! is what every other launch in this suite is: the harness pins
 //! `gtk-enable-animations` off so a screenshot can never catch a widget mid-transition.
+//!
+//! # The frame the harness cannot photograph, and what is asserted instead
+//!
+//! Both of those are asked of WebKit: the picture is the web process's own answer about
+//! its own page, and the colour it answers with is the one the view was told to paint.
+//! The frame the owner still saw black after #40 is the one *before* the web process has
+//! any answer at all — on the accelerated compositing path the pane is black until its
+//! first composited frame, and the software harness renders through llvmpipe where that
+//! path is never taken (issue #41). So what is asserted here is the structure that makes
+//! the frame unreachable rather than the frame itself: the webview is not the thing on
+//! screen until the page in it has reported, through the app's own bridge, that it has
+//! been drawn — and what stands in front of it until then is the page's own colour, in
+//! the window's own scene, photographed as the compositor is handed it.
 
 use std::path::Path;
 
@@ -72,6 +85,31 @@ fn assert_not_black(pane: &Screenshot, what: &str) {
         pane.pixels_coloured(BLACK),
         0,
         "{what}: the reader was shown a black frame",
+    );
+}
+
+/// Fails unless `frame` is the page the reader reads on, whatever is written on it.
+///
+/// The assertion the frames of a document arriving are held to (issue #41). Not "is not
+/// black": these pictures are taken from the window's own scene, where a webview with no
+/// frame to show draws nothing at all and reads back as transparent — which is zero in
+/// every channel and would be counted as black by a picture that has no alpha in it. So
+/// what is asserted is the thing that is true of every frame the reader may be shown and
+/// false of every frame they may not: it is the page. A frame that is anything else —
+/// black on the accelerated path, the window's own grey where nothing was drawn — counts
+/// none of it.
+///
+/// Nine tenths rather than all of it, because a page with a document on it has the
+/// document's own ink on it too, and the fixture below covers a few percent of the pane
+/// with words.
+fn assert_is_the_page(frame: &Screenshot, colour: (u8, u8, u8), what: &str) {
+    let (width, height) = frame.size();
+    let pixels = usize::try_from(width * height).expect("a pane of pixels");
+    assert!(pixels > 0, "{what}: the pane has no pixels at all");
+    let page = frame.pixels_coloured(colour);
+    assert!(
+        page * 10 >= pixels * 9,
+        "{what}: only {page} of {pixels} pixels are the page {colour:?}",
     );
 }
 
@@ -155,6 +193,15 @@ fn a_theme_change_repaints_the_pane_without_loading_or_rendering_anything() {
     });
 
     assert_not_black(&app.pane_screenshot(), "the pane after a theme change");
+    // And so does the page the document is arriving on, which is what the reader is
+    // actually looking at in this moment (issue #41): it is painted from the same one
+    // answer, so going dark repaints it rather than leaving a light rectangle standing
+    // in front of a dark document.
+    assert_painted(
+        &app.presented_pane(),
+        PAGE_DARK,
+        "the page a document is arriving on, after a theme change",
+    );
     assert_eq!(app.navigation_count(), loads, "the view was sent somewhere");
     assert_eq!(app.render_count(), pages, "the document was rendered again");
 
@@ -260,6 +307,185 @@ fn a_desktop_asking_for_less_movement_is_shown_the_document_at_once() {
         "1",
         "the document was left part-way through an appearance it was never given",
     );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The webview is not what the reader is looking at until the page in it has been
+/// drawn — the structural half of issue #41, and the half that holds on any compositor.
+///
+/// Asserted twice over: what the window says it is presenting, and what it presents.
+/// The picture is taken from the window's own scene rather than from WebKit, so it is
+/// the pixels a compositor is handed — the ones that were black on the owner's desktop
+/// while WebKit was answering, quite truthfully, that its page is white.
+#[test]
+fn the_webview_is_not_on_screen_until_the_page_in_it_has_been_drawn() {
+    let fixture = Fixture::new("arrival-first-frame");
+    let desktop = Preferences::new("arrival-first-frame");
+    let app = axiomd_e2e::launch_without_document_with(&desktop);
+    let notes = fixture.write("notes.md", NOTES);
+
+    app.open_to_the_empty_pane(&notes);
+    assert_eq!(
+        app.pane_showing(),
+        "placeholder",
+        "the webview was put on screen before it had a frame of the document to show",
+    );
+    assert_painted(
+        &app.presented_pane(),
+        PAGE_LIGHT,
+        "the pane a document is arriving in",
+    );
+
+    // And it is the document itself that then takes its place, rather than the reader
+    // being left in front of the page it arrives on.
+    app.let_the_document_arrive();
+    app.wait_until_pane_shows("document");
+    assert_eq!(app.dom_text("h1"), "Reading");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// And on a dark desktop the page it arrives on is the dark page: the surface in front
+/// of the webview is painted from the same one answer the document itself is
+/// (`axiomd_render::Reading`), so it cannot be a colour the page is not.
+#[test]
+fn the_page_a_document_arrives_on_is_the_dark_page_on_a_dark_desktop() {
+    let fixture = Fixture::new("arrival-first-frame-dark");
+    let desktop = Preferences::with("arrival-first-frame-dark", "theme", "'dark'");
+    let app = axiomd_e2e::launch_without_document_with(&desktop);
+    let notes = fixture.write("notes.md", NOTES);
+
+    app.open_to_the_empty_pane(&notes);
+    assert_eq!(app.pane_showing(), "placeholder");
+    assert_painted(
+        &app.presented_pane(),
+        PAGE_DARK,
+        "the pane a document is arriving in on a dark desktop",
+    );
+
+    app.let_the_document_arrive();
+    app.wait_until_pane_shows("document");
+    assert_eq!(app.dom_text("h1"), "Reading");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Every frame between the window having a pane and the document being in it is the
+/// page the reader reads on — photographed one after another, as fast as the window will
+/// draw them.
+///
+/// The pictures are of the window's own scene, so this is the sequence a compositor is
+/// handed: the frame issue #41 is about would be in it. It is taken with the document
+/// deliberately held back at the origin that serves it and then released mid-loop, which
+/// is what makes the moment worth photographing last longer than a frame — held, the
+/// window really has its document surface on screen and WebKit really has been sent to
+/// the document's URI with nothing answering.
+#[test]
+fn every_frame_from_the_empty_pane_to_the_document_is_the_page() {
+    let fixture = Fixture::new("arrival-frames");
+    let desktop = Preferences::new("arrival-frames");
+    let app = axiomd_e2e::launch_without_document_with(&desktop);
+    let notes = fixture.write("notes.md", NOTES);
+
+    app.open_to_the_empty_pane(&notes);
+    app.answer_the_held_pages();
+
+    let frames = std::cell::Cell::new(0u32);
+    app.wait_for("the document to be in the pane", || {
+        assert_is_the_page(
+            &app.presented_pane(),
+            PAGE_LIGHT,
+            &format!("frame {} of a document arriving", frames.get()),
+        );
+        frames.set(frames.get() + 1);
+        app.pane_showing() == "document"
+    });
+    assert!(
+        frames.get() > 1,
+        "only {} frame was photographed, which is not a sequence",
+        frames.get(),
+    );
+
+    // And on past the swap: the document is on the page it arrived on, and the swap
+    // itself put nothing in between.
+    app.wait_until("document.querySelector('.markdown') !== null");
+    for frame in 0..5 {
+        assert_is_the_page(
+            &app.presented_pane(),
+            PAGE_LIGHT,
+            &format!("frame {frame} of the document just arrived"),
+        );
+    }
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// A document loaded while the reader is somewhere else is still shown to them when
+/// they arrive — the page it loaded behind does not become a page they are stuck on.
+///
+/// The edge the design has to answer for (issue #41): a webview that is not on screen
+/// has no rendering updates, so a document loaded while the reader is in the editor
+/// cannot report a frame at all. What it must not do is stay unreported once they come
+/// back. A bare launch is exactly that reader — it opens on an untitled document in the
+/// editor — and switching to reading is the moment the pane has to catch up.
+#[test]
+fn a_document_that_loaded_while_the_reader_was_editing_is_shown_when_they_come_back() {
+    let app = axiomd_e2e::launch_without_document();
+
+    app.activate("win.mode");
+    app.wait_until_mode("read");
+    app.wait_until_pane_shows("document");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Nothing that happens to a document already on screen brings that page back.
+///
+/// The reader's file changing under them, their going dark, and their going to the
+/// source and back are patches and restyles of the page that is already drawn — none of
+/// them is a load, so none of them leaves the webview with nothing to show. A
+/// placeholder that came back for any of them would be a flash of its own, and the
+/// navigation count is asserted beside it because a load is the one thing that would
+/// legitimately have brought it back.
+#[test]
+fn nothing_after_the_document_has_arrived_puts_the_page_back_in_front_of_it() {
+    let fixture = Fixture::new("arrival-stays");
+    let desktop = Preferences::new("arrival-stays");
+    let notes = fixture.write("notes.md", NOTES);
+    let app = axiomd_e2e::launch_with(&notes, &desktop);
+
+    app.wait_until_pane_shows("document");
+    let loads = app.navigation_count();
+
+    save(&notes, CHANGED);
+    app.wait_until("document.body.textContent.includes('did not write')");
+    assert_eq!(
+        app.pane_showing(),
+        "document",
+        "a file changing under the reader put the page back in front of their document",
+    );
+
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    app.activate("win.mode");
+    app.wait_until_mode("read");
+    assert_eq!(
+        app.pane_showing(),
+        "document",
+        "coming back from the editor put the page back in front of the document",
+    );
+
+    app.activate("app.preferences");
+    app.set_preference("Theme", "Dark");
+    app.wait_until("getComputedStyle(document.body).backgroundColor === 'rgb(29, 29, 32)'");
+    assert_eq!(
+        app.pane_showing(),
+        "document",
+        "going dark put the page back in front of the document",
+    );
+
+    assert_eq!(app.navigation_count(), loads, "the document was reloaded");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
