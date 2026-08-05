@@ -35,6 +35,7 @@ use gtk::gio;
 use gtk::glib;
 use webkit6::prelude::*;
 
+use crate::outline::Browsing;
 use crate::shell::Shell;
 use crate::window::DocumentWindow;
 
@@ -276,6 +277,25 @@ impl Session {
                      under it to fold"
                 )),
             },
+            // The pointer running over the sidebar, and the keyboard cursor walking
+            // along it. Neither is the reader choosing a section, and neither may move
+            // where the sidebar says they are (issue #42). There is no pointer on a
+            // headless compositor, so a crossing arrives as the two things a real one
+            // produces — see `Outline::browse`.
+            "browse" => {
+                let what = match payload.split_once(' ') {
+                    Some(("pointer", section)) => Browsing::PointerOn(section),
+                    Some(("keyboard", section)) => Browsing::KeyboardOn(section),
+                    _ if payload == "away" => Browsing::PointerAway,
+                    _ => return Err(format!("not a way of browsing the outline: {payload:?}")),
+                };
+                match self.target(shell)?.browse_outline(what) {
+                    true => Ok(String::new()),
+                    false => Err(format!(
+                        "the outline is showing no section called {payload:?} to browse"
+                    )),
+                }
+            }
             // Pressing one of the window's own controls, found by the name a screen
             // reader announces it as — a control nobody can name is a failure rather
             // than a press that quietly went nowhere.

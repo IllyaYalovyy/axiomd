@@ -8,8 +8,23 @@
  * from the current foreground so a hairline is a hairline on both.
  *
  * Loaded once per display at APPLICATION priority, which in GTK's cascade outranks the
- * theme whatever its selectors are — that is what lets the row below take the accent
- * pill back from .navigation-sidebar, which deliberately makes selection neutral.
+ * theme whatever its selectors are — that is what lets the panel take the accent pill
+ * back from .navigation-sidebar, which deliberately makes selection neutral, and take
+ * the theme's own selection wash away again (issue #42).
+ *
+ * # What is drawn on what
+ *
+ * A row is two nodes: the `row` GTK builds and recycles, and the `treeexpander` this
+ * panel puts inside it. Every mark is drawn on the second one — the pill, the hover
+ * wash, the focus ring — and the first draws nothing at all. That is not a preference:
+ * the pill is a class `outline.rs` puts on as a row is bound to a section, and touching
+ * the `row` widget from there crashes GTK 4.20.4 inside its own list-item update
+ * (segfault in `gtk_list_item_base_update`, reproduced on this machine). The widgets
+ * this panel makes itself are safe to restyle there, so those are the ones marked.
+ *
+ * The `row` therefore carries no padding and no ink, and the `treeexpander` carries
+ * what it used to: the padding, the rounded corners and the background. What the reader
+ * sees is unchanged — the same pill, the same size, in the same place.
  */
 
 /* The panel: its own surface, so the sidebar reads as a designed thing rather than as
@@ -40,31 +55,67 @@ listview.axiomd-outline {
   padding: 6px;
 }
 
-listview.axiomd-outline > row {
+/* The row GTK owns: room for the section and nothing else. Every state the theme would
+   paint it in — the selection wash .navigation-sidebar gives a selected row, its own
+   hover and pressed washes — is taken back here, because the selection is not something
+   the reader put anywhere (see below) and the other two are drawn on the node inside. */
+listview.axiomd-outline > row,
+listview.axiomd-outline > row:selected,
+listview.axiomd-outline > row:hover,
+listview.axiomd-outline > row:active {
+  padding: 0;
+  background-color: transparent;
+  background-image: none;
+  color: inherit;
+  box-shadow: none;
+}
+
+/* And the node the panel draws a section on. */
+listview.axiomd-outline > row > treeexpander {
   border-radius: 9px;
   padding: 5px 8px;
   min-height: 24px;
 }
 
 /* Where the reader is: the GNOME pill, in the accent colour, following the document as
-   they read. .navigation-sidebar makes selection neutral by design; here the selection
-   IS the position indicator, so it takes the accent back. */
-listview.axiomd-outline > row:selected {
+   they read.
+
+   The class is the panel's own, put on by `outline.rs` as a row is bound to a section,
+   and it is deliberately not `:selected` (issue #42). The list is built with
+   single-click activation, and in that mode GTK moves the selection on to whatever row
+   the pointer crosses — so a pill riding the selection was a pill the pointer could
+   steal, and did. The accent belongs to the section being read and to nothing else. */
+listview.axiomd-outline > row > treeexpander.axiomd-outline-current {
   background-color: var(--accent-bg-color);
   color: var(--accent-fg-color);
 }
 
-listview.axiomd-outline > row:selected label {
+listview.axiomd-outline > row > treeexpander.axiomd-outline-current label {
   opacity: 1;
   color: var(--accent-fg-color);
 }
 
-listview.axiomd-outline > row:hover:not(:selected) {
+/* Hover says "you can go here", never "you are here": a wash of the text's own colour,
+   no accent, and gone the moment the pointer leaves. */
+listview.axiomd-outline > row:hover > treeexpander:not(.axiomd-outline-current) {
   background-color: color-mix(in srgb, currentColor 8%, transparent);
 }
 
-listview.axiomd-outline > row:active:not(:selected) {
+listview.axiomd-outline > row:active > treeexpander:not(.axiomd-outline-current) {
   background-color: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* And the keyboard's own mark: a ring, never a fill, so it is a third thing rather than
+   a dimmer version of either of the other two. This is GNOME's focus ring exactly as
+   libadwaita draws one on a list row (`row:focus:focus-visible`, libadwaita 1.8.6),
+   drawn on the expander because that is the widget that takes the focus — GTK 4.20
+   wants the keyboard to belong to the expander in a list of expanders, so the row
+   around it is only ever `:focus-within` (probed on GTK 4.20.4). */
+listview.axiomd-outline > row > treeexpander:focus:focus-visible {
+  outline-color: color-mix(in srgb, var(--accent-color) 50%, transparent);
+  outline-style: solid;
+  outline-width: 2px;
+  outline-offset: -2px;
 }
 
 /* Typographic hierarchy: a heading's level is its weight, its size and how much of the
@@ -95,6 +146,26 @@ listview.axiomd-outline expander {
   opacity: var(--dim-opacity);
 }
 
-listview.axiomd-outline > row:selected expander {
+listview.axiomd-outline > row > treeexpander.axiomd-outline-current expander {
   opacity: 1;
+}
+
+/* High contrast is a design of its own, not the same one with harder colours. Two
+   things change: the pill says where the reader is by its shape as well as its colour,
+   so it survives a reader who cannot tell the accent from the wash; and the wash — 8%
+   of the foreground, which is nearly nothing on a desktop that asked for contrast —
+   comes up to where it can be seen. libadwaita answers the same query for its own
+   sheet, which is what makes it the right one to ask (`main.css`, libadwaita 1.8.6). */
+@media (prefers-contrast: more) {
+  listview.axiomd-outline > row > treeexpander.axiomd-outline-current {
+    box-shadow: inset 0 0 0 1px var(--accent-fg-color);
+  }
+
+  listview.axiomd-outline > row:hover > treeexpander:not(.axiomd-outline-current) {
+    background-color: color-mix(in srgb, currentColor 18%, transparent);
+  }
+
+  listview.axiomd-outline > row:active > treeexpander:not(.axiomd-outline-current) {
+    background-color: color-mix(in srgb, currentColor 26%, transparent);
+  }
 }

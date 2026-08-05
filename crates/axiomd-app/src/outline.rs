@@ -43,6 +43,11 @@
 //! a frame in which the answer can have changed (`view.rs`, `track.js`), or the editor's
 //! caret. Nothing here polls, measures a height, or reads the file.
 //!
+//! That place is this module's own ([`Here`]) rather than the list's selection, which is
+//! the whole of issue #42 — see the type for what the pointer does to a selection and
+//! why the two cannot be the same thing. The pointer and the keyboard may move the
+//! selection wherever they like; neither of them is reading.
+//!
 //! # What survives a rebuild
 //!
 //! Every render rebuilds the panel, including the renders nobody asked for — a file that
@@ -80,7 +85,10 @@
 //! gesture signals ([`Outline::drag`], [`Outline::restore`]) — the very signals a
 //! press, a move and a release emit — a chevron is turned by `listitem.toggle-expand`,
 //! the action `GtkTreeExpander` itself puts on its gesture and on `Ctrl+Space`
-//! (GTK 4.20, `Gtk-4.0.gir`), and picking a section emits the list's own `activate`.
+//! (GTK 4.20, `Gtk-4.0.gir`), picking a section activates `list.activate-item`, which
+//! is the action <kbd>Enter</kbd> is bound to and the one a click's release fires
+//! (GTK 4.20, `GtkListBase`), and running the pointer over the sidebar or walking the
+//! keyboard cursor along it arrives as [`Outline::browse`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -123,6 +131,10 @@ const NOTHING: &str = "nothing";
 /// What the sidebar says instead of a list, for a document that has no sections.
 const NO_HEADINGS: &str = gettext_noop("No headings");
 
+/// What the section the reader is on is drawn wearing, and the only thing `outline.css`
+/// gives the accent pill to.
+const CURRENT: &str = "axiomd-outline-current";
+
 /// One window's outline sidebar.
 pub(crate) struct Outline {
     split: adw::OverlaySplitView,
@@ -131,8 +143,10 @@ pub(crate) struct Outline {
     /// Those sections as the reader sees them: the rows on screen, in document order,
     /// with a folded section's own rows absent.
     tree: gtk::TreeListModel,
-    selection: gtk::SingleSelection,
     list: gtk::ListView,
+    /// The section being read, and the mark that says so — this module's own, and
+    /// never the list's selection (issue #42).
+    here: Rc<Here>,
     faces: gtk::Stack,
     /// The sidebar the split view holds: the panel, and the grip on its edge.
     sidebar: gtk::Box,
@@ -178,6 +192,102 @@ pub(crate) struct Outline {
 /// What the window does when the reader picks a section.
 type Chosen = Rc<dyn Fn(u32)>;
 
+/// The reader moving over the sidebar without choosing anything.
+///
+/// One word for three motions because the sidebar makes them one promise: none of them
+/// is reading, so none of them moves where the sidebar says the reader is (issue #42).
+/// A headless compositor has no pointer, so these are how one arrives — see
+/// [`Outline::browse`] for what each is made of and what it was probed against.
+pub(crate) enum Browsing<'a> {
+    /// The pointer has crossed on to the row reading this.
+    PointerOn(&'a str),
+    /// The pointer has left the list, whatever row it was over.
+    PointerAway,
+    /// The keyboard cursor has walked on to the row reading this.
+    KeyboardOn(&'a str),
+}
+
+/// Where the reader is, and the one row on screen drawn as it.
+///
+/// This is the module's own state rather than the list's selection, and that is the
+/// whole of issue #42. The list is built with `single_click_activate`, and in that mode
+/// a `GtkListView` moves its selection on to whatever row the pointer crosses — probed
+/// on GTK 4.20.4, where an `enter` handed to a row's own motion controller moved the
+/// selection to that row and a `leave` did not move it back. A selection the pointer
+/// owns cannot also be the section being read: hovering would carry the accent pill
+/// away with it, and the pill answers "where am I in this document", never "what is
+/// under my hand".
+///
+/// So the section is held here, by name, and what is drawn for it wears [`CURRENT`].
+/// The stylesheet gives the accent to that class and to nothing else, which is what
+/// makes accent mean *current* and only current. Every other mark in the panel — the
+/// hover wash, the focus ring — is drawn for something the reader can do, not for
+/// where they are.
+///
+/// The mark goes on the expander the panel puts inside a row rather than on the row
+/// itself, because a row is GTK's own widget and it is marked as the row is bound: on
+/// GTK 4.20.4, reaching for the `GtkListItemWidget` from a factory's bind handler
+/// segfaults inside `gtk_list_item_base_update` (reproduced on this machine). The
+/// stylesheet draws everything on that node in consequence — see `outline.css`.
+#[derive(Default)]
+struct Here {
+    /// The section, or `None` for a reader above the first heading of the document.
+    at: RefCell<Option<Entry>>,
+}
+
+impl Here {
+    /// Whether `section` is the one being read.
+    fn is(&self, section: &Entry) -> bool {
+        self.at
+            .borrow()
+            .as_ref()
+            .is_some_and(|here| here.key() == section.key())
+    }
+
+    /// Draws `marked` as the reader's place, or stops drawing it as one — whichever the
+    /// section it is showing now calls for.
+    fn dress(&self, marked: &impl IsA<gtk::Widget>, section: &Entry) {
+        match self.is(section) {
+            true => marked.as_ref().add_css_class(CURRENT),
+            false => marked.as_ref().remove_css_class(CURRENT),
+        }
+    }
+
+    /// Moves the reader's place to `section`, or takes it away, and moves the mark with
+    /// it. Answers whether it moved at all.
+    ///
+    /// Every row on screen is dressed again rather than only the two that changed,
+    /// because a document rebuilt under the reader has new rows for the same sections:
+    /// asking each row what it is showing now is the one question that is right both
+    /// times.
+    fn move_to(&self, list: &gtk::ListView, section: Option<Entry>) -> bool {
+        if self.key() == section.as_ref().map(Entry::key) {
+            return false;
+        }
+        *self.at.borrow_mut() = section;
+        for row in rows_of(list) {
+            if let Some((marked, section)) = drawn_in(&row) {
+                self.dress(&marked, &section);
+            }
+        }
+        true
+    }
+
+    /// The section being read, as the name that survives the document being rebuilt.
+    fn key(&self) -> Option<String> {
+        self.at.borrow().as_ref().map(Entry::key)
+    }
+
+    /// Its words, or an empty string while the reader is in no section.
+    fn text(&self) -> String {
+        self.at
+            .borrow()
+            .as_ref()
+            .map(Entry::text)
+            .unwrap_or_default()
+    }
+}
+
 impl Outline {
     /// Builds the outline beside `content`, and gives `window` the action `action` —
     /// which is the header-bar toggle, `F9`, and the sidebar's own visibility, all the
@@ -203,8 +313,10 @@ impl Outline {
                 .and_then(Entry::offspring)
                 .map(Cast::upcast)
         });
-        // Nothing is selected until the reader is somewhere: a document open at its
-        // first paragraph is in no section yet, and a highlight would be a lie.
+        // The list's selection, which is the list's own affair: it is what a click
+        // activates and what the keyboard walks along, and `single_click_activate`
+        // hands it to the pointer as well. Nothing here reads it — where the reader is
+        // is `Here` (issue #42) — and `outline.css` draws nothing for it.
         let selection = gtk::SingleSelection::builder()
             .model(&tree)
             .autoselect(false)
@@ -212,12 +324,13 @@ impl Outline {
             .build();
         selection.set_selected(gtk::INVALID_LIST_POSITION);
 
+        let here = Rc::new(Here::default());
         let list = gtk::ListView::builder()
             .model(&selection)
             // A heading is a place, not a file: one click goes there, as it does in
             // every outline the reader has used.
             .single_click_activate(true)
-            .factory(&factory())
+            .factory(&factory(&here))
             .build();
         list.add_css_class("navigation-sidebar");
         list.add_css_class("axiomd-outline");
@@ -323,8 +436,8 @@ impl Outline {
             split,
             roots,
             tree,
-            selection,
             list,
+            here,
             faces,
             sidebar,
             name,
@@ -518,7 +631,7 @@ impl Outline {
             self.let_go();
         }
         match reading.and_then(|reading| self.find_section(&reading)) {
-            Some(position) => self.select(position),
+            Some(position) => self.mark(position),
             None => self.highlight(),
         }
     }
@@ -698,7 +811,6 @@ impl Outline {
             self.name.label(),
             self.count.label(),
         )];
-        let here = self.selection.selected();
         for position in 0..self.tree.n_items() {
             let (Some(row), Some(entry)) = (self.row_at(position), self.entry_at(position)) else {
                 continue;
@@ -708,7 +820,7 @@ impl Outline {
                 (true, true) => "expanded",
                 (true, false) => "collapsed",
             };
-            let drawn_as_here = if position == here { "here" } else { "-" };
+            let drawn_as_here = if self.here.is(&entry) { "here" } else { "-" };
             said.push(format!(
                 "row\t{}\t{chevron}\t{drawn_as_here}\t{}",
                 entry.level(),
@@ -727,8 +839,10 @@ impl Outline {
         }
     }
 
-    /// Picks the section called `section`, exactly as clicking its row does: the list's
-    /// own activation, which is what a single click on a row emits.
+    /// Picks the section called `section`, exactly as the reader does: `list.activate-item`,
+    /// the action `GtkListBase` binds <kbd>Enter</kbd> to and the one a row activated by
+    /// a click goes through (GTK 4.20, `Gtk-4.0.gir`). Both ways in are that action, so
+    /// this is the reader's own path and not a way round it.
     ///
     /// Answers whether there was such a section on screen to pick — a section folded
     /// away is not one, for the same reason it is not one the pointer could reach.
@@ -736,8 +850,82 @@ impl Outline {
         let Some(position) = self.position_of(section) else {
             return false;
         };
-        self.list.emit_by_name::<()>("activate", &[&position]);
-        true
+        WidgetExt::activate_action(
+            &self.list,
+            "list.activate-item",
+            Some(&position.to_variant()),
+        )
+        .is_ok()
+    }
+
+    /// The pointer running over the sidebar, or the keyboard cursor walking along it.
+    /// Answers whether there was such a section on screen to arrive at.
+    ///
+    /// There is no pointer to move on a headless compositor, so a crossing is made of
+    /// the two things a real one produces, both probed on GTK 4.20.4: the row is put
+    /// into its prelight state, which is what `:hover` is, and the row's own motion
+    /// controller — the one `GtkListItemWidget` installs on itself — is handed the
+    /// `enter` a crossing emits. The second half is the one that matters: it is what
+    /// moves a `single_click_activate` list's selection, so it is what a test asserting
+    /// the reader's place does not move has to reproduce.
+    ///
+    /// The keyboard arrives the same way: focus on to the row's expander, where GTK
+    /// keeps the keyboard for a list of expanders, and `list.select-item`, the list's
+    /// own selection action — what <kbd>␣</kbd> and the arrow keys reach for
+    /// (GTK 4.20, `GtkListBase`).
+    pub(crate) fn browse(&self, what: Browsing<'_>) -> bool {
+        match what {
+            Browsing::PointerOn(section) => {
+                let Some(row) = self.expander_of(section).and_then(|it| it.parent()) else {
+                    return false;
+                };
+                // There is one pointer, so wherever it was, it is not there now.
+                self.pointer_away();
+                row.set_state_flags(gtk::StateFlags::PRELIGHT, false);
+                for crossing in crossings_of(&row) {
+                    crossing.emit_by_name::<()>("enter", &[&1.0f64, &1.0f64]);
+                }
+                true
+            }
+            Browsing::PointerAway => {
+                self.pointer_away();
+                true
+            }
+            Browsing::KeyboardOn(section) => {
+                let (Some(position), Some(expander)) =
+                    (self.position_of(section), self.expander_of(section))
+                else {
+                    return false;
+                };
+                expander.grab_focus();
+                // The other half of a key press, and the half that decides whether the
+                // reader can see where the cursor is: GTK keeps a window's
+                // `focus-visible` "based on user input" and documents it as not for
+                // applications to set (GTK 4.20, `GtkWindow:focus-visible`) — it is on
+                // when the reader is working the keyboard, and the focus ring is drawn
+                // for `:focus-visible`. A grab nobody typed leaves it off, so a cursor
+                // moved from here would be a cursor with no ring.
+                if let Some(window) = expander.root().and_downcast::<gtk::Window>() {
+                    window.set_focus_visible(true);
+                }
+                WidgetExt::activate_action(
+                    &self.list,
+                    "list.select-item",
+                    Some(&(position, false, false).to_variant()),
+                )
+                .is_ok()
+            }
+        }
+    }
+
+    /// Takes the pointer off every row it could be over.
+    fn pointer_away(&self) {
+        for row in rows_of(&self.list) {
+            row.unset_state_flags(gtk::StateFlags::PRELIGHT);
+            for crossing in crossings_of(&row) {
+                crossing.emit_by_name::<()>("leave", &[]);
+            }
+        }
     }
 
     /// Turns the chevron of the section called `section`, exactly as clicking it does.
@@ -756,9 +944,7 @@ impl Outline {
     /// The section the reader is in, as the sidebar shows it highlighted, or an empty
     /// string when no section is.
     pub(crate) fn current(&self) -> String {
-        self.entry_at(self.selection.selected())
-            .map(|entry| entry.text())
-            .unwrap_or_default()
+        self.here.text()
     }
 
     /// Puts the highlight on the section the reader's line falls in: the last row at or
@@ -774,14 +960,14 @@ impl Outline {
             .take_while(|position| self.line_at(*position).is_some_and(|start| start <= line))
             .last()
             .unwrap_or(gtk::INVALID_LIST_POSITION);
-        self.select(wanted);
+        self.mark(wanted);
     }
 
-    fn select(&self, position: u32) {
-        if self.selection.selected() == position {
+    /// Draws the row at `position` as the reader's place, and no other row as one.
+    fn mark(&self, position: u32) {
+        if !self.here.move_to(&self.list, self.entry_at(position)) {
             return;
         }
-        self.selection.set_selected(position);
         // A highlight the reader cannot see is not a highlight: a long outline
         // scrolls to keep the current section in the sidebar.
         if position != gtk::INVALID_LIST_POSITION {
@@ -792,7 +978,7 @@ impl Outline {
 
     /// The section being read, as what it is called rather than where it is.
     fn reading(&self) -> Option<String> {
-        self.key_at(self.selection.selected())
+        self.here.key()
     }
 
     /// Where that section is on screen now, if the document still has it and nothing is
@@ -851,6 +1037,32 @@ impl Outline {
     }
 }
 
+/// The rows the list has built — the ones on screen, which are the only ones there is
+/// anything to draw a mark on or to run a pointer over.
+fn rows_of(list: &gtk::ListView) -> impl Iterator<Item = gtk::Widget> {
+    std::iter::successors(list.first_child(), |row: &gtk::Widget| row.next_sibling())
+}
+
+/// What a row on screen is drawn with: the expander the panel put in it, which is what
+/// wears the reader's place, and the section it is showing.
+fn drawn_in(row: &gtk::Widget) -> Option<(gtk::TreeExpander, Entry)> {
+    let expander = row.first_child().and_downcast::<gtk::TreeExpander>()?;
+    let section = expander.list_row()?.item().and_downcast::<Entry>()?;
+    Some((expander, section))
+}
+
+/// The controllers a crossing of `row` is delivered to: the motion controller
+/// `GtkListItemWidget` installs on itself, which is what selects the row under the
+/// pointer in a `single_click_activate` list (probed on GTK 4.20.4).
+fn crossings_of(row: &gtk::Widget) -> impl Iterator<Item = gtk::EventControllerMotion> {
+    let controllers = row.observe_controllers();
+    (0..controllers.n_items()).filter_map(move |at| {
+        controllers
+            .item(at)
+            .and_downcast::<gtk::EventControllerMotion>()
+    })
+}
+
 /// What the title row says beside the document's name, or nothing at all for a document
 /// with no sections — the empty state under it already says so, and saying it twice is
 /// noise.
@@ -896,8 +1108,9 @@ fn style_the_panel() {
 
 /// How one heading is drawn: a chevron for a section with sections under it, the space
 /// where one would be for a section without, and then its words at the weight and size
-/// its level is written at.
-fn factory() -> gtk::SignalListItemFactory {
+/// its level is written at — and whether this is the section being read, which `here`
+/// answers.
+fn factory(here: &Rc<Here>) -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
@@ -919,7 +1132,8 @@ fn factory() -> gtk::SignalListItemFactory {
         // expander, or its shortcuts never reach it (GTK 4.20, `GtkTreeExpander`).
         item.set_focusable(false);
     });
-    factory.connect_bind(|_, item| {
+    let marking = here.clone();
+    factory.connect_bind(move |_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
             return;
         };
@@ -936,6 +1150,13 @@ fn factory() -> gtk::SignalListItemFactory {
         // chevron: there is nothing to fold, so there is nothing to press.
         expander.set_hide_expander(!row.is_expandable());
         expander.set_list_row(Some(&row));
+        // The widgets this row is drawn with were drawn for another section a moment
+        // ago — the list builds widgets for the rows on screen and hands them on as the
+        // reader scrolls — so every bind says again whether *this* section is the one
+        // being read. Without it a recycled row would arrive wearing another section's
+        // pill. What it is put on is the expander rather than the row around it: see
+        // `Here` for the GTK 4.20.4 crash that decides that.
+        marking.dress(&expander, &entry);
         if let Some(label) = expander.child().and_downcast::<gtk::Label>() {
             label.set_label(&entry.text());
             // The whole heading, for one too long to fit the sidebar.

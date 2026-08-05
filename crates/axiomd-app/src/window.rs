@@ -91,7 +91,7 @@ use crate::document::{FileId, Renderer, as_a_markdown_name};
 use crate::editor::Editor;
 use crate::find::{Find, Searchable};
 use crate::links::Follow;
-use crate::outline::Outline;
+use crate::outline::{Browsing, Outline};
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
@@ -1163,6 +1163,13 @@ impl DocumentWindow {
     /// showing a section by that name with anything under it to fold.
     pub(crate) fn fold_section(&self, section: &str) -> bool {
         self.outline.fold(section)
+    }
+
+    /// Runs the pointer over the sidebar, or walks the keyboard cursor along it —
+    /// neither of which is the reader choosing a section (issue #42). Answers whether
+    /// the sidebar is showing the section named.
+    pub(crate) fn browse_outline(&self, what: Browsing<'_>) -> bool {
+        self.outline.browse(what)
     }
 
     /// What the reader has in front of them in edit mode.

@@ -949,6 +949,254 @@ fn the_sidebar_draws_the_readers_place_and_redraws_it_as_they_read() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// The sections the sidebar is drawing as the reader's place — none, one, or (which
+/// would be a bug of its own) several.
+fn drawn_as_here(app: &App) -> Vec<String> {
+    app.outline()
+        .rows
+        .iter()
+        .filter(|row| row.current)
+        .map(|row| row.text.clone())
+        .collect()
+}
+
+/// Issue #42: the reader's place is not something the pointer can move.
+///
+/// The sidebar draws two different things — where the reader is, and what is under
+/// their hand — and until this was fixed it drew them the same way and could only draw
+/// one of them at a time: the list is built with single-click activation, GTK moves the
+/// selection on to whatever row the pointer crosses, and the accent pill rode the
+/// selection. So running the pointer down the sidebar took the pill with it, and the
+/// section the reader was actually reading lost it.
+#[test]
+fn running_the_pointer_over_the_sidebar_never_moves_the_readers_place() {
+    let fixture = Fixture::new("outline-hover-place");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    let resting = app.sidebar_screenshot();
+    let pill = resting.pixels_coloured(ACCENT);
+    assert!(pill > 1_000, "the reader's place was not drawn at all");
+
+    // The pointer wanders over every other section in turn. Each of them is a row the
+    // reader could click, and none of them is where they are.
+    for section in ["Guide", "Getting started", "Requirements", "Notes"] {
+        app.hover_over(section);
+
+        assert_eq!(
+            app.outline().section,
+            "Reference",
+            "the pointer passing over {section:?} moved the reader's place",
+        );
+        assert_eq!(
+            drawn_as_here(&app),
+            ["Reference"],
+            "with the pointer over {section:?}, the sidebar draws the wrong rows as \
+             the reader's place",
+        );
+    }
+
+    // And in pixels, which is the only place the difference between the two marks is
+    // real: the accent is exactly the accent that was there, so hovering neither took
+    // the pill away nor drew a second one.
+    let hovered = app.sidebar_screenshot();
+    assert_eq!(
+        hovered.pixels_coloured(ACCENT),
+        pill,
+        "the pointer changed how much of the sidebar is drawn in the accent colour",
+    );
+    // Hover is still feedback — the sidebar does not look untouched.
+    assert!(
+        !hovered.looks_like(&resting),
+        "the pointer over a row drew nothing at all, so nothing says it is clickable",
+    );
+
+    // The whole of the ruling, in one picture: what the pointer does to a row must not
+    // be what reading that row looks like. Same row, same panel, two different answers.
+    app.hover_away();
+    app.dom("document.querySelector('h2[id=\"notes\"]').scrollIntoView(true)");
+    app.wait_until_section("Notes");
+    let reading_it = app.sidebar_screenshot();
+    assert!(
+        !hovered.looks_like(&reading_it),
+        "the pointer over Notes drew the same panel as reading Notes does",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The other half: hovering is not a thing that happens to the document. The window's
+/// answer about where the reader is comes back unchanged, and the page was never asked.
+///
+/// The non-happy paths are the two the pointer really takes: on to the very row that is
+/// already the reader's place, and off the list altogether. Neither may leave a mark
+/// behind — the pill must not be dropped when the pointer arrives on it, and must not be
+/// left on the last row the pointer touched when it goes.
+#[test]
+fn hovering_changes_nothing_the_window_says_about_where_the_reader_is() {
+    let fixture = Fixture::new("outline-hover-tracking");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+    let reports = app.section_reports();
+    let resting = app.sidebar_screenshot();
+
+    // On to the row the reader is on.
+    app.hover_over("Reference");
+    assert_eq!(app.outline().section, "Reference");
+    assert_eq!(drawn_as_here(&app), ["Reference"]);
+
+    // On to another one, and then off the sidebar entirely.
+    app.hover_over("Notes");
+    app.hover_away();
+    assert_eq!(
+        app.outline().section,
+        "Reference",
+        "the pointer left the sidebar and took the reader's place with it",
+    );
+    assert_eq!(drawn_as_here(&app), ["Reference"]);
+    assert!(
+        app.sidebar_screenshot().looks_like(&resting),
+        "the pointer left a mark on the sidebar after it had gone",
+    );
+
+    // And none of it was the document's business: the page said nothing, because
+    // nothing about where the reader is changed.
+    assert_eq!(
+        app.section_reports(),
+        reports,
+        "moving the pointer over the sidebar made the page report the reader's place",
+    );
+    assert_eq!(app.navigation_count(), 1);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The non-happy path of the pill itself: a reader above the first heading is in no
+/// section, and running the pointer over the sidebar must not invent one for them.
+#[test]
+fn hovering_above_every_section_draws_the_reader_no_place_at_all() {
+    let fixture = Fixture::new("outline-hover-nowhere");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.wait_for("the page to say where the reader is", || {
+        app.section_reports() > 0
+    });
+    app.wait_until_section("");
+
+    for section in ["Getting started", "Reference"] {
+        app.hover_over(section);
+
+        assert_eq!(
+            app.outline().section,
+            "",
+            "the pointer over {section:?} put the reader in a section they are not in",
+        );
+        assert!(
+            drawn_as_here(&app).is_empty(),
+            "the sidebar drew {:?} as the reader's place while they are above every \
+             section",
+            drawn_as_here(&app),
+        );
+        assert_eq!(
+            app.sidebar_screenshot().pixels_coloured(ACCENT),
+            0,
+            "the pointer over {section:?} drew an accent pill for a reader who is in \
+             no section",
+        );
+    }
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// What must still work after all that: one click on a section still goes there
+/// (the ruling of the #7 era stands), and it leaves exactly one mark behind — on the
+/// section that was reached, and nowhere the pointer merely passed over on the way.
+#[test]
+fn a_single_click_still_takes_the_reader_to_a_section_the_pointer_crossed_to_reach() {
+    let fixture = Fixture::new("outline-hover-click");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    assert_eq!(scroll_offset(&app), 0);
+
+    // The pointer travels down the sidebar to get to the row it is going to click.
+    app.hover_over("Getting started");
+    app.hover_over("Requirements");
+    app.hover_over("Reference");
+    app.press("Reference");
+
+    app.wait_for("the document to arrive at the section", || {
+        screen_position_of(&app, "Reference").abs() <= 4
+    });
+    app.wait_until_section("Reference");
+    assert_eq!(
+        drawn_as_here(&app),
+        ["Reference"],
+        "the click left the reader's place on the wrong rows",
+    );
+    assert_eq!(
+        app.navigation_count(),
+        1,
+        "the section was reached by loading the page again",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// And the keyboard, which browses the sidebar the same way the pointer does and must
+/// be told apart from reading the same way: walking the cursor down the rows moves no
+/// pill, and activating one still goes there.
+#[test]
+fn the_keyboard_walks_the_sidebar_without_moving_the_place_and_still_picks_a_section() {
+    let fixture = Fixture::new("outline-keyboard");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+    let resting = app.sidebar_screenshot();
+    let pill = resting.pixels_coloured(ACCENT);
+
+    for section in ["Guide", "Getting started", "Notes"] {
+        app.key_to_section(section);
+
+        assert_eq!(
+            app.outline().section,
+            "Reference",
+            "the keyboard cursor on {section:?} moved the reader's place",
+        );
+        assert_eq!(drawn_as_here(&app), ["Reference"]);
+        // And the accent is exactly the accent that was there: the cursor's own mark is
+        // the focus ring, which is a third thing rather than the pill on loan.
+        assert_eq!(
+            app.sidebar_screenshot().pixels_coloured(ACCENT),
+            pill,
+            "the keyboard cursor on {section:?} changed how much of the sidebar is \
+             drawn in the accent colour",
+        );
+    }
+    // The reader has to be able to see where the cursor is, or the keyboard is walking
+    // an outline in the dark.
+    assert!(
+        !app.sidebar_screenshot().looks_like(&resting),
+        "the keyboard cursor is drawn nowhere at all",
+    );
+
+    // `Enter` on the row the cursor is on: `list.activate-item`, which is the action
+    // GTK binds that key to (GTK 4.20, `GtkListBase`).
+    app.press("Notes");
+
+    app.wait_for("the document to arrive at the section", || {
+        screen_position_of(&app, "Notes").abs() <= 4
+    });
+    app.wait_until_section("Notes");
+    assert_eq!(
+        drawn_as_here(&app),
+        ["Notes"],
+        "activating a section from the keyboard left the place on the wrong rows",
+    );
+    assert_eq!(app.navigation_count(), 1);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// The visual specification of the sidebar on a light desktop (issue #35).
 ///
 /// Ignored until the owner has looked at the picture and pinned it: they are the arbiter
@@ -1001,6 +1249,77 @@ fn a_high_contrast_sidebar_still_looks_the_way_it_was_approved() {
 
     app.sidebar_screenshot()
         .assert_matches("outline-high-contrast");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The two pictures issue #42 is about, on a light desktop: the pointer over a row that
+/// is not the reader's place, and the pointer over the row that is. Beside the pinned
+/// picture of the panel at rest above, they are what "hover is unmistakably different
+/// from the current chapter" means — the owner arbitrates that, once, by looking.
+///
+/// Pinned the same way as every other golden here, from
+/// `outline-hover-light.actual.png` and `outline-hover-current-light.actual.png`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_hovered_light_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-hover-light");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.hover_over("Notes");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-light");
+
+    app.hover_over("Reference");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-current-light");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The same two, on a dark desktop.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_hovered_dark_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-hover-dark");
+    let dark = Preferences::with("outline-golden-hover-dark", "theme", "'dark'");
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &dark);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.hover_over("Notes");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-dark");
+
+    app.hover_over("Reference");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-current-dark");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// And on a desktop asking for high contrast, where the two marks have the least room
+/// to be told apart by colour: the pill keeps a shape of its own and the wash comes up
+/// to where it can be seen (`outline.css`).
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_hovered_high_contrast_sidebar_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-hover-contrast");
+    let desktop = Preferences::new("outline-golden-hover-contrast");
+    desktop.set_high_contrast(true);
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &desktop);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    app.hover_over("Notes");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-high-contrast");
+
+    app.hover_over("Reference");
+    app.sidebar_screenshot()
+        .assert_matches("outline-hover-current-high-contrast");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
