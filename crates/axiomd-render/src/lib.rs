@@ -38,9 +38,13 @@
 //!   [`stylesheet`], in a light block and a screen-only `prefers-color-scheme: dark`
 //!   block, so switching theme restyles a rendered document without re-parsing it,
 //!   and neither paper nor an exported file ever goes dark. What the reader's own
-//!   desktop asks for on top of that — a measure, high contrast — is a second
-//!   stylesheet ([`reader_stylesheet`]) the app installs over the first, for the same
-//!   reason and at the same cost.
+//!   desktop asks for on top of that — a measure, high contrast, less movement — is a
+//!   second stylesheet ([`Reading::stylesheet`]) the app installs over the first, for
+//!   the same reason and at the same cost.
+//! * **Arriving rather than appearing from nothing.** [`reading`] also answers with the
+//!   colour the page is painted, read out of the stylesheet itself, so the view can be
+//!   that colour before the document's first byte and the reader never sees a black
+//!   frame; the document then fades up onto it once, on the load that put it there.
 //! * **Extensible without being weakened.** Everything beyond core CommonMark and GFM
 //!   is an optional [`Plugin`] the reader can switch off: it claims fences, rewrites
 //!   events and decorates markup through [`Plugins`], and it is held to every rule
@@ -399,33 +403,182 @@ pub enum Contrast {
     High,
 }
 
-/// The stylesheet that puts the reader's own way of reading over [`stylesheet`].
+/// Which of the two palettes a document is being read in — the desktop's colour
+/// scheme, which is also what the document's own stylesheet answers
+/// `prefers-color-scheme` with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Palette {
+    /// The light document, which is the stylesheet's own.
+    Light,
+    /// The dark palette (`dark.css`).
+    Dark,
+}
+
+/// Whether the reader's desktop wants anything on screen to move — its accessibility
+/// answer, like [`Contrast`], and never a preference of axiomd's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    /// Nothing has been asked for; a document may appear the way it is designed to.
+    Full,
+    /// The desktop is asking for less movement: a document appears at once, with no
+    /// transition of any kind.
+    Reduced,
+}
+
+/// How this reader is reading, as the application has to put it into practice.
+///
+/// Two things the application needs and must never derive separately: the styling
+/// that goes over the document's own, and the colour the pane is painted in *before*
+/// a single word of the document has been drawn. They come from one call because they
+/// are one answer — a background taken from anywhere but the stylesheet that paints
+/// the page is a second source of truth, and the black frame issue #40 is about is
+/// what a view with no answer at all looks like.
+pub struct Reading {
+    stylesheet: String,
+    background: (u8, u8, u8),
+}
+
+impl Reading {
+    /// The stylesheet that puts the reader's own way of reading over [`stylesheet`].
+    ///
+    /// It is meant to be installed as a *user* stylesheet on the view rather than
+    /// folded into the document, which is what makes a change to it free: the page on
+    /// screen restyles in place, and nothing is re-parsed, re-rendered or reloaded to
+    /// change how wide a document is, how much contrast it has, or whether it moves.
+    /// `!important` is not decoration — under the cascade (CSS Cascading and
+    /// Inheritance Level 5, §6.2) a normal user declaration loses to the document's
+    /// own author one, and only an important user declaration outranks it. That is
+    /// also why high contrast and reduced motion are written here rather than as
+    /// `prefers-contrast` and `prefers-reduced-motion` blocks in the document's own
+    /// stylesheet: WebKitGTK answers neither query from the desktop the application is
+    /// running on (probed on WebKitGTK 2.52.5, libadwaita 1.8.6 and GTK 4.20.4 —
+    /// `prefers-contrast: more` stayed false with the desktop in high contrast, and a
+    /// document went on fading in on a desktop whose `enable-animations` was off and
+    /// which GTK itself reported as not animating), so the application has to say it.
+    pub fn stylesheet(&self) -> &str {
+        &self.stylesheet
+    }
+
+    /// The colour the page is painted in, as red, green and blue.
+    ///
+    /// What a view showing this reader a document must already be painted in when the
+    /// document's own bytes have not arrived yet. It is read out of the very
+    /// stylesheet that paints the page — see [`reading`] — so the pane and the
+    /// document can only ever be the same colour.
+    pub fn background(&self) -> (u8, u8, u8) {
+        self.background
+    }
+}
+
+/// How `reading_width`, `palette`, `contrast` and `motion` add up to one way of
+/// reading.
 ///
 /// `reading_width` is the measure a document's text is held to, in rem, or `None` for
-/// a document that fills the window; `contrast` is what the desktop's accessibility
-/// setting asks for.
+/// a document that fills the window; the other three are what the reader's desktop is
+/// asking for.
 ///
-/// It is meant to be installed as a *user* stylesheet on the view rather than folded
-/// into the document, which is what makes a change to it free: the page on screen
-/// restyles in place, and nothing is re-parsed, re-rendered or reloaded to change how
-/// wide a document is or how much contrast it has. `!important` is not decoration —
-/// under the cascade (CSS Cascading and Inheritance Level 5, §6.2) a normal user
-/// declaration loses to the document's own author one, and only an important user
-/// declaration outranks it. That is also why high contrast is written here rather
-/// than as a `prefers-contrast` block in the document's own stylesheet: WebKitGTK
-/// does not answer `prefers-contrast` from the application's style manager at all
-/// (probed on WebKitGTK 2.52.5 and libadwaita 1.8.6 — the media query stayed false
-/// with the desktop in high contrast), so the application has to say it.
-pub fn reader_stylesheet(reading_width: Option<u32>, contrast: Contrast) -> String {
+/// The background comes out of the stylesheets themselves at compile time — the `#`
+/// colour each of them declares `--axiomd-bg` to be — so there is no second place to
+/// keep it in step, and a stylesheet that stopped declaring one would fail the build
+/// rather than leave a reader with a black pane.
+pub fn reading(
+    reading_width: Option<u32>,
+    palette: Palette,
+    contrast: Contrast,
+    motion: Motion,
+) -> Reading {
     let measure = match reading_width {
         Some(rem) => format!("{rem}rem"),
         None => "none".to_owned(),
     };
-    let mut sheet = format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n");
+    let mut stylesheet = format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n");
     if contrast == Contrast::High {
-        sheet.push_str(include_str!("../assets/high-contrast.css"));
+        stylesheet.push_str(include_str!("../assets/high-contrast.css"));
     }
-    sheet
+    if motion == Motion::Reduced {
+        stylesheet.push_str(include_str!("../assets/still.css"));
+    }
+    Reading {
+        stylesheet,
+        background: match (palette, contrast) {
+            (Palette::Light, Contrast::Normal) => LIGHT_PAGE,
+            (Palette::Dark, Contrast::Normal) => DARK_PAGE,
+            (Palette::Light, Contrast::High) => HIGH_CONTRAST_LIGHT_PAGE,
+            (Palette::Dark, Contrast::High) => HIGH_CONTRAST_DARK_PAGE,
+        },
+    }
+}
+
+/// The four colours a page can be painted in, taken out of the four places the
+/// stylesheets declare `--axiomd-bg`.
+///
+/// `axiomd.css` declares it once for the light document and again inside its print
+/// block, which is paper and not a pane; `dark.css` declares the one dark palette;
+/// `high-contrast.css` declares its light page and then, in the nested
+/// `prefers-color-scheme: dark` block, its dark one. So the first declaration of each
+/// file is its page, and high contrast's second is its dark page.
+const LIGHT_PAGE: (u8, u8, u8) = declared_background(include_str!("../assets/axiomd.css"), 0);
+const DARK_PAGE: (u8, u8, u8) = declared_background(include_str!("../assets/dark.css"), 0);
+const HIGH_CONTRAST_LIGHT_PAGE: (u8, u8, u8) =
+    declared_background(include_str!("../assets/high-contrast.css"), 0);
+const HIGH_CONTRAST_DARK_PAGE: (u8, u8, u8) =
+    declared_background(include_str!("../assets/high-contrast.css"), 1);
+
+/// The colour of the `nth` `--axiomd-bg` declared in `css`, counting from zero.
+///
+/// `const` on purpose: this runs while the crate is compiled, over the very bytes
+/// `stylesheet` will serve, so "the pane is painted the colour the page is painted"
+/// is settled by the build rather than by a value somebody remembered to update. A
+/// stylesheet that stops declaring the colour, or declares it as anything but a
+/// six-digit `#` hex, is a compile error naming this.
+const fn declared_background(css: &str, nth: usize) -> (u8, u8, u8) {
+    const DECLARATION: &[u8] = b"--axiomd-bg:";
+    let bytes = css.as_bytes();
+    let (mut at, mut seen) = (0, 0);
+    while at + DECLARATION.len() <= bytes.len() {
+        let mut matched = 0;
+        while matched < DECLARATION.len() && bytes[at + matched] == DECLARATION[matched] {
+            matched += 1;
+        }
+        if matched == DECLARATION.len() {
+            if seen == nth {
+                return hex_colour(bytes, at + DECLARATION.len());
+            }
+            seen += 1;
+        }
+        at += 1;
+    }
+    panic!("a stylesheet no longer declares the --axiomd-bg the page is painted in");
+}
+
+/// The `#rrggbb` that starts at or just after `at`.
+const fn hex_colour(bytes: &[u8], at: usize) -> (u8, u8, u8) {
+    let mut at = at;
+    while at < bytes.len() && bytes[at] == b' ' {
+        at += 1;
+    }
+    assert!(
+        at + 7 <= bytes.len() && bytes[at] == b'#',
+        "--axiomd-bg is not a six-digit # colour; the page colour is read from it"
+    );
+    (
+        hex_byte(bytes[at + 1], bytes[at + 2]),
+        hex_byte(bytes[at + 3], bytes[at + 4]),
+        hex_byte(bytes[at + 5], bytes[at + 6]),
+    )
+}
+
+const fn hex_byte(high: u8, low: u8) -> u8 {
+    hex_digit(high) * 16 + hex_digit(low)
+}
+
+const fn hex_digit(digit: u8) -> u8 {
+    match digit {
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => panic!("--axiomd-bg is not a six-digit # colour"),
+    }
 }
 
 /// The default stylesheet, light and dark palettes included.
@@ -433,13 +586,18 @@ pub fn reader_stylesheet(reading_width: Option<u32>, contrast: Contrast) -> Stri
 /// It is built once per process: the document typography plus the two code palettes
 /// generated from the bundled syntect themes, so the classes the highlighter emits
 /// and the classes the stylesheet defines cannot drift apart.
+///
+/// The first-appearance fade is part of it and part of nothing else: this is the
+/// stylesheet the *application* serves its view, so a document that has left axiomd
+/// through [`standalone`] carries no animation at all.
 pub fn stylesheet() -> &'static str {
     static STYLESHEET: OnceLock<String> = OnceLock::new();
     STYLESHEET.get_or_init(|| {
         format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             include_str!("../assets/axiomd.css"),
             include_str!("../assets/dark.css"),
+            include_str!("../assets/appear.css"),
             // On screen an icon is a file the app's own scheme answers for, which is
             // what keeps the document's policy to `axiomd:` and nothing else.
             callout::icon_styling(&callout::icon_uri),

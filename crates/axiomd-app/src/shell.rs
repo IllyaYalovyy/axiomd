@@ -155,6 +155,13 @@ impl Shell {
         self.scheme.startup()
     }
 
+    /// Stops answering for the pages of documents, or starts again. The e2e suite's
+    /// way of standing still in the moment a window has a document surface on screen
+    /// and no document in it (`scheme::Held`, issue #40).
+    pub(crate) fn hold_pages(&self, holding: bool) {
+        self.scheme.hold_pages(holding);
+    }
+
     pub(crate) fn window_at(&self, index: usize) -> Option<Rc<DocumentWindow>> {
         self.windows.borrow().get(index).cloned()
     }

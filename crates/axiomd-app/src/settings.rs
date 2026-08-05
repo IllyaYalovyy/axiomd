@@ -171,26 +171,34 @@ impl Settings {
         self.watch(&[Key::Theme], apply)
     }
 
-    /// Hands `restyle` the stylesheet documents are to be laid out with — now, and
-    /// again every time the reader changes how they want to read.
+    /// Hands `restyle` the way documents are to be shown to this reader — now, and
+    /// again every time anything about it changes.
     ///
-    /// Two questions answered as one, because the caller has no use for the
-    /// difference: the measure the reader chose, which is a preference of axiomd's,
-    /// and whether the desktop is asking for high contrast, which is an accessibility
-    /// setting of the desktop's and never axiomd's to offer. Both arrive as one
-    /// stylesheet and both apply the same way — the page on screen recalculates its
-    /// style and nothing is parsed, rendered or loaded again (invariant 9).
+    /// Four questions answered as one, because the caller has no use for the
+    /// difference: the measure the reader chose, which is a preference of axiomd's;
+    /// whether the desktop is asking for high contrast or for less movement, which are
+    /// accessibility settings of the desktop's and never axiomd's to offer; and which
+    /// palette is in force, which decides the colour the pane is painted before a
+    /// document has drawn anything (issue #40). All four arrive as one
+    /// [`axiomd_render::Reading`] and all four apply the same way — the page on screen
+    /// recalculates its style, or the view is repainted, and nothing is parsed,
+    /// rendered or loaded again (invariant 9).
     ///
     /// Whoever holds the returned [`Watch`] is styling documents the reader's way; the
     /// moment they drop it they stop being told, and stop being kept alive by being
     /// told (invariant 7).
-    pub(crate) fn follow_reading_style(self: &Rc<Self>, restyle: impl Fn(&str) + 'static) -> Watch {
+    pub(crate) fn follow_reading_style(
+        self: &Rc<Self>,
+        restyle: impl Fn(&axiomd_render::Reading) + 'static,
+    ) -> Watch {
         let apply: Rc<dyn Fn()> = {
             let settings = self.clone();
             Rc::new(move || {
-                restyle(&axiomd_render::reader_stylesheet(
+                restyle(&axiomd_render::reading(
                     settings.reading_width(),
+                    palette(),
                     contrast(),
+                    motion(),
                 ))
             })
         };
@@ -200,13 +208,32 @@ impl Settings {
             let apply = apply.clone();
             move || apply()
         });
-        // The desktop's own, which no key of axiomd's holds: libadwaita reports it
-        // whether it learned it from the settings portal or from
+        // The desktop's own, which no key of axiomd's holds: libadwaita reports high
+        // contrast whether it learned it from the settings portal or from
         // `org.gnome.desktop.a11y.interface`, and it reports a change to it while the
-        // reader is reading (probed on libadwaita 1.8.6).
+        // reader is reading (probed on libadwaita 1.8.6). Light and dark comes from the
+        // same manager, and covers the reader's own theme preference too: that is set
+        // by putting a colour scheme on this very manager (`follow_theme`), so both
+        // ways of going dark arrive here as one signal.
         let manager = adw::StyleManager::default();
-        let handler = manager.connect_high_contrast_notify(move |_| apply());
-        watch.also(&manager, handler);
+        for handler in [
+            manager.connect_high_contrast_notify({
+                let apply = apply.clone();
+                move |_| apply()
+            }),
+            manager.connect_dark_notify({
+                let apply = apply.clone();
+                move |_| apply()
+            }),
+        ] {
+            watch.also(&manager, handler);
+        }
+        // And whether the desktop wants anything on screen to move, which GTK owns
+        // rather than libadwaita.
+        if let Some(gtk) = gtk::Settings::default() {
+            let handler = gtk.connect_gtk_enable_animations_notify(move |_| apply());
+            watch.also(&gtk, handler);
+        }
         watch
     }
 
@@ -481,6 +508,31 @@ fn contrast() -> axiomd_render::Contrast {
     match adw::StyleManager::default().is_high_contrast() {
         true => axiomd_render::Contrast::High,
         false => axiomd_render::Contrast::Normal,
+    }
+}
+
+/// Which palette documents are being read in.
+///
+/// The same style manager, and the same source of truth: the reader's own light/dark
+/// preference is put into force by setting a colour scheme on it (`follow_theme`), so
+/// this one answer covers both their choice and the desktop's.
+fn palette() -> axiomd_render::Palette {
+    match adw::StyleManager::default().is_dark() {
+        true => axiomd_render::Palette::Dark,
+        false => axiomd_render::Palette::Light,
+    }
+}
+
+/// Whether the desktop wants anything on screen to move.
+///
+/// GTK's own setting, which is what a desktop's "reduce animation" switch reaches
+/// (`org.gnome.desktop.interface enable-animations`, and `gtk-enable-animations` in a
+/// `settings.ini`). An accessibility answer like high contrast, so it is read from the
+/// desktop and never offered as a preference of axiomd's.
+fn motion() -> axiomd_render::Motion {
+    match gtk::Settings::default().is_none_or(|gtk| gtk.is_gtk_enable_animations()) {
+        true => axiomd_render::Motion::Full,
+        false => axiomd_render::Motion::Reduced,
     }
 }
 

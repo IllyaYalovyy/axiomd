@@ -175,21 +175,26 @@ impl Environment {
     /// Builds the private world an application under test lives in, writing the
     /// configuration files it names into `scratch`.
     ///
-    /// `settings` is the store the application keeps the reader's preferences in, for
-    /// a test that changes one or launches twice over the same one. Without it the
-    /// application gets settings that live in memory and die with it, which is what
-    /// every other test wants: a rendered document must not depend on what the last
-    /// test preferred.
-    pub(crate) fn pin(scratch: &Path, settings: Option<&Path>) -> Environment {
+    /// `settings` is the directory the application keeps the reader's preferences in,
+    /// for a test that changes one or launches twice over the same one. Without it
+    /// they are kept in this launch's own scratch directory and die with it, which is
+    /// what every other test wants: a rendered document must not depend on what the
+    /// last test preferred.
+    ///
+    /// `animations` is the one pinned value a test may ask for the other way, because
+    /// it is the difference between two desktops rather than between two machines: a
+    /// desktop that animates, and one whose reader asked it not to.
+    pub(crate) fn pin(scratch: &Path, settings: Option<&Path>, animations: bool) -> Environment {
         let config = settings.map_or_else(|| scratch.join("config"), Path::to_path_buf);
         let fonts = scratch.join("fonts.conf");
         let font_cache = scratch.join("fontcache");
         make_private_dir(&config.join("gtk-4.0"));
         make_private_dir(&font_cache);
 
-        // GTK reads these once at startup. Animations off so a screenshot is never
-        // taken mid-transition; the font, hinting and subpixel settings pinned
-        // because they are what the developer's desktop would otherwise decide.
+        // GTK reads these once at startup: the font, hinting and subpixel settings
+        // pinned because they are what the developer's desktop would otherwise decide.
+        // Animations are named here too, but this is not what decides them — see
+        // `pin_setting` below.
         //
         // The print backends are pinned for a blunter reason: a suite that prints
         // must not be able to reach the machine's printers. With only the file
@@ -200,17 +205,33 @@ impl Environment {
         // still works.
         std::fs::write(
             config.join("gtk-4.0/settings.ini"),
-            "[Settings]\n\
-             gtk-enable-animations=0\n\
-             gtk-font-name=Cantarell 11\n\
-             gtk-xft-antialias=1\n\
-             gtk-xft-hinting=1\n\
-             gtk-xft-hintstyle=hintslight\n\
-             gtk-xft-rgba=none\n\
-             gtk-application-prefer-dark-theme=0\n\
-             gtk-print-backends=file\n",
+            format!(
+                "[Settings]\n\
+                 gtk-enable-animations={animations}\n\
+                 gtk-font-name=Cantarell 11\n\
+                 gtk-xft-antialias=1\n\
+                 gtk-xft-hinting=1\n\
+                 gtk-xft-hintstyle=hintslight\n\
+                 gtk-xft-rgba=none\n\
+                 gtk-application-prefer-dark-theme=0\n\
+                 gtk-print-backends=file\n",
+                animations = u8::from(animations),
+            ),
         )
         .expect("write the pinned GTK settings");
+
+        // And the one that actually decides whether anything moves. GTK answers
+        // `gtk-enable-animations` from the desktop's own setting in preference to the
+        // file above, so the file alone left every launch animating (probed on GTK
+        // 4.20.4 and libadwaita 1.8.6: with `gtk-enable-animations=0` in `settings.ini`
+        // the application still reported animations on, and reported them off the
+        // moment this key said so). Off, so a screenshot can never be taken
+        // mid-transition; on for the one test that is about a document appearing.
+        pin_setting(
+            &config,
+            DESKTOP_GROUP,
+            &format!("enable-animations={animations}"),
+        );
 
         // The same three knobs again for the text WebKit lays out, which asks
         // fontconfig rather than GTK. The cache is ours so a stale one cannot answer.
@@ -261,18 +282,15 @@ impl Environment {
                 ("XDG_CACHE_HOME", cache),
                 ("XDG_STATE_HOME", state),
                 ("FONTCONFIG_FILE", fonts),
-                // No dconf either way: the desktop's colour scheme and text scale stay
-                // outside. A test that gave a settings store gets the keyfile backend,
-                // which keeps the reader's preferences in a file under the pinned
-                // configuration directory — so they outlive the application, exactly
-                // as they must on a real desktop.
-                (
-                    "GSETTINGS_BACKEND",
-                    PathBuf::from(match settings {
-                        Some(_) => "keyfile",
-                        None => "memory",
-                    }),
-                ),
+                // Never dconf: the developer's own desktop — its colour scheme, its
+                // text scale, its accessibility settings — stays outside. The keyfile
+                // backend keeps every setting, the reader's preferences and the
+                // desktop's own alike, in one file under the pinned configuration
+                // directory. A launch given a store shares that directory with the
+                // launches before and after it, so preferences outlive the application
+                // exactly as they must on a real desktop; a launch without one gets a
+                // file of its own that dies with its scratch directory.
+                ("GSETTINGS_BACKEND", PathBuf::from("keyfile")),
                 ("GDK_BACKEND", PathBuf::from("wayland")),
                 // Draw with Cairo rather than with GSK's GL renderer. Not a rendering
                 // choice — the application draws the same window either way, and the
@@ -456,6 +474,43 @@ pub(crate) fn home_dir(scratch: &Path) -> PathBuf {
 /// window showing a document from here says `~/Documents`.
 pub(crate) fn documents_dir(scratch: &Path) -> PathBuf {
     home_dir(scratch).join("Documents")
+}
+
+/// The GSettings group the desktop keeps its interface settings under — where GTK
+/// reads whether anything on screen may move.
+pub(crate) const DESKTOP_GROUP: &str = "org/gnome/desktop/interface";
+
+/// The group the desktop keeps its accessibility settings under. libadwaita reads high
+/// contrast from here when there is no settings portal to ask, which is every launch in
+/// this harness (probed on libadwaita 1.8.6: the style manager reports it at startup
+/// and reports a change to it while the application is running).
+pub(crate) const A11Y_GROUP: &str = "org/gnome/desktop/a11y/interface";
+
+/// Writes `settings` as the whole of GSettings group `group` in the store under
+/// `config`, keeping every other group already in it.
+///
+/// The one place a desktop setting is said, whether it is said before a launch or
+/// while one is reading: GLib's keyfile backend is a file, and a test standing in for
+/// the reader's desktop writes to it the way the desktop would.
+pub(crate) fn pin_setting(config: &Path, group: &str, settings: &str) {
+    let keyfile = config.join("glib-2.0/settings/keyfile");
+    if let Some(parent) = keyfile.parent() {
+        make_private_dir(parent);
+    }
+    let existing = std::fs::read_to_string(&keyfile).unwrap_or_default();
+    let mut kept = String::new();
+    let mut inside = false;
+    for line in existing.lines() {
+        if line.starts_with('[') {
+            inside = line.trim() == format!("[{group}]");
+        }
+        if !inside {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    std::fs::write(&keyfile, format!("{kept}[{group}]\n{settings}\n"))
+        .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
 }
 
 fn make_private_dir(path: &Path) {

@@ -62,6 +62,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use axiomd_render::Rendered;
+use gtk::gdk;
 use gtk::glib;
 use webkit6::prelude::*;
 
@@ -376,21 +377,41 @@ impl DocumentView {
         });
     }
 
-    /// Restyles whatever this view is showing, and everything it shows afterwards,
-    /// with `stylesheet`.
+    /// Shows whatever this view is showing, and everything it shows afterwards, the
+    /// way `reading` says this reader reads.
     ///
-    /// How a preference the reader just changed reaches the document: as a *user*
-    /// stylesheet on the view rather than as an edit to the page. Nothing is parsed,
-    /// rendered, patched or loaded again — the page on screen simply restyles, and a
-    /// document loaded later is already styled at its first paint rather than
-    /// reflowing after it (probed on WebKitGTK 2.52.5, both directions).
-    pub(crate) fn restyle(&self, stylesheet: &str) {
+    /// Two things, because they are one answer and must never be given separately.
+    ///
+    /// The styling reaches the document as a *user* stylesheet on the view rather than
+    /// as an edit to the page. Nothing is parsed, rendered, patched or loaded again —
+    /// the page on screen simply restyles, and a document loaded later is already
+    /// styled at its first paint rather than reflowing after it (probed on WebKitGTK
+    /// 2.52.5, both directions).
+    ///
+    /// The colour is what the view itself is painted in, which is the whole of what
+    /// the reader looks at for as long as it takes a document's own bytes to reach the
+    /// page. Said nowhere, WebKit paints that frame in its own stock background
+    /// whatever the desktop is — opaque white, measured on WebKitGTK 2.52.5 with the
+    /// document held back and the reader in the dark palette — so opening a document
+    /// meant a frame of some colour the reader is not reading in (issue #40). Painting
+    /// it the page's own colour makes that frame the page, and it costs the document
+    /// nothing: a colour is not a load, so switching theme repaints this view without
+    /// re-parsing or reloading anything (invariant 9).
+    pub(crate) fn show_the_way_they_read(&self, reading: &axiomd_render::Reading) {
+        let (red, green, blue) = reading.background();
+        self.webview.set_background_color(&gdk::RGBA::new(
+            f32::from(red) / 255.0,
+            f32::from(green) / 255.0,
+            f32::from(blue) / 255.0,
+            1.0,
+        ));
+
         let Some(content) = self.webview.user_content_manager() else {
             return;
         };
         content.remove_all_style_sheets();
         content.add_style_sheet(&webkit6::UserStyleSheet::new(
-            stylesheet,
+            reading.stylesheet(),
             // The document is the whole of what this view shows; there are no frames
             // in it, and a rendered document cannot make one.
             webkit6::UserContentInjectedFrames::TopFrame,

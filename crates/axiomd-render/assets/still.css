@@ -1,0 +1,23 @@
+/*
+ * What a desktop asking for reduced motion changes about a rendered document: it
+ * stops moving.
+ *
+ * One rule, because there is one piece of movement in the whole document — the fade a
+ * document makes the first time it appears in a window (`appear.css`). A reader who
+ * has asked their desktop for less movement is shown the document at once instead.
+ *
+ * Delivered as a *user* stylesheet like `high-contrast.css`, so the declaration has to
+ * be important to outrank the document's own, and for the same reason: WebKitGTK does
+ * not answer `prefers-reduced-motion` from the desktop the application is running on
+ * (probed on WebKitGTK 2.52.5 and GTK 4.20.4 — the query stayed false with
+ * `gtk-enable-animations` off), so the application has to say it.
+ *
+ * Screen only, again like `high-contrast.css`: a print job is paginated from the page
+ * on screen with this stylesheet still installed, and paper does not move.
+ */
+
+@media screen {
+  .markdown {
+    animation: none !important;
+  }
+}

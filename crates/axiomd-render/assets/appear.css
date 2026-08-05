@@ -1,0 +1,37 @@
+/*
+ * The one moment a document is allowed to move: its first appearance in a window.
+ *
+ * A page load is the only thing that starts this, and a page is loaded once per
+ * document (`view.rs`). Every later render is patched into the article that is
+ * already on screen, so the blocks change under an element whose animation ran long
+ * ago and cannot run again — a live reload, a re-render, a mode switch and an engine
+ * switch are effect-free for the same structural reason they are flash-free. Nothing
+ * here is a class the application adds or takes away, so there is nothing to get
+ * wrong on the second render.
+ *
+ * The colour it fades up from is the page's own: the view is painted
+ * `--axiomd-bg` before the first byte of the document arrives (`Reading::background`),
+ * so this is the document appearing on the page rather than the page appearing at all.
+ *
+ * Screen only, like the dark palette and for the same reason: paper and an exported
+ * file are not places a transition means anything, and a print job is paginated from
+ * the very page on screen. A desktop asking for reduced motion switches it off
+ * through the reader stylesheet (`still.css`), because WebKitGTK does not answer
+ * `prefers-reduced-motion` from the desktop the application is running on.
+ */
+
+@media screen {
+  @keyframes axiomd-appear {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  .markdown {
+    animation: axiomd-appear 180ms ease-out both;
+  }
+}

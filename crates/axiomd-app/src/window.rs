@@ -482,15 +482,17 @@ impl DocumentWindow {
             parser: OnceCell::new(),
         });
 
-        // From here on this window lays its documents out the reader's way — the one
-        // on screen and every one after it. It starts at once, so a reader whose
-        // measure is not the default never sees the default one first.
+        // From here on this window shows its documents the reader's way — the one on
+        // screen and every one after it. It starts at once, before this window has been
+        // given a document at all, so a reader whose measure is not the default never
+        // sees the default one first and the pane is already the page's colour when the
+        // first document is loaded into it (issue #40).
         let relaying_out = Rc::downgrade(&document_window);
         let _ = document_window
             .layout
-            .set(settings.follow_reading_style(move |stylesheet| {
+            .set(settings.follow_reading_style(move |reading| {
                 if let Some(window) = relaying_out.upgrade() {
-                    window.view.restyle(stylesheet);
+                    window.view.show_the_way_they_read(reading);
                 }
             }));
 
