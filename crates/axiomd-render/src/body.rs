@@ -137,9 +137,13 @@ fn load_all_banner(images: usize) -> String {
 
 /// One open block container, carrying whatever its children need to know about it.
 enum Frame {
-    /// A paragraph that a tight list item left unwrapped emits no closing tag.
     Paragraph {
-        wrapped: bool,
+        /// Where its `<p>` begins in the markup, so that tag can become a `<figure>`
+        /// when the paragraph turns out to be one. `None` for the paragraph a tight
+        /// list item leaves unwrapped, which has no tag to open, close or change.
+        open: Option<usize>,
+        /// What it has held so far, which is what says whether it stays a paragraph.
+        held: Held,
     },
     List {
         tight: bool,
@@ -175,11 +179,42 @@ enum Frame {
     Other,
 }
 
+/// What an open paragraph holds so far, which is what decides whether it is a
+/// paragraph at all.
+///
+/// A paragraph whose whole content is one picture is a block image — the shape the
+/// documents this application is read on are written in, where the picture stands
+/// alone and the sentence about it is in the alt text — and it is written as a
+/// `<figure>` with that sentence under it (issue #39). Anything beside the picture,
+/// down to a single word, makes it an inline picture again.
+enum Held {
+    /// Nothing yet.
+    Nothing,
+    /// One picture and nothing else, with what the author called it.
+    OnePicture(String),
+    /// Words, markup, a second picture — anything that is not a picture alone.
+    Prose,
+}
+
 /// An image whose label is still being collected.
 struct Image {
     url: String,
     title: String,
     alt: String,
+}
+
+/// What the author called a picture: the title when they wrote one, and the alt text
+/// otherwise — so `![alt](src "title")` captions with the title and the Medium-style
+/// `![the caption](src)` captions with the alt text.
+///
+/// Empty when they wrote neither, which is a picture with no caption rather than an
+/// empty line of one. The alt text is only *also* the caption here; it stays on the
+/// `<img>` in every case, because a caption is not what a screen reader reads.
+fn caption_of(image: &Image) -> &str {
+    match image.title.trim().is_empty() {
+        false => image.title.trim(),
+        true => image.alt.trim(),
+    }
 }
 
 /// The code block being written, once its info string has been read.
@@ -279,11 +314,7 @@ impl Writer {
                 }
                 self.out.push_str(html);
             }
-            Event::InlineHtml(html) => {
-                if self.alt.is_empty() {
-                    self.out.push_str(html);
-                }
-            }
+            Event::InlineHtml(html) => self.inline(html),
             // What the reader sees is a number in the order the document refers to
             // its footnotes, not the label the author filed it under — and every
             // reference is named so that the definition can send them back to the one
@@ -332,20 +363,31 @@ impl Writer {
         }
         match tag {
             Tag::Paragraph => {
-                let wrapped = !matches!(self.stack.last(), Some(Frame::Item { tight: true, .. }));
-                if wrapped {
-                    let anchor = self.anchor(span);
-                    self.block(&format!("<p{anchor}>"));
+                let mut open = None;
+                if !matches!(self.stack.last(), Some(Frame::Item { tight: true, .. })) {
+                    let tag = format!("<p{}>", self.anchor(span));
+                    self.block(&tag);
+                    open = Some(self.out.len() - tag.len());
                 }
                 // Inside the paragraph, which is what puts a task item's box on the same
                 // line as the first line of its own text — the shape GitHub and Obsidian
                 // draw. Written before the block-level `<p>`, the box of a loose item
                 // would stand above its own words (issue #37); a tight item writes no
                 // `<p>` at all, so for it this is the same place it has always been.
-                if let Some(checkbox) = self.waiting_checkbox() {
-                    self.out.push_str(&checkbox);
+                let checkbox = self.waiting_checkbox();
+                if let Some(checkbox) = &checkbox {
+                    self.out.push_str(checkbox);
                 }
-                self.stack.push(Frame::Paragraph { wrapped });
+                self.stack.push(Frame::Paragraph {
+                    open,
+                    // A box is part of what the paragraph holds: an item that says
+                    // nothing but a picture is still a box and a picture, and a figure
+                    // there would swallow the box.
+                    held: match checkbox {
+                        Some(_) => Held::Prose,
+                        None => Held::Nothing,
+                    },
+                });
             }
             Tag::Heading { level } => {
                 let anchor = self.anchor(span);
@@ -533,11 +575,14 @@ impl Writer {
 
     fn end(&mut self, end: &TagEnd, into: &Page<'_>) {
         match end {
-            TagEnd::Paragraph => {
-                if matches!(self.stack.pop(), Some(Frame::Paragraph { wrapped: true })) {
-                    self.close("</p>");
-                }
-            }
+            TagEnd::Paragraph => match self.stack.pop() {
+                Some(Frame::Paragraph {
+                    open: Some(at),
+                    held: Held::OnePicture(caption),
+                }) => self.figure(at, &caption),
+                Some(Frame::Paragraph { open: Some(_), .. }) => self.close("</p>"),
+                _ => {}
+            },
             TagEnd::Heading(level) => {
                 if let Some(mut heading) = self.heading.take() {
                     heading.text = one_line(&heading.text);
@@ -639,9 +684,11 @@ impl Writer {
             outer.alt.push_str(&image.alt);
             return;
         }
+        let caption = caption_of(&image).to_owned();
         if is_remote(&image.url) {
             self.remote_images.push(image.url.clone());
             self.out.push_str(&remote_placeholder(&image, to));
+            self.pictured(caption);
             return;
         }
         let source = match to {
@@ -656,6 +703,46 @@ impl Writer {
                 title_attribute(&image.title)
             )),
             None => self.out.push_str(&missing_picture(&image)),
+        }
+        self.pictured(caption);
+    }
+
+    /// Turns the paragraph that opened at `at` into the figure it turned out to be.
+    ///
+    /// The tag it opened with is *changed* rather than replaced: its `data-line` is
+    /// already written into it, so the block keeps the source position it was given and
+    /// nothing that navigates the document moves (invariant 3). Whatever the picture
+    /// rendered as — the picture itself, the card standing in for one the reader has
+    /// not asked for, the card standing in for one a file could not carry — is already
+    /// inside, and the caption goes under it.
+    fn figure(&mut self, at: usize, caption: &str) {
+        self.out.replace_range(at..at + "<p".len(), "<figure");
+        if !caption.is_empty() {
+            self.out.push_str(&format!(
+                "<figcaption>{}</figcaption>",
+                escape_text(caption)
+            ));
+        }
+        self.close("</figure>");
+    }
+
+    /// Records that the open paragraph holds a picture — and, when it already held
+    /// something, that it holds more than one thing and is therefore prose.
+    fn pictured(&mut self, caption: String) {
+        let Some(Frame::Paragraph { held, .. }) = self.stack.last_mut() else {
+            return;
+        };
+        *held = match held {
+            Held::Nothing => Held::OnePicture(caption),
+            _ => Held::Prose,
+        };
+    }
+
+    /// Records that the open paragraph holds something that is not a picture, which is
+    /// the whole of what makes an image inline rather than a block image.
+    fn prose(&mut self) {
+        if let Some(Frame::Paragraph { held, .. }) = self.stack.last_mut() {
+            *held = Held::Prose;
         }
     }
 
@@ -746,10 +833,18 @@ impl Writer {
     /// Writes text, or collects it when an image label is open.
     fn text(&mut self, text: &str) {
         self.spoken(text);
-        match self.alt.last_mut() {
-            Some(image) => image.alt.push_str(text),
-            None => escape_into(&mut self.out, text),
+        if let Some(image) = self.alt.last_mut() {
+            image.alt.push_str(text);
+            return;
         }
+        // Whitespace is not words. The line a soft break stands for is, which is why
+        // the text either side of one is what decides: a picture and a sentence on the
+        // next line are a paragraph, and a picture with nothing but layout around it is
+        // still a picture alone.
+        if !text.trim().is_empty() {
+            self.prose();
+        }
+        escape_into(&mut self.out, text);
     }
 
     /// Adds `text` to the heading being written, if one is.
@@ -777,9 +872,11 @@ impl Writer {
 
     /// Writes inline markup, unless an image label is open — alt text is plain.
     fn inline(&mut self, markup: &str) {
-        if self.alt.is_empty() {
-            self.out.push_str(markup);
+        if !self.alt.is_empty() {
+            return;
         }
+        self.prose();
+        self.out.push_str(markup);
     }
 
     /// Opens a block-level element on a line of its own.

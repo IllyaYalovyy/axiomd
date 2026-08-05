@@ -153,6 +153,28 @@ body {
   height: auto;
 }
 
+/* A picture alone in its paragraph is a block image, and what the author called it —
+   the title when they wrote one, the alt text otherwise — stands under it. The
+   caption is an aside about the picture rather than a line of the document, so it is
+   smaller, dimmer and centred under what it names. Its colours are the palette's, so
+   the dark reading and the high-contrast one follow without a rule of their own. */
+.markdown figure {
+  margin: 0 0 1.5rem;
+}
+
+.markdown figure > img {
+  display: block;
+  margin-inline: auto;
+}
+
+.markdown figcaption {
+  margin-top: 0.5rem;
+  color: var(--axiomd-fg-dim);
+  font-size: 0.875em;
+  line-height: 1.5;
+  text-align: center;
+}
+
 /* A remote image is never loaded until the reader asks for it. Until then the card
    below stands in its place, and the card IS the button: the whole of it is the
    link that loads this one image, so there is nothing to hunt for and nothing to
@@ -692,6 +714,7 @@ body {
   .markdown blockquote,
   .markdown table,
   .markdown img,
+  .markdown figure,
   .markdown .footnote-definition,
   .markdown .math-display {
     break-inside: avoid;

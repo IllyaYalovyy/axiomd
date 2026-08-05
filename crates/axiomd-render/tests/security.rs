@@ -171,6 +171,46 @@ fn a_details_element_keeps_only_what_folding_needs() {
     }
 }
 
+/// A block image is a `<figure>` with a `<figcaption>` (issue #39), so both have to
+/// survive this gate — with the `data-line` the source map rides on, and with nothing
+/// a document could hang on them.
+#[test]
+fn a_figure_survives_with_its_caption_and_nothing_a_document_hung_on_it() {
+    let pipeline = render("![A diagram](d.png)\n").html().to_string();
+    let body = body_of(&pipeline);
+    assert!(
+        body.contains("<figure data-line=\"1\">"),
+        "the pipeline's own figure did not survive sanitising:\n{body}",
+    );
+    assert!(
+        body.contains("<figcaption>A diagram</figcaption>"),
+        "the caption did not survive sanitising:\n{body}",
+    );
+
+    let written = render(
+        "<figure onclick=\"steal()\" style=\"position:fixed\" data-x=\"y\" class=\"kept\">\n\n\
+         <figcaption onmouseover=\"steal()\" srcset=\"https://evil.example/x\">Caption\
+         </figcaption>\n\n</figure>\n",
+    )
+    .html()
+    .to_string();
+    let body = body_of(&written);
+
+    assert!(body.contains("<figure class=\"kept\">"), "{body}");
+    assert!(body.contains("<figcaption>Caption</figcaption>"), "{body}");
+    for forbidden in [
+        "onclick",
+        "onmouseover",
+        "steal",
+        "position:fixed",
+        "data-x",
+        "srcset",
+        "evil.example",
+    ] {
+        assert!(!body.contains(forbidden), "{forbidden} survived:\n{body}");
+    }
+}
+
 /// The bundled stylesheet is bundled: rendering a document must not pull a font, an
 /// image or another sheet off the network.
 ///
