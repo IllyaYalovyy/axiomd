@@ -64,16 +64,16 @@ fn long_document(inserted: usize) -> String {
     source
 }
 
-/// Where the paragraph reading `text` sits on screen, rounded to whole pixels.
-fn screen_position_of(app: &App, text: &str) -> i32 {
+/// Where the `selector` element reading `text` sits on screen, rounded to whole pixels.
+fn screen_position_of(app: &App, selector: &str, text: &str) -> i32 {
     let script = format!(
-        "Math.round(Array.from(document.querySelectorAll('p')) \
+        "Math.round(Array.from(document.querySelectorAll({selector:?})) \
          .find(block => block.textContent === {text:?}) \
          .getBoundingClientRect().top)"
     );
     app.dom(&script)
         .parse()
-        .unwrap_or_else(|_| panic!("{text:?} is not a paragraph of the document on screen"))
+        .unwrap_or_else(|_| panic!("{text:?} is not a {selector} of the document on screen"))
 }
 
 fn scroll_offset(app: &App) -> i32 {
@@ -146,7 +146,7 @@ fn an_edit_above_the_reader_leaves_them_looking_at_the_same_paragraph() {
 
     // Paragraph 40 is on source line 81, and the reader is looking at it.
     app.dom("document.querySelector('[data-line=\"81\"]').scrollIntoView(true)");
-    let before = screen_position_of(&app, "Paragraph 40.");
+    let before = screen_position_of(&app, "p", "Paragraph 40.");
     let scrolled = scroll_offset(&app);
     assert!(
         scrolled > 0,
@@ -156,7 +156,7 @@ fn an_edit_above_the_reader_leaves_them_looking_at_the_same_paragraph() {
     save(&document, &long_document(5));
     app.wait_until("document.querySelectorAll('p').length === 125");
 
-    let after = screen_position_of(&app, "Paragraph 40.");
+    let after = screen_position_of(&app, "p", "Paragraph 40.");
     assert!(
         (after - before).abs() <= 2,
         "the reader's paragraph moved from {before}px to {after}px on screen",
@@ -187,7 +187,7 @@ fn an_edit_that_deletes_the_readers_block_falls_back_to_the_one_before_it() {
     let app = axiomd_e2e::launch(&document);
 
     app.dom("document.querySelector('[data-line=\"81\"]').scrollIntoView(true)");
-    let before = screen_position_of(&app, "Paragraph 40.");
+    let before = screen_position_of(&app, "p", "Paragraph 40.");
 
     // Paragraph 40 is deleted; everything above it is untouched, so paragraph 39 is
     // the nearest surviving predecessor of the block the reader was looking at.
@@ -195,7 +195,7 @@ fn an_edit_that_deletes_the_readers_block_falls_back_to_the_one_before_it() {
     save(&document, &without_40);
     app.wait_until("document.querySelectorAll('p').length === 119");
 
-    let after = screen_position_of(&app, "Paragraph 39.");
+    let after = screen_position_of(&app, "p", "Paragraph 39.");
     assert!(
         (after - before).abs() <= 2,
         "the paragraph before the deleted one landed at {after}px, not at {before}px",
@@ -203,6 +203,77 @@ fn an_edit_that_deletes_the_readers_block_falls_back_to_the_one_before_it() {
     assert_eq!(app.navigation_count(), 1);
 
     assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// A long list is one block, and one item of it changing must not cost the reader the
+/// rest of it: the shape issue #38 is about, arriving from the file rather than from a
+/// press on a checkbox. Matching blocks by their content alone would find nothing to
+/// keep here — the one `<ul>` the whole list is changed — and would rebuild every item
+/// in it, moving the reader and taking whatever they had selected with it.
+#[test]
+fn an_edit_inside_a_long_list_keeps_the_rest_of_the_list() {
+    let fixture = Fixture::new("reload-inside-a-list");
+    let document = fixture.write("notes.md", &long_list("Item 3."));
+    let app = axiomd_e2e::launch(&document);
+    app.wait_until("document.querySelectorAll('li').length === 100");
+
+    // The reader is deep in the list, with one of its items selected — something they
+    // can only still have afterwards if the element carrying it is the same one.
+    app.dom("document.querySelectorAll('li')[59].scrollIntoView(true)");
+    let before = screen_position_of(&app, "li", "Item 60.");
+    let scrolled = scroll_offset(&app);
+    assert!(
+        scrolled > 0,
+        "the list did not scroll, so there is nothing to preserve"
+    );
+    app.dom(
+        "(() => { const range = document.createRange(); \
+         range.selectNodeContents(document.querySelectorAll('li')[59]); \
+         const selected = window.getSelection(); \
+         selected.removeAllRanges(); selected.addRange(range); \
+         return selected.toString(); })()",
+    );
+    assert_eq!(
+        app.dom("window.getSelection().toString()"),
+        "Item 60.",
+        "the test could not select an item to begin with",
+    );
+
+    // One item near the top of the same list is rewritten, on one line as before.
+    save(&document, &long_list("Item 3, revised."));
+    app.wait_until("document.querySelectorAll('li')[2].textContent === 'Item 3, revised.'");
+
+    assert_eq!(
+        scroll_offset(&app),
+        scrolled,
+        "an edit inside the list moved the reader, who is not reading that part of it",
+    );
+    assert_eq!(
+        screen_position_of(&app, "li", "Item 60."),
+        before,
+        "the item the reader was on did not stay where it was on screen",
+    );
+    assert_eq!(
+        app.dom("window.getSelection().toString()"),
+        "Item 60.",
+        "the reader's item was rebuilt although the edit did not touch it, \
+         taking their selection with it",
+    );
+    assert_eq!(app.navigation_count(), 1);
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// A hundred items in one list, with the third of them written by the caller.
+fn long_list(third: &str) -> String {
+    let mut source = String::from("# Notes\n\n");
+    for item in 1..=100 {
+        match item {
+            3 => source.push_str(&format!("- {third}\n")),
+            _ => source.push_str(&format!("- Item {item}.\n")),
+        }
+    }
+    source
 }
 
 /// A save is not one write: an editor, a formatter and a linter can each touch the

@@ -253,6 +253,63 @@ fn a_changed_typical_file_reaches_the_reader_within_the_reload_budget() {
     );
 }
 
+/// A reader ticking an item off a long tracker, from the press to the box showing it
+/// (issue #38).
+///
+/// Held to the reload budget beside it, because it is the same work — a document
+/// re-rendered and patched into the page the reader is already on — and that budget is
+/// the ceiling the project already keeps it under. It has room to spare in it: a
+/// reload includes the 150 ms quiet period a burst of saves is coalesced over, and a
+/// press has no such period to wait out.
+///
+/// What it guards is the patch. A tracker's whole list is one block, so a press is the
+/// case where the patch walks *into* a block instead of replacing it, item by item,
+/// which is how the reader is left where they were pressing. That walk is work the
+/// replacement never did, and this is where it would show.
+#[test]
+#[ignore = "a perf budget; run ./scripts/quality.d/20-perf.sh, which builds release"]
+fn pressing_a_task_box_settles_within_the_re_render_budget() {
+    let fixture = Fixture::new("perf-task-toggle");
+    let path = fixture.write("tracker.md", &long_tracker());
+    let app = launch(&path);
+    let loads = app.navigation_count();
+
+    let mut item = 0;
+    budget::time("a pressed task box on screen", budgets::RELOAD, || {
+        item += 1;
+        let began = Instant::now();
+        app.click(&format!(
+            "li.task-list-item:nth-of-type({item}) a.task-toggle"
+        ));
+        app.wait_until(&format!(
+            "document.querySelectorAll('li.task-list-item input')[{}].checked",
+            item - 1
+        ));
+        began.elapsed()
+    });
+
+    assert_eq!(
+        app.navigation_count(),
+        loads,
+        "pressing a box reloaded the page instead of patching it",
+    );
+}
+
+/// The tracker the toggle budget is measured on: one list, long enough that replacing
+/// it wholesale would be the expensive thing the patch must not do.
+fn long_tracker() -> String {
+    let mut source = String::from("# Tracker\n\n");
+    for item in 1..=TRACKED {
+        source.push_str(&format!(
+            "- [ ] item {item}, and what is left to do about it\n\n"
+        ));
+    }
+    source
+}
+
+/// How many items that tracker has. Far past a person's list, which is the point.
+const TRACKED: usize = 500;
+
 /// The pathological case: block structure nested far past anything a person writes.
 ///
 /// The budget is small on purpose. It is not about the 200 lines of input — it is
