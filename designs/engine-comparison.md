@@ -65,7 +65,7 @@ specification prints.
 | CommonMark 0.31.2 (652 examples) | 652/652 (100.0%) | 652/652 (100.0%) |
 | GFM extensions (24 examples) | 24/24 (100.0%) | 13/24 (54.2%) |
 
-### Golden corpus (11 fixtures)
+### Golden corpus (12 fixtures)
 
 Every document the render pipeline is pinned against, parsed by each
 engine and serialised the same way. `comrak` is the shipping default, so what
@@ -73,8 +73,8 @@ the others are compared against is its parse.
 
 | Engine | agrees with the default | differs on |
 | --- | --- | --- |
-| comrak | 11/11 | — |
-| pulldown-cmark | 8/11 | footnotes.md, inline.md, math.md |
+| comrak | 12/12 | — |
+| pulldown-cmark | 9/12 | footnotes.md, inline.md, math.md |
 
 ### Span quality (1324 spec documents)
 

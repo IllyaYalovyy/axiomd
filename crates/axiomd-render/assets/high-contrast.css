@@ -97,7 +97,7 @@
      underlining them would read as a typo in the sentence they sit in. */
   .markdown .footnote-ref a,
   .markdown .footnote-backref,
-  .markdown li.task-list-item > a.task-toggle,
+  .markdown li.task-list-item a.task-toggle,
   .markdown a.remote-image {
     text-decoration: none !important;
   }
