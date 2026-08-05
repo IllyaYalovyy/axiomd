@@ -110,6 +110,24 @@ pub(crate) struct Scheme {
 struct Origin {
     documents: Rc<RefCell<HashMap<u64, Document>>>,
     startup: Rc<Startup>,
+    held: Rc<Held>,
+}
+
+/// Document pages this origin has been asked for and has not answered yet.
+///
+/// An instrument, like [`Startup`] above it and the view's navigation count, and the
+/// only thing in this module that is not the reader's: it lets a test stand still
+/// inside the one moment that is otherwise a race — the window showing its document
+/// surface with not one pixel of a document in it, which is where a black frame was
+/// visible (issue #40). Nothing in the application turns it on and no reader can
+/// reach it; the test-control channel does, and only while a test is driving.
+#[derive(Default)]
+struct Held {
+    holding: Cell<bool>,
+    /// The requests taken and not answered. They are GObject references rather than
+    /// URIs: finishing one later is the asynchronous half of the scheme handler's own
+    /// contract, and the request is what carries the answer back.
+    waiting: RefCell<Vec<webkit6::URISchemeRequest>>,
 }
 
 /// How long this process took to have a document for the reader.
@@ -183,6 +201,7 @@ impl Scheme {
             origin: Origin {
                 documents: Rc::new(RefCell::new(HashMap::new())),
                 startup: Rc::new(Startup::new()),
+                held: Rc::new(Held::default()),
             },
             next: Cell::new(0),
         }
@@ -207,18 +226,29 @@ impl Scheme {
         let origin = self.origin.clone();
         context.register_uri_scheme(SCHEME, move |request| {
             let uri = request.uri().unwrap_or_default();
-            let (status, body, content_type) = match origin.serve(&uri) {
-                Served::Bytes { body, content_type } => (200, body, content_type),
-                Served::Missing => (404, Vec::new(), "text/plain".to_owned()),
-                Served::Refused => (403, Vec::new(), "text/plain".to_owned()),
-            };
-            let length = body.len() as i64;
-            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(body));
-            let response = webkit6::URISchemeResponse::new(&stream, length);
-            response.set_content_type(&content_type);
-            response.set_status(status, None);
-            request.finish_with_response(&response);
+            if origin.held.holding.get() && is_a_document_page(&uri) {
+                origin.held.waiting.borrow_mut().push(request.clone());
+                return;
+            }
+            origin.answer(request, &uri);
         });
+    }
+
+    /// Stops answering for the pages of documents published here, or starts again and
+    /// answers everything that was asked for in between.
+    ///
+    /// See [`Held`]: this is the e2e suite's stopped clock and nothing a reader can
+    /// reach.
+    pub(crate) fn hold_pages(&self, holding: bool) {
+        self.origin.held.holding.set(holding);
+        if holding {
+            return;
+        }
+        let waiting = std::mem::take(&mut *self.origin.held.waiting.borrow_mut());
+        for request in waiting {
+            let uri = request.uri().unwrap_or_default();
+            self.origin.answer(&request, &uri);
+        }
     }
 
     /// Publishes a document kept in `folder`, giving its window a URI to load.
@@ -311,6 +341,21 @@ impl Drop for Publication {
 }
 
 impl Origin {
+    /// Puts the answer to `uri` back down `request`.
+    fn answer(&self, request: &webkit6::URISchemeRequest, uri: &str) {
+        let (status, body, content_type) = match self.serve(uri) {
+            Served::Bytes { body, content_type } => (200, body, content_type),
+            Served::Missing => (404, Vec::new(), "text/plain".to_owned()),
+            Served::Refused => (403, Vec::new(), "text/plain".to_owned()),
+        };
+        let length = body.len() as i64;
+        let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_owned(body));
+        let response = webkit6::URISchemeResponse::new(&stream, length);
+        response.set_content_type(&content_type);
+        response.set_status(status, None);
+        request.finish_with_response(&response);
+    }
+
     /// Answers one request URI. The whole policy of the scheme lives here.
     fn serve(&self, uri: &str) -> Served {
         let Ok(parsed) = glib::Uri::parse(uri, glib::UriFlags::NONE) else {
@@ -375,6 +420,17 @@ impl Origin {
             None => Served::Refused,
         }
     }
+}
+
+/// Whether `uri` asks for a published document's own page, rather than for a bundled
+/// asset or for a file beside the document.
+fn is_a_document_page(uri: &str) -> bool {
+    let Ok(parsed) = glib::Uri::parse(uri, glib::UriFlags::NONE) else {
+        return false;
+    };
+    parsed.scheme() == SCHEME
+        && number_after(&parsed.host().unwrap_or_default(), DOCUMENT_HOST_PREFIX).is_some()
+        && matches!(parsed.path().as_str(), "" | "/")
 }
 
 /// The number a host carries after `prefix`, when it is that kind of host at all.

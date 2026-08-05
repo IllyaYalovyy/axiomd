@@ -5,7 +5,16 @@
 //! travels as CSS and nothing else. These tests hold the two halves of that together:
 //! what the default stylesheet reads the measure from, and what the override writes.
 
-use axiomd_render::Contrast;
+use axiomd_render::{Contrast, Motion, Palette};
+
+/// The reader's own stylesheet, which is the half of a [`axiomd_render::Reading`]
+/// these tests are about. The other half — the colour the pane is painted before the
+/// document arrives — is asserted in `arrival.rs`.
+fn reader_stylesheet(reading_width: Option<u32>, contrast: Contrast) -> String {
+    axiomd_render::reading(reading_width, Palette::Light, contrast, Motion::Full)
+        .stylesheet()
+        .to_owned()
+}
 
 /// The contract between the two stylesheets, spelled out in both directions. Rename
 /// the property in one of them and this fails rather than the reading width quietly
@@ -20,8 +29,7 @@ fn the_measure_of_a_document_is_the_property_the_reader_stylesheet_sets() {
          reader's own stylesheet sets",
     );
     assert!(
-        axiomd_render::reader_stylesheet(Some(80), Contrast::Normal)
-            .contains("--axiomd-reading-width"),
+        reader_stylesheet(Some(80), Contrast::Normal).contains("--axiomd-reading-width"),
         "the reader's stylesheet sets some other property than the one the document \
          reads its measure from",
     );
@@ -30,15 +38,15 @@ fn the_measure_of_a_document_is_the_property_the_reader_stylesheet_sets() {
 /// What the reader gets for each of the two states of the preference.
 #[test]
 fn the_reader_stylesheet_carries_the_measure_they_chose_or_removes_it() {
-    let narrow = axiomd_render::reader_stylesheet(Some(30), Contrast::Normal);
+    let narrow = reader_stylesheet(Some(30), Contrast::Normal);
     assert!(narrow.contains("--axiomd-reading-width: 30rem"), "{narrow}");
 
-    let wide = axiomd_render::reader_stylesheet(Some(120), Contrast::Normal);
+    let wide = reader_stylesheet(Some(120), Contrast::Normal);
     assert!(wide.contains("--axiomd-reading-width: 120rem"), "{wide}");
 
     // "No limit" is a value like any other: `max-width: none` is what a document
     // filling the window is.
-    let unlimited = axiomd_render::reader_stylesheet(None, Contrast::Normal);
+    let unlimited = reader_stylesheet(None, Contrast::Normal);
     assert!(
         unlimited.contains("--axiomd-reading-width: none"),
         "{unlimited}",
@@ -57,7 +65,7 @@ fn the_reader_stylesheet_carries_the_measure_they_chose_or_removes_it() {
 #[test]
 fn the_reader_stylesheet_outranks_the_documents_own() {
     for width in [Some(46), None] {
-        let sheet = axiomd_render::reader_stylesheet(width, Contrast::Normal);
+        let sheet = reader_stylesheet(width, Contrast::Normal);
         assert!(
             sheet.contains("!important"),
             "a user stylesheet without !important cannot override the document's own: \
@@ -70,7 +78,7 @@ fn the_reader_stylesheet_outranks_the_documents_own() {
 /// application shows, so anything that crept in here would be unremovable styling.
 #[test]
 fn the_reader_stylesheet_says_nothing_the_reader_did_not_ask_for() {
-    let sheet = axiomd_render::reader_stylesheet(Some(46), Contrast::Normal);
+    let sheet = reader_stylesheet(Some(46), Contrast::Normal);
     let declarations = sheet.matches(':').count() - sheet.matches(":root").count();
     assert_eq!(
         declarations, 1,
@@ -82,7 +90,7 @@ fn the_reader_stylesheet_says_nothing_the_reader_did_not_ask_for() {
 /// about contrast at all — the palette the document defines is the one it keeps.
 #[test]
 fn a_normal_desktop_is_never_given_high_contrast_styling() {
-    let sheet = axiomd_render::reader_stylesheet(Some(46), Contrast::Normal);
+    let sheet = reader_stylesheet(Some(46), Contrast::Normal);
     assert!(
         !sheet.contains("--axiomd-fg"),
         "an ordinary desktop had its ink repainted: {sheet}",
@@ -99,7 +107,7 @@ fn a_normal_desktop_is_never_given_high_contrast_styling() {
 #[test]
 fn high_contrast_repaints_properties_the_document_stylesheet_defines() {
     let document = axiomd_render::stylesheet();
-    let sheet = axiomd_render::reader_stylesheet(Some(46), Contrast::High);
+    let sheet = reader_stylesheet(Some(46), Contrast::High);
 
     let repainted: Vec<&str> = sheet
         .match_indices("--axiomd-")
@@ -147,7 +155,7 @@ fn high_contrast_repaints_properties_the_document_stylesheet_defines() {
 /// user stylesheet has to say which because it outranks the document's own dark block.
 #[test]
 fn high_contrast_has_a_light_reading_and_a_dark_one() {
-    let sheet = axiomd_render::reader_stylesheet(Some(46), Contrast::High);
+    let sheet = reader_stylesheet(Some(46), Contrast::High);
     let dark = sheet
         .find("prefers-color-scheme: dark")
         .expect("high contrast says nothing about a dark desktop");
@@ -169,7 +177,7 @@ fn high_contrast_has_a_light_reading_and_a_dark_one() {
 /// exported file would carry them to somebody whose desktop is not.
 #[test]
 fn high_contrast_never_reaches_paper() {
-    let sheet = axiomd_render::reader_stylesheet(Some(46), Contrast::High);
+    let sheet = reader_stylesheet(Some(46), Contrast::High);
     let ink = sheet
         .find("--axiomd-fg")
         .expect("high contrast repaints the ink");

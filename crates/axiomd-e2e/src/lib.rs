@@ -356,20 +356,30 @@ pub struct Layout {
 /// what kind of desktop the application is running on.
 pub struct Preferences {
     scratch: Scratch,
+    /// Whether the desktop this store belongs to animates. Off for every launch here
+    /// unless a test says otherwise ([`Preferences::animating`]).
+    animations: bool,
 }
-
-/// The group GSettings keeps the desktop's accessibility settings under. libadwaita
-/// reads high contrast from here when there is no settings portal to ask, which is
-/// every launch in this harness (probed on libadwaita 1.8.6: the style manager reports
-/// it at startup and reports a change to it while the application is running).
-const A11Y_GROUP: &str = "org/gnome/desktop/a11y/interface";
 
 impl Preferences {
     /// An empty store — every setting at the value a first run gets.
     pub fn new(label: &str) -> Preferences {
         Preferences {
             scratch: Scratch::new(label),
+            animations: false,
         }
+    }
+
+    /// Says this store's desktop animates.
+    ///
+    /// Every launch here runs on a desktop whose `enable-animations` is off, so that a
+    /// screenshot can never catch a widget mid-transition — which makes every one of
+    /// them a desktop asking for reduced motion. A test about the one movement a
+    /// document makes has to say otherwise, and this is how a reader says it: their
+    /// desktop's own animation setting, exactly as on a real one.
+    pub fn animating(mut self) -> Preferences {
+        self.animations = true;
+        self
     }
 
     /// A store the reader has already been in: `key` is set to `value` before the
@@ -397,28 +407,11 @@ impl Preferences {
     /// Everything already in the store is kept, so a launch that has written its own
     /// preferences does not lose them to this.
     pub fn set_high_contrast(&self, high_contrast: bool) {
-        let keyfile = self.keyfile();
-        if let Some(parent) = keyfile.parent() {
-            std::fs::create_dir_all(parent)
-                .unwrap_or_else(|error| panic!("create {parent:?}: {error}"));
-        }
-        let existing = std::fs::read_to_string(&keyfile).unwrap_or_default();
-        let mut kept = String::new();
-        let mut inside = false;
-        for line in existing.lines() {
-            if line.starts_with('[') {
-                inside = line.trim() == format!("[{A11Y_GROUP}]");
-            }
-            if !inside {
-                kept.push_str(line);
-                kept.push('\n');
-            }
-        }
-        std::fs::write(
-            &keyfile,
-            format!("{kept}[{A11Y_GROUP}]\nhigh-contrast={high_contrast}\n"),
-        )
-        .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
+        display::pin_setting(
+            self.scratch.path(),
+            display::A11Y_GROUP,
+            &format!("high-contrast={high_contrast}"),
+        );
     }
 
     /// What the store holds for `key` now, as it is written down, or `None` while the
@@ -613,6 +606,7 @@ impl App {
         let environment = Environment::pin(
             scratch.path(),
             preferences.map(|preferences| preferences.scratch.path()),
+            preferences.is_some_and(|preferences| preferences.animations),
         );
         let mut control = Control::listen(scratch.path());
         let socket = control.socket().to_path_buf();
@@ -722,6 +716,29 @@ impl App {
     pub fn open(&self, document: &Path) {
         self.command("open", &document.display().to_string());
         self.wait_for_a_finished_page();
+    }
+
+    /// Opens `document` in a window of its own and stops the moment the reader is
+    /// looking at the pane it will appear in, with not one pixel of it drawn.
+    ///
+    /// A stopped clock rather than a race: the document's own bytes are held at the
+    /// origin that serves them, so the window really has switched to its document
+    /// surface and WebKit really has been sent to the document's URI — and nothing has
+    /// answered. This is the moment a black frame was visible in (issue #40), and the
+    /// only way to photograph it. [`App::let_the_document_arrive`] starts the clock.
+    pub fn open_to_the_empty_pane(&self, document: &Path) {
+        self.command("hold-pages", "on");
+        self.command("open", &document.display().to_string());
+        self.settle("the window to show its document surface", || {
+            Ok(self.try_command("window", "showing")? == "document")
+        });
+    }
+
+    /// Answers every page held back by [`App::open_to_the_empty_pane`], and returns
+    /// once the document the reader was waiting for is on screen.
+    pub fn let_the_document_arrive(&self) {
+        self.command("hold-pages", "off");
+        self.wait_until("document.querySelector('.markdown') !== null");
     }
 
     /// Shows `document` in the addressed window, as choosing it in the file chooser
@@ -1483,6 +1500,16 @@ impl App {
     /// Captures the addressed window's rendered document as pixels.
     pub fn screenshot(&self) -> Screenshot {
         self.wait_until_the_page_has_drawn_again();
+        self.capture("document")
+    }
+
+    /// Captures the pane a document is shown in as it is right now, whether or not
+    /// there is a document in it.
+    ///
+    /// No wait for a frame, unlike [`App::screenshot`], because the wait is a question
+    /// asked of the page — and the pane this exists to photograph is one that has no
+    /// page in it to ask (see [`App::open_to_the_empty_pane`]).
+    pub fn pane_screenshot(&self) -> Screenshot {
         self.capture("document")
     }
 

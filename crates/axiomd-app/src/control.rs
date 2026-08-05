@@ -176,6 +176,18 @@ impl Session {
                 self.selected.set(None);
                 Ok(String::new())
             }
+            // Stops the pages of documents from being answered for, so that a test can
+            // stand in the moment between a window showing its document surface and the
+            // first pixel of a document arriving in it (issue #40). Off again, every
+            // page asked for in between is answered at once.
+            "hold-pages" => {
+                shell.hold_pages(match payload {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("not a hold: {other:?}")),
+                });
+                Ok(String::new())
+            }
             // The other half of opening: the document takes over the window the user
             // is in, which is where `Ctrl+O` and the file chooser end.
             "open-here" => {
