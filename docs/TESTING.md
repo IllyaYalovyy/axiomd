@@ -40,7 +40,11 @@ Use the lowest layer that catches the risk clearly:
   "does it look right" becomes objective "did it change without approval".
   Re-pinning a golden is a human-approved act, recorded in the commit.
 - **Property / fuzz tests** - parser inputs, spans, untrusted documents
-- **Perf budget tests** - stated numbers asserted by the perf harness
+- **Perf budget tests** - stated numbers asserted by the perf harness. The
+  packaged application is held to ceilings of its own beside them: every
+  metric in `crates/axiomd-app/tests/parity.rs` is measured on the native
+  build and the installed flatpak in the same run, with the evidence in
+  `designs/flatpak-parity.md` (issue #36)
 
 ## What is accepted as not fully automatable
 

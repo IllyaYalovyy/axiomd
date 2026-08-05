@@ -39,6 +39,7 @@ mod control;
 pub mod corpus;
 mod display;
 mod golden;
+pub mod parity;
 mod process;
 mod scratch;
 
@@ -580,6 +581,13 @@ pub struct App {
     control: std::cell::RefCell<Control>,
     axiomd: Child,
     socket: PathBuf,
+    /// The moment the process was started — before `execve`, before the loader, and
+    /// for a packaged launch before anything of the sandbox exists. What
+    /// [`App::launched_in`] is measured from.
+    spawned: Instant,
+    /// How long it was from there to this launch's first document on screen, stamped
+    /// the moment that happened rather than read later.
+    served: std::cell::Cell<Option<Duration>>,
     // Ordering matters: the application and the compositor are killed before the
     // directories they were living in are removed.
     _display: Display,
@@ -681,6 +689,7 @@ impl App {
                 command.arg(document);
             }
         }
+        let spawned = Instant::now();
         let mut axiomd = command
             .stdin(Stdio::null())
             .stdout(append_to(&log))
@@ -704,6 +713,8 @@ impl App {
             control: std::cell::RefCell::new(control),
             axiomd,
             socket,
+            spawned,
+            served: std::cell::Cell::new(None),
             _display: display,
             scratch,
         }
@@ -863,6 +874,27 @@ impl App {
             Ok(!self.try_command("window", "startup")?.is_empty())
         });
         Duration::from_micros(self.property("startup").parse().expect("microseconds"))
+    }
+
+    /// How long this launch took as the reader waits through it: from the process
+    /// being started to the document being on screen.
+    ///
+    /// The difference from [`App::startup`] is everything the application's own clock
+    /// cannot see, because it is not running yet — `execve`, the dynamic loader, and,
+    /// for a packaged launch, the whole of building the sandbox around it. For the
+    /// native build that is the small part of a launch axiomd has no say in; for the
+    /// flatpak it is the part the parity table exists to measure (issue #36), so the
+    /// two forms are compared on this number rather than on the one the application
+    /// reports about itself.
+    ///
+    /// Stamped when the document appeared, so it is that moment however long ago it
+    /// was. Panics for a launch that never had a document to show.
+    pub fn launched_in(&self) -> Duration {
+        self.served.get().expect(
+            "this launch has not shown a document, so there is no launch to have timed. \
+             Only the launches that wait for one — launch(), and the packaged launches \
+             beside it — can be asked this.",
+        )
     }
 
     /// What this launch is using now: every process it is made of, and their memory
@@ -1685,6 +1717,13 @@ impl App {
             Ok(self.try_command("window", "showing")? == "document")
         });
         self.wait_until("document.querySelector('article.markdown') !== null");
+        // The whole launch, stamped here rather than read later: this is the moment
+        // the reader has their document (see `App::launched_in`). The first one wins,
+        // so a second document opened into the same application cannot overwrite the
+        // number for the launch that started it.
+        if self.served.get().is_none() {
+            self.served.set(Some(self.spawned.elapsed()));
+        }
     }
 
     fn property(&self, name: &str) -> String {

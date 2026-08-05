@@ -48,7 +48,7 @@ use std::time::Duration;
 
 /// How many times [`time`] measures before believing an answer. Odd, so the middle one
 /// is a reading that really happened rather than an average of two.
-const SAMPLES: usize = 5;
+pub(crate) const SAMPLES: usize = 5;
 
 /// Set to ask for the budgets that take minutes rather than seconds.
 const SOAK: &str = "AXIOMD_PERF_SOAK";
@@ -61,14 +61,14 @@ const SOAK: &str = "AXIOMD_PERF_SOAK";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
     /// The number the gate enforces. Comes down, never up (see the module note).
-    held_to: u64,
+    pub(crate) held_to: u64,
     /// VISION's figure for the same thing — where the ceiling is being walked to.
-    aiming_at: u64,
-    unit: Unit,
+    pub(crate) aiming_at: u64,
+    pub(crate) unit: Unit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Unit {
+pub(crate) enum Unit {
     Time,
     Memory,
 }
@@ -92,7 +92,7 @@ impl Budget {
         }
     }
 
-    fn show(&self, amount: u64) -> String {
+    pub(crate) fn show(&self, amount: u64) -> String {
         match self.unit {
             Unit::Time => format!("{:.1} ms", amount as f64 / 1_000.0),
             Unit::Memory => format!("{:.0} MB", amount as f64 / (1024.0 * 1024.0)),
@@ -176,6 +176,13 @@ fn held_to(what: &str, measured: u64, budget: Budget, note: &str) {
         budget.show(measured),
         budget.show(budget.held_to),
     );
+    enforce(what, measured, budget);
+}
+
+/// The assertion itself, without the line in front of it: a budget that prints
+/// something other than the `perf:` line above — the parity table's, which says two
+/// numbers rather than one — still fails the same way and for the same reason.
+pub(crate) fn enforce(what: &str, measured: u64, budget: Budget) {
     assert!(
         measured <= budget.held_to,
         "\nthe budget for {what} is not met: {} against a ceiling of {}.\n\
@@ -190,7 +197,7 @@ fn held_to(what: &str, measured: u64, budget: Budget, note: &str) {
 }
 
 /// Refuses to report a number from a build nobody ships.
-fn only_in_a_release_build(what: &str) {
+pub(crate) fn only_in_a_release_build(what: &str) {
     if cfg!(debug_assertions) {
         panic!(
             "{what} was measured in a debug build, where the answer means nothing.\n\
