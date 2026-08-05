@@ -1314,6 +1314,33 @@ impl App {
         self.command("toggle-section", section);
     }
 
+    /// Runs the pointer on to the row reading `section` and leaves it there, exactly as
+    /// a reader moving the mouse across the sidebar does.
+    ///
+    /// A headless compositor has no pointer, so the crossing is made of the two things
+    /// a real one produces: the row's prelight state, which is what `:hover` draws
+    /// from, and the `enter` handed to the row's own motion controller, which is what a
+    /// single-click-activate list selects on. Both were probed on GTK 4.20.4 — the
+    /// second is why hovering used to steal the current-chapter pill (issue #42).
+    ///
+    /// A section the sidebar is not showing is a failure rather than a quiet nothing.
+    pub fn hover_over(&self, section: &str) {
+        self.command("browse", &format!("pointer {section}"));
+    }
+
+    /// Takes the pointer off the sidebar entirely, wherever it was.
+    pub fn hover_away(&self) {
+        self.command("browse", "away");
+    }
+
+    /// Walks the keyboard cursor on to the row reading `section`: focus on the row, and
+    /// the list's own selection action — what <kbd>␣</kbd> and the arrow keys reach for
+    /// (GTK 4.20, `GtkListBase`). Browsing, not choosing: [`App::press`] is how a
+    /// section is picked.
+    pub fn key_to_section(&self, section: &str) {
+        self.command("browse", &format!("keyboard {section}"));
+    }
+
     /// Waits until the outline highlights `wanted`, and fails saying what it
     /// highlights instead.
     ///
