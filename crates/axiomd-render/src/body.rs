@@ -146,6 +146,10 @@ enum Frame {
     },
     Item {
         tight: bool,
+        /// The box of a task item that has not been written yet, because the words it
+        /// belongs beside have not been written yet either. `None` once it has been
+        /// written, and for every item that is not a task.
+        checkbox: Option<String>,
     },
     /// A table opens `<tbody>` lazily, on its first body row.
     Table {
@@ -316,12 +320,30 @@ impl Writer {
     }
 
     fn start(&mut self, tag: &Tag<'_>, span: &Span, into: &Page<'_>) {
+        // A task item's box is written by the first block inside it, and a paragraph
+        // takes it *inside* itself — see `Tag::Paragraph` below. Anything else takes it
+        // in front: the GFM spec does not let an author open a task item with a fence
+        // or a quote, but the parser will hand one over, and an item that loses its box
+        // loses what its author said about it.
+        if !matches!(tag, Tag::Paragraph)
+            && let Some(checkbox) = self.waiting_checkbox()
+        {
+            self.out.push_str(&checkbox);
+        }
         match tag {
             Tag::Paragraph => {
-                let wrapped = !matches!(self.stack.last(), Some(Frame::Item { tight: true }));
+                let wrapped = !matches!(self.stack.last(), Some(Frame::Item { tight: true, .. }));
                 if wrapped {
                     let anchor = self.anchor(span);
                     self.block(&format!("<p{anchor}>"));
+                }
+                // Inside the paragraph, which is what puts a task item's box on the same
+                // line as the first line of its own text — the shape GitHub and Obsidian
+                // draw. Written before the block-level `<p>`, the box of a loose item
+                // would stand above its own words (issue #37); a tight item writes no
+                // `<p>` at all, so for it this is the same place it has always been.
+                if let Some(checkbox) = self.waiting_checkbox() {
+                    self.out.push_str(&checkbox);
                 }
                 self.stack.push(Frame::Paragraph { wrapped });
             }
@@ -407,11 +429,17 @@ impl Writer {
             }
             Tag::Item { task } => {
                 let tight = matches!(self.stack.last(), Some(Frame::List { tight: true }));
-                match task {
-                    None => self.block("<li>"),
-                    Some(task) => self.block(&task_checkbox(task, &into.to)),
-                }
-                self.stack.push(Frame::Item { tight });
+                let checkbox = match task {
+                    None => {
+                        self.block("<li>");
+                        None
+                    }
+                    Some(task) => {
+                        self.block("<li class=\"task-list-item\">");
+                        Some(task_checkbox(task, &into.to))
+                    }
+                };
+                self.stack.push(Frame::Item { tight, checkbox });
             }
             Tag::FootnoteDefinition { label } => {
                 let anchor = self.anchor(span);
@@ -542,7 +570,14 @@ impl Writer {
                 self.close(if *ordered { "</ol>" } else { "</ul>" });
             }
             TagEnd::Item => {
-                self.stack.pop();
+                // An item that says nothing opened no block to write its box in.
+                if let Some(Frame::Item {
+                    checkbox: Some(checkbox),
+                    ..
+                }) = self.stack.pop()
+                {
+                    self.out.push_str(&checkbox);
+                }
                 self.close("</li>");
             }
             TagEnd::FootnoteDefinition => {
@@ -730,6 +765,16 @@ impl Writer {
         }
     }
 
+    /// The box the open task item is waiting to have written, if it is waiting and this
+    /// is the first block inside it. Answers once: the second block of an item whose box
+    /// is already on the page gets nothing.
+    fn waiting_checkbox(&mut self) -> Option<String> {
+        match self.stack.last_mut() {
+            Some(Frame::Item { checkbox, .. }) => checkbox.take(),
+            _ => None,
+        }
+    }
+
     /// Writes inline markup, unless an image label is open — alt text is plain.
     fn inline(&mut self, markup: &str) {
         if self.alt.is_empty() {
@@ -891,8 +936,11 @@ fn highlight_or_escape(language: Option<&str>, code: &str) -> String {
     escaped
 }
 
-/// A task list item's opening markup: the box, and — on screen — the click that
-/// toggles it.
+/// A task list item's box, and — on screen — the click that toggles it.
+///
+/// Only the box: where it goes is the caller's, because it goes wherever the item's own
+/// words go, and that is a paragraph away in a loose item and right here in a tight one
+/// (issue #37).
 ///
 /// The box is a link because a rendered document cannot run a script: pressing it is a
 /// navigation, the app's own policy reads it as the one request it is
@@ -906,13 +954,10 @@ fn task_checkbox(task: &Task, to: &Destination<'_>) -> String {
     let checked = if task.checked { " checked" } else { "" };
     match to {
         Destination::Screen => format!(
-            "<li class=\"task-list-item\">\
-             <a class=\"task-toggle\" href=\"{}\"><input type=\"checkbox\"{checked}></a> ",
+            "<a class=\"task-toggle\" href=\"{}\"><input type=\"checkbox\"{checked}></a> ",
             escape_attribute(&Request::ToggleTask(task.marker).uri()),
         ),
-        Destination::File(_) => {
-            format!("<li class=\"task-list-item\"><input type=\"checkbox\" disabled{checked}> ")
-        }
+        Destination::File(_) => format!("<input type=\"checkbox\" disabled{checked}> "),
     }
 }
 

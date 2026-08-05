@@ -266,13 +266,16 @@ body {
   margin-left: -1.4rem;
 }
 
-.markdown li.task-list-item > .task-toggle,
-.markdown li.task-list-item > input[type="checkbox"] {
+/* The box sits wherever the item's own words do: beside the `<li>` in a tight list,
+   and inside the first paragraph in a loose one (issue #37) — so these reach through
+   that paragraph rather than asking for a direct child. */
+.markdown li.task-list-item .task-toggle {
   display: inline-block;
   margin: 0 0.45em 0 0;
 }
 
 .markdown li.task-list-item input[type="checkbox"] {
+  display: inline-block;
   width: 0.95em;
   height: 0.95em;
   margin: 0;
@@ -287,13 +290,13 @@ body {
 
    `cursor: pointer` rather than a link's underline and colour, because this is a
    checkbox and has to keep looking like one. */
-.markdown li.task-list-item > .task-toggle {
+.markdown li.task-list-item .task-toggle {
   cursor: pointer;
   text-decoration: none;
   line-height: 1;
 }
 
-.markdown li.task-list-item > .task-toggle > input[type="checkbox"] {
+.markdown li.task-list-item .task-toggle > input[type="checkbox"] {
   pointer-events: none;
 }
 

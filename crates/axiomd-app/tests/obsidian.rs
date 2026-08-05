@@ -11,6 +11,12 @@ use axiomd_e2e::{App, Fixture};
 /// mapped through the span map rather than found by searching the text.
 const TASKS: &str = "# Tasks\n\n- [ ] same\n- [ ] same\n- [x] done\n";
 
+/// The owner's tracker shape (issue #37): items separated by blank lines, which makes
+/// the list loose and each item's text a paragraph — with a tight list under it, so
+/// that both shapes are read off one page.
+const LOOSE: &str = "# Tracker\n\n- [x] first\n\n- [ ] second\n\n- [ ] third\n\n\
+                     ## Tight\n\n- [ ] tight and not done\n- [x] tight and done\n";
+
 /// What the boxes on screen say, as `"  x "`-style text: one character per box, in
 /// document order.
 fn boxes(app: &App) -> String {
@@ -32,9 +38,12 @@ fn shown(text: &str) -> String {
 }
 
 /// The reader presses the `nth` box, counting from zero.
+///
+/// Not a direct child: a loose item keeps its box inside its first paragraph, and a
+/// press is a press wherever the box is drawn (issue #37).
 fn press(app: &App, nth: usize) {
     app.click(&format!(
-        "li.task-list-item:nth-of-type({}) > a.task-toggle",
+        "li.task-list-item:nth-of-type({}) a.task-toggle",
         nth + 1
     ));
 }
@@ -147,6 +156,135 @@ fn a_ticked_task_is_saved_the_way_every_other_edit_is() {
         std::fs::read_to_string(&file).expect("read the document back"),
         "# Tasks\n\n- [x] same\n- [ ] same\n- [x] done\n",
     );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Where every box in the document is drawn, relative to the first words of its own
+/// item: `shared-before` when the two are on one line with the box in front of the
+/// words, and `stacked-*` when the box is on a line of its own above them — which is
+/// the defect issue #37 is about.
+///
+/// Measured from the page's own layout rather than from the markup: what the reader
+/// complained about is where the box *is*, and only the running browser knows that.
+fn where_boxes_sit(app: &App) -> String {
+    app.dom(
+        "Array.from(document.querySelectorAll('li.task-list-item')).map((item) => { \
+         const box = item.querySelector('input[type=checkbox]').getBoundingClientRect(); \
+         const walk = document.createTreeWalker(item, NodeFilter.SHOW_TEXT); \
+         let node = walk.nextNode(); \
+         while (node !== null && node.textContent.trim() === '') { node = walk.nextNode(); } \
+         const range = document.createRange(); range.selectNodeContents(node); \
+         const words = range.getBoundingClientRect(); \
+         const overlap = Math.min(box.bottom, words.bottom) - Math.max(box.top, words.top); \
+         return (overlap > 0 ? 'shared' : 'stacked') + \
+         (box.right <= words.left + 1 ? '-before' : '-after'); }).join('|')",
+    )
+}
+
+/// A list whose items are separated by blank lines is loose, and its items' text is
+/// wrapped in paragraphs. The box still stands beside the first line of its item, the
+/// way GitHub and Obsidian draw it — and the way the tight list right under it does
+/// (issue #37).
+#[test]
+fn a_loose_task_lists_box_stands_beside_its_words_and_not_above_them() {
+    let fixture = Fixture::new("task-loose");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", LOOSE));
+
+    assert_eq!(
+        boxes(&app),
+        "x   x",
+        "the document did not start as it was written"
+    );
+    assert_eq!(
+        where_boxes_sit(&app),
+        "shared-before|shared-before|shared-before|shared-before|shared-before",
+        "a box is not on the line its own words are on",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The press is the same press wherever the box is drawn: issue #12's contract on
+/// issue #37's shape, in the running app.
+#[test]
+fn pressing_a_loose_task_box_ticks_that_item_off_in_the_source() {
+    let fixture = Fixture::new("task-loose-toggle");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", LOOSE));
+    let loads = app.navigation_count();
+
+    // The reader's finger lands on the link, not on the box inside it — asked of the
+    // page's own hit testing, now that a paragraph stands between the two.
+    assert_eq!(
+        app.dom(
+            "(() => { const box = document.querySelector('li.task-list-item input'); \
+             const at = box.getBoundingClientRect(); \
+             const hit = document.elementFromPoint(at.left + at.width / 2, \
+             at.top + at.height / 2); \
+             return hit === null ? 'nothing' : hit.className; })()"
+        ),
+        "task-toggle",
+        "pressing a loose item's box does not reach the link that tells the app about it",
+    );
+
+    press(&app, 1);
+    app.wait_until_source(
+        "# Tracker\n\n- [x] first\n\n- [x] second\n\n- [ ] third\n\n## Tight\n\n\
+         - [ ] tight and not done\n- [x] tight and done\n",
+    );
+    app.wait_until(
+        "Array.from(document.querySelectorAll('li.task-list-item input')).map((b) => \
+         b.checked ? 'x' : ' ').join('') === 'xx  x'",
+    );
+    // And the box the reader just pressed is still beside its own words, not above
+    // them: the shape survives the re-render the press causes.
+    assert_eq!(
+        where_boxes_sit(&app),
+        "shared-before|shared-before|shared-before|shared-before|shared-before",
+        "a box moved off its line when the document was rendered again",
+    );
+
+    assert_eq!(
+        app.mode(),
+        "read",
+        "pressing a box left the reader in the editor"
+    );
+    assert_eq!(
+        app.navigation_count(),
+        loads,
+        "pressing a box reloaded the page, which costs the reader their place",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The loose task list as a human approved it, on a light desktop.
+///
+/// Ignored until a human has looked at the picture and pinned it: approving a rendered
+/// surface for the first time is theirs to do, not the harness's (`docs/TESTING.md`).
+/// To pin it, look at `target/debug/e2e-artifacts/tasks-loose-light.actual.png` from a
+/// failing run and, if it is right, re-run this test with `AXIOMD_PIN_GOLDENS=1` set,
+/// then remove the `#[ignore]`.
+#[test]
+#[ignore = "awaiting the first human visual approval; see the comment above"]
+fn the_loose_task_list_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("task-loose-golden-light");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", LOOSE));
+
+    app.screenshot().assert_matches("tasks-loose-light");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The same on a dark desktop.
+#[test]
+#[ignore = "awaiting the first human visual approval; see the comment above"]
+fn the_loose_task_list_in_the_dark_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("task-loose-golden-dark");
+    let dark = axiomd_e2e::Preferences::with("task-loose-golden-dark", "theme", "'dark'");
+    let app = axiomd_e2e::launch_with(&fixture.write("notes.md", LOOSE), &dark);
+
+    app.screenshot().assert_matches("tasks-loose-dark");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

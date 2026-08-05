@@ -264,6 +264,152 @@ fn every_task_box_is_a_press_that_names_its_own_place_in_the_source() {
     );
 }
 
+/// A blank line between items makes the list loose, and a loose item's text is a
+/// paragraph. The box goes *inside* that paragraph, so that box and text share a line
+/// the way GitHub and Obsidian draw them — a block-level `<p>` after the box would
+/// push every word of the item onto the next line (issue #37).
+#[test]
+fn a_loose_task_item_keeps_its_box_on_the_line_its_text_is_on() {
+    let html = render("- [x] first\n\n- [ ] second\n").html().to_owned();
+
+    assert!(
+        html.contains(
+            "<li class=\"task-list-item\">\n\
+             <p><a class=\"task-toggle\" href=\"axiomd://request/task?at=3\" \
+             rel=\"noopener noreferrer\"><input checked=\"\" type=\"checkbox\"></a> \
+             first</p>\n</li>"
+        ),
+        "a loose item's box is not inside the paragraph its text is in:\n{html}",
+    );
+    // Nothing separates a box from its own words: no closed element, no tag that
+    // starts a block, nothing but the space the box is written with.
+    for (box_, text) in [("at=3", "first"), ("at=16", "second")] {
+        let at = html.find(box_).expect("a box naming its marker");
+        let between = &html[at..html[at..].find(text).expect("the item's text") + at];
+        assert!(
+            !between.contains("<p") && !between.contains("</a>\n"),
+            "a block stands between the box and the words it belongs to:\n{between}",
+        );
+    }
+}
+
+/// A tight list is not touched by any of that: its items were already right, and the
+/// bytes they render to are the ones that were pinned (issue #37, out of scope).
+#[test]
+fn a_tight_task_item_still_writes_its_box_beside_its_text() {
+    let html = render("- [x] first\n- [ ] second\n").html().to_owned();
+
+    assert!(
+        html.contains(
+            "<li class=\"task-list-item\"><a class=\"task-toggle\" \
+             href=\"axiomd://request/task?at=3\" rel=\"noopener noreferrer\">\
+             <input checked=\"\" type=\"checkbox\"></a> first</li>"
+        ),
+        "a tight item's box moved:\n{html}",
+    );
+}
+
+/// An item that says nothing at all opens no paragraph to keep its box in — and still
+/// has a box, because a lost box is a lost fact about the document.
+#[test]
+fn a_loose_task_item_with_nothing_in_it_still_has_a_box() {
+    let html = render("- [x]\n\n- [ ] second\n").html().to_owned();
+
+    assert!(
+        html.contains(
+            "<li class=\"task-list-item\"><a class=\"task-toggle\" \
+             href=\"axiomd://request/task?at=3\" rel=\"noopener noreferrer\">\
+             <input checked=\"\" type=\"checkbox\"></a> </li>"
+        ),
+        "an empty task item lost its box:\n{html}",
+    );
+}
+
+/// A task item whose first block is not a paragraph — which the GFM spec does not
+/// allow an author to write, but the parser will hand over — keeps its box in front of
+/// that block rather than dropping it.
+#[test]
+fn a_task_item_that_opens_with_a_fence_keeps_its_box() {
+    let html = render("- [x]\n  ```\n  code\n  ```\n\n- [ ] second\n")
+        .html()
+        .to_owned();
+
+    assert!(
+        html.contains(
+            "<li class=\"task-list-item\"><a class=\"task-toggle\" \
+             href=\"axiomd://request/task?at=3\" rel=\"noopener noreferrer\">\
+             <input checked=\"\" type=\"checkbox\"></a> \n<pre"
+        ),
+        "an item whose first block is a fence lost its box:\n{html}",
+    );
+}
+
+/// Where a loose item's box is drawn changed; what pressing it means did not. Every
+/// press still names the byte of its own marker, and writing the other state into that
+/// byte ticks that one item and no other — which is the whole of the #12 contract, on
+/// the shape #37 introduced.
+#[test]
+fn pressing_a_loose_task_box_still_turns_over_its_own_marker() {
+    let source = std::fs::read_to_string(support::golden_dir().join("tasks_loose.md"))
+        .expect("the loose task fixture");
+    let presses = task_presses(render(&source).html());
+
+    let before = ticks(render(&source).html());
+    assert_eq!(
+        before, "x  x  x",
+        "the fixture did not render as it is written",
+    );
+    assert_eq!(presses.len(), before.len(), "a box cannot be pressed");
+
+    for (nth, at) in presses.into_iter().enumerate() {
+        let ticked = before.as_bytes()[nth] == b'x';
+        assert_eq!(
+            &source[at - 1..at + 2],
+            if ticked { "[x]" } else { "[ ]" },
+            "press {nth} does not point at its own marker",
+        );
+
+        let state = if ticked { ' ' } else { 'x' };
+        let mut turned = source.clone();
+        turned.replace_range(at..at + 1, &state.to_string());
+
+        let mut expected: Vec<u8> = before.bytes().collect();
+        expected[nth] = state as u8;
+        assert_eq!(
+            ticks(render(&turned).html()),
+            String::from_utf8(expected).expect("the boxes are ascii"),
+            "pressing box {nth} did not turn over box {nth} alone",
+        );
+    }
+}
+
+/// The source offset each task box names, in document order.
+fn task_presses(html: &str) -> Vec<usize> {
+    html.match_indices("href=\"axiomd://request/task?at=")
+        .map(|(at, marker)| {
+            let rest = &html[at + marker.len()..];
+            rest[..rest.find('"').expect("a closed attribute")]
+                .parse()
+                .expect("a source offset")
+        })
+        .collect()
+}
+
+/// What the boxes in `html` say, one character each, in document order — the same
+/// reading the e2e suite takes off the running application.
+fn ticks(html: &str) -> String {
+    html.match_indices("<input")
+        .map(|(at, _)| {
+            let element = &html[at..at + html[at..].find('>').expect("a closed input")];
+            if element.contains("checked") {
+                'x'
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
 /// An exported file has no application behind it, so its boxes say what the author
 /// wrote and offer nothing: a button with nothing behind it is worse than no button.
 #[test]
@@ -288,4 +434,26 @@ fn a_task_box_in_an_exported_file_is_not_a_button() {
         "the exported file offers a press nothing can answer:\n{body}",
     );
     assert!(!exported.contains("axiomd:"), "{exported}");
+}
+
+/// A loose list is drawn the same way in a file as on screen: the box the author wrote
+/// stands beside the first line of its item, not above it (issue #37).
+#[test]
+fn a_loose_task_item_in_an_exported_file_keeps_its_box_beside_its_words() {
+    let exported = axiomd_render::standalone(
+        &support::parse("- [x] first\n\n- [ ] second\n"),
+        "notes",
+        &axiomd_render::Plugins::builtin(&[]),
+        &Folder::empty(),
+        &|_| None,
+    );
+    let body = &exported[exported.find("<article").expect("the document")..];
+
+    assert!(
+        body.contains(
+            "<li class=\"task-list-item\">\n\
+             <p><input disabled=\"\" checked=\"\" type=\"checkbox\"> first</p>\n</li>"
+        ),
+        "an exported loose item's box is not inside its own paragraph:\n{body}",
+    );
 }
