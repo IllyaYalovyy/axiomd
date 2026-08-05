@@ -71,6 +71,12 @@ the quality gate, and its performance overhead vs native is measured and
 worked down (#36) — it is secondary in recommendation order, never
 unmaintained. Flathub submission remains out of scope for now.
 
+What that overhead is, measured on both forms in the same run and held to
+ceilings of its own, is `designs/flatpak-parity.md`: a packaged launch costs
+the reader about a sixth of a second more than a native one, of which 130 ms
+is flatpak building the sandbox before axiomd's first instruction, and
+nothing after the launch costs them anything.
+
 ## What is the network policy?
 
 **Zero implicit network, enforced by tests — not zero capability.** All
