@@ -423,6 +423,17 @@ impl Session {
                             .map(|()| String::new())
                             .map_err(|error| error.to_string())
                     }
+                    // The pane the document goes in, as the *window* draws it rather
+                    // than as WebKit describes the page: the picture above is the web
+                    // process's own answer about its own page, and the frame issue #41
+                    // is about is one no page has been drawn into yet. This is the only
+                    // capture that can show it, because it is taken from the scene the
+                    // window presents — the webview, and whatever stands in front of it.
+                    "pane" => {
+                        let pane = self.target(shell)?.pane().clone();
+                        drawn(&pane).await;
+                        capture(&pane, path)
+                    }
                     "header" => {
                         let header = self.target(shell)?.header().clone();
                         drawn(&header).await;
@@ -524,6 +535,10 @@ impl Session {
             "title" => Ok(window.window().title().unwrap_or_default().to_string()),
             "uri" => Ok(window.webview().uri().unwrap_or_default().to_string()),
             "navigations" => Ok(window.navigations().to_string()),
+            // What the pane a document is shown in is presenting: the document, or the
+            // page it arrives on. The structural half of issue #41 — the webview is
+            // never the thing on screen before it has a frame — is this answer.
+            "pane" => Ok(window.pane_showing().to_owned()),
             "renders" => Ok(window.renders().to_string()),
             "showing" => Ok(window.showing().to_owned()),
             "mode" => Ok(match window.showing() {

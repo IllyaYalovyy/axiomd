@@ -748,8 +748,17 @@ impl App {
     /// Answers every page held back by [`App::open_to_the_empty_pane`], and returns
     /// once the document the reader was waiting for is on screen.
     pub fn let_the_document_arrive(&self) {
-        self.command("hold-pages", "off");
+        self.answer_the_held_pages();
         self.wait_until("document.querySelector('.markdown') !== null");
+    }
+
+    /// The same, and returns at once rather than waiting for the document.
+    ///
+    /// What a test watching the pane frame by frame needs: the waiting above asks the
+    /// page a question, and the frames worth photographing are the ones before there is
+    /// a page to ask (issue #41).
+    pub fn answer_the_held_pages(&self) {
+        self.command("hold-pages", "off");
     }
 
     /// Shows `document` in the addressed window, as choosing it in the file chooser
@@ -957,6 +966,25 @@ impl App {
     /// explains why it is not.
     pub fn showing_document(&self) -> bool {
         self.property("showing") == "document"
+    }
+
+    /// What the pane a document is shown in is presenting: `"document"` once the page
+    /// in it has said it has been drawn, and `"placeholder"` — the page-coloured
+    /// surface a document arrives on — until then (issue #41).
+    ///
+    /// The structural invariant a test asserts instead of trying to photograph a frame
+    /// that only exists on an accelerated compositor: the webview is never the thing on
+    /// screen before it has a frame of the document to show. It holds on any compositor,
+    /// so the software harness can assert it honestly.
+    pub fn pane_showing(&self) -> String {
+        self.property("pane")
+    }
+
+    /// Waits until that pane is presenting `wanted`.
+    pub fn wait_until_pane_shows(&self, wanted: &str) {
+        self.settle(&format!("the pane to be showing the {wanted}"), || {
+            Ok(self.try_command("window", "pane")? == wanted)
+        });
     }
 
     /// The title of the dialog the addressed window is showing, or an empty string
@@ -1545,6 +1573,19 @@ impl App {
         self.capture("document")
     }
 
+    /// Captures the pane a document is shown in as the window presents it — the pixels
+    /// the reader's compositor is handed, whatever is in front of whatever.
+    ///
+    /// Different from [`App::pane_screenshot`] in the one way issue #41 turns on: that
+    /// one asks WebKit what the page looks like, and a page WebKit has not drawn yet
+    /// still answers with the colour it is painted. This is the window's own scene —
+    /// the webview, and the page-coloured surface standing in front of it until the
+    /// document behind has a frame — so it is the picture that can be black and the
+    /// picture that proves it is not.
+    pub fn presented_pane(&self) -> Screenshot {
+        self.capture("pane")
+    }
+
     /// Captures the addressed window's header bar as pixels — the strip the mode
     /// switch, the outline button and the menu are drawn in.
     ///
@@ -1581,6 +1622,10 @@ impl App {
     /// until it is as wide as the surface it is drawn on, and then for a frame, exactly
     /// as [`App::screenshot`] waits for one.
     pub fn capture_window(&self, path: &Path) -> Screenshot {
+        // A picture of the window is a picture of the scene it presents, and until the
+        // document in it has been drawn that scene is the page it is arriving on
+        // (issue #41). A person taking this picture waits for the document; so does this.
+        self.wait_until_pane_shows("document");
         let surface = self.layout().document.width;
         self.wait_until(&format!("window.innerWidth === {surface}"));
         self.wait_until_the_page_has_drawn_again();

@@ -18,6 +18,17 @@
 //! content-security policy and the sanitiser upstream, the `axiomd://` scheme is the
 //! complete set of bytes a document can reach. There is no `file://` grant anywhere.
 //!
+//! # What the reader looks at before the document has been drawn
+//!
+//! Not the webview. A `WebView::set_background_color` is a colour the *page* is painted
+//! once the web process has a frame to paint it in; before that first frame the
+//! accelerated compositing path presents black whatever the view was told (issue #41).
+//! So the pane a window shows is the webview with a page-coloured surface over it
+//! ([`build_paper`]), and the surface only comes away when the page itself reports a
+//! frame through the bridge ([`painted.js`](../src/painted.js)). Black is not avoided
+//! here, it is unreachable: there is no moment in which the webview is the thing on
+//! screen and has nothing to show.
+//!
 //! # Patching a document that cannot run scripts
 //!
 //! The patch is evaluated in a JavaScript world of the app's own ([`WORLD`]), which is
@@ -90,10 +101,17 @@ const TRACK: &str = include_str!("track.js");
 /// The reader's search, marked over the words of the page.
 const FIND: &str = include_str!("find.js");
 
+/// The page saying it has been drawn, which is when the reader is shown it.
+const PAINTED: &str = include_str!("painted.js");
+
 /// The message handler the page reports the reader's section to. Registered in
 /// [`WORLD`] and nowhere else, so a document — which cannot run a script in the first
 /// place — has nothing to post to even if it could.
 const SECTION_MESSAGE: &str = "axiomdSection";
+
+/// The message handler the page reports its first frame to, registered the same way
+/// and reachable from nowhere else.
+const PAINTED_MESSAGE: &str = "axiomdPainted";
 
 /// One render as the page needs it when it is patched rather than loaded: the blocks,
 /// and the stylesheets the document links beside the bundled one.
@@ -116,6 +134,23 @@ struct Capability {
 /// One window's view of one document at a time.
 pub(crate) struct DocumentView {
     webview: webkit6::WebView,
+    /// The pane the window puts on screen: the webview, with [`DocumentView::paper`]
+    /// over it.
+    pane: gtk::Overlay,
+    /// The page the document arrives on, painted the colour the document itself is
+    /// painted and standing in front of the webview until the page behind it has said
+    /// it has a frame (issue #41).
+    ///
+    /// An overlay rather than another surface of the window's stack, and this is the
+    /// whole reason: a webview that is not on screen has no rendering updates, so it
+    /// can never report the frame that would bring it on screen — probed on WebKitGTK
+    /// 2.52.5 (see `painted.js`). Behind this it is on screen, painting normally, and
+    /// simply not looked at.
+    paper: gtk::DrawingArea,
+    /// What that page is painted, as `reading` answers it — `None` only in the moment
+    /// between this view being built and the window telling it how the reader reads,
+    /// which is before the window is on screen.
+    paper_colour: PaperColour,
     /// The document URI the view has been sent to. A render for this URI is patched
     /// in; a render for another document is a different page, and is loaded.
     loaded: RefCell<Option<String>>,
@@ -178,6 +213,11 @@ pub(crate) struct DocumentView {
     finding: Rc<RefCell<Option<Finding>>>,
 }
 
+/// The colour the page a document arrives on is painted, shared between the view that
+/// is told it and the surface that draws it. `None` only before the window has said how
+/// this reader reads.
+type PaperColour = Rc<Cell<Option<(u8, u8, u8)>>>;
+
 /// A search the page is showing.
 struct Finding {
     looking_for: Query,
@@ -212,8 +252,17 @@ impl DocumentView {
         // another window's and the bridge below carries this window's place and no
         // other (invariant 7). It dies with the view.
         let content = webkit6::UserContentManager::new();
+        let webview = build_webview(context, &content);
+        let paper_colour = Rc::new(Cell::new(None));
+        let paper = build_paper(&paper_colour);
+        let pane = gtk::Overlay::new();
+        pane.set_child(Some(&webview));
+        pane.add_overlay(&paper);
         let view = Rc::new(Self {
-            webview: build_webview(context, &content),
+            webview,
+            pane,
+            paper,
+            paper_colour,
             loaded: RefCell::new(None),
             ready: Cell::new(false),
             pending: RefCell::new(None),
@@ -247,6 +296,16 @@ impl DocumentView {
             }
         });
 
+        // The other thing the page is allowed to say: that it has been drawn, which is
+        // what takes the page it was drawn onto out from in front of it.
+        content.register_script_message_handler(PAINTED_MESSAGE, Some(WORLD));
+        let arriving = Rc::downgrade(&view);
+        content.connect_script_message_received(Some(PAINTED_MESSAGE), move |_, _| {
+            if let Some(view) = arriving.upgrade() {
+                view.present_the_page();
+            }
+        });
+
         let watched = Rc::downgrade(&view);
         view.webview.connect_load_changed(move |_, event| {
             let Some(view) = watched.upgrade() else {
@@ -264,8 +323,28 @@ impl DocumentView {
                             .as_ref()
                             .map(|(body, stylesheets)| Patch { body, stylesheets }),
                     );
+                    view.ask_the_page_to_say_when_it_is_drawn();
                 }
                 _ => {}
+            }
+        });
+
+        // A page that will never be drawn still has to be shown: whatever WebKit puts
+        // there instead — its own error page, its own crashed-process surface — is more
+        // use to the reader than the page-coloured surface they would otherwise be left
+        // looking at for as long as the window is open.
+        let failed = Rc::downgrade(&view);
+        view.webview.connect_load_failed(move |_, _, _, _| {
+            if let Some(view) = failed.upgrade() {
+                view.present_the_page();
+            }
+            // Not handled here: the view shows what it would have shown anyway.
+            false
+        });
+        let gone = Rc::downgrade(&view);
+        view.webview.connect_web_process_terminated(move |_, _| {
+            if let Some(view) = gone.upgrade() {
+                view.present_the_page();
             }
         });
 
@@ -321,6 +400,18 @@ impl DocumentView {
 
     pub(crate) fn widget(&self) -> &webkit6::WebView {
         &self.webview
+    }
+
+    /// The pane the window shows the reader — the webview and the page a document
+    /// arrives on, which are one surface and are never given to a window separately.
+    pub(crate) fn pane(&self) -> &gtk::Widget {
+        self.pane.upcast_ref()
+    }
+
+    /// Whether the reader is looking at the document itself rather than at the page it
+    /// is arriving on.
+    pub(crate) fn showing_the_document(&self) -> bool {
+        !self.paper.is_visible()
     }
 
     /// Hands `handler` everything the view will not do itself: another document, a
@@ -405,6 +496,13 @@ impl DocumentView {
             f32::from(blue) / 255.0,
             1.0,
         ));
+        // And the page a document arrives on, which is the same colour by construction:
+        // both halves of what the reader looks at before a document has drawn come from
+        // this one answer. Repainted, never reloaded — a reader who goes dark while a
+        // document is opening sees the page they are opening it on go dark under it
+        // (invariant 9).
+        self.paper_colour.set(Some((red, green, blue)));
+        self.paper.queue_draw();
 
         let Some(content) = self.webview.user_content_manager() else {
             return;
@@ -462,6 +560,12 @@ impl DocumentView {
         if arriving {
             self.ready.set(false);
             *self.pending.borrow_mut() = None;
+            // A load is the one thing that leaves the webview with no frame of this
+            // document to show, so it is the one thing the reader is kept in front of
+            // the page for. Everything after it — a live reload, a re-render, a mode
+            // switch, a theme change — is patched or restyled into the page already
+            // drawn, which is the same structural reason none of them flashes.
+            self.paper.set_visible(true);
             self.webview.load_uri(&match fragment {
                 "" => publication.uri().to_owned(),
                 fragment => format!("{}#{fragment}", publication.uri()),
@@ -557,6 +661,46 @@ impl DocumentView {
             .failed
             .push((source.to_owned(), complaint));
         self.update(None);
+    }
+
+    /// Asks the page just loaded to say when it has been drawn, so that the reader can
+    /// be shown it (`painted.js`).
+    ///
+    /// A page that cannot be asked is shown at once rather than never: the ask is the
+    /// app's own code failing, and a reader left in front of a blank page for as long
+    /// as the window is open is a worse answer than the frame this exists to prevent.
+    fn ask_the_page_to_say_when_it_is_drawn(self: &Rc<Self>) {
+        let script = format!("({PAINTED})(\"{PAINTED_MESSAGE}\")");
+        let webview = self.webview.clone();
+        let waiting = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let asked = webview
+                .evaluate_javascript_future(&script, Some(WORLD), None)
+                .await;
+            let trouble = match &asked {
+                Err(error) => Some(error.to_string()),
+                Ok(answer) => match answer.to_str().as_str() {
+                    "waiting" => None,
+                    said => Some(said.to_owned()),
+                },
+            };
+            if let Some(trouble) = trouble {
+                eprintln!("axiomd: the page could not say when it is drawn: {trouble}");
+                if let Some(view) = waiting.upgrade() {
+                    view.present_the_page();
+                }
+            }
+        });
+    }
+
+    /// Takes the page a document arrives on out from in front of the document, which
+    /// has now been drawn behind it.
+    ///
+    /// Everything the reader then sees is the document's own doing, the fade it appears
+    /// with included (issue #40): the surface coming away is not a transition, because
+    /// what it uncovers is painted the very colour it was.
+    fn present_the_page(&self) {
+        self.paper.set_visible(false);
     }
 
     /// Brings the page up to date: the blocks that changed, and then the remote
@@ -852,6 +996,40 @@ fn as_js_string(text: &str) -> String {
     }
     quoted.push('"');
     quoted
+}
+
+/// Builds the page a document arrives on: a rectangle of the colour the document
+/// itself is painted, and nothing else.
+///
+/// Drawn rather than styled, and painted from the one colour `reading` answers with, so
+/// there is no stylesheet, no CSS provider and no theme in between — the surface the
+/// reader looks at while a document is on its way cannot be a colour the page is not.
+/// It takes no input at all: the reader scrolling or clicking through it reaches the
+/// document behind it, which is the only thing in this pane that has anything to answer.
+fn build_paper(colour: &PaperColour) -> gtk::DrawingArea {
+    let paper = gtk::DrawingArea::new();
+    paper.set_can_target(false);
+    paper.set_hexpand(true);
+    paper.set_vexpand(true);
+    let painting = colour.clone();
+    paper.set_draw_func(move |_, context, _, _| {
+        // Only before the window has said how this reader reads, which is before it is
+        // on screen at all. Nothing is drawn rather than something guessed: the window
+        // behind is the desktop's own colour, and a colour invented here would be a
+        // second answer to the question `reading` exists to answer once.
+        let Some((red, green, blue)) = painting.get() else {
+            return;
+        };
+        context.set_source_rgb(
+            f64::from(red) / 255.0,
+            f64::from(green) / 255.0,
+            f64::from(blue) / 255.0,
+        );
+        if let Err(error) = context.paint() {
+            eprintln!("axiomd: the page a document arrives on could not be painted: {error}");
+        }
+    });
+    paper
 }
 
 /// Builds the webview a document is displayed in, with everything a reading surface
