@@ -1,20 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
   <!--
-    The symbolic form of the icon: the same Markdown mark, one colour, on the
-    16x16 grid symbolic icons are drawn on.
+    The symbolic form of the icon: the same reading layout reduced to what survives one
+    colour on the 16x16 grid symbolic icons are drawn on - the page's outline, the
+    outline sidebar filled, and the heading bar. The body text, the checked task and the
+    badge are not drawn here: at 16 pixels they are the same grey smudge, and an icon
+    that is a smudge says less than one that is a page.
+
+    Every edge that is seen is on a whole pixel of the 16 grid, so nothing is drawn half
+    in one pixel and half in the next. The sidebar's other three edges are deliberately
+    off it: the bar is grown a quarter-pixel into the outline that covers them, because
+    two shapes meeting exactly along a curve leave an antialiasing seam - a pale hairline
+    down the corners of the bar.
 
     Filled paths rather than strokes, because that is what GTK recolours: it
     renders a symbolic icon with its own fill forced onto the `path`, `rect` and
     `circle` elements, and leaves `stroke` alone - a stroked symbolic icon stays
-    the colour it was written in and disappears on a dark background.
+    the colour it was written in and disappears on a dark background. The page's
+    outline is therefore a filled path with the page punched out of it by the
+    even-odd rule.
     This note is inside `<svg>` and not above it on purpose: gdk-pixbuf recognises
     an SVG by looking at the start of the file, and a comment ahead of the root
     element makes it "not an image" - which is every icon of this application
     missing, and `appstreamcli compose` failing the flatpak build outright. Probed
     on librsvg 2.61.4 / gdk-pixbuf 2.44.4; asserted by
-    `crates/axiomd-app/tests/packaging.rs`.
+    `crates/axiomd-app/tests/packaging.rs` and `crates/axiomd-app/tests/icon.rs`.
   -->
-  <path d="M1 12 L1 4.5 L2.8 4.5 L5 7.6 L7.2 4.5 L9 4.5 L9 12 L7.3 12 L7.3 7.3 L5 10.5 L2.7 7.3 L2.7 12 Z" fill="currentColor"/>
-  <path d="M12.2 4.5 L13.9 4.5 L13.9 9 L15.4 9 L13.05 12.4 L10.7 9 L12.2 9 Z" fill="currentColor"/>
+  <path fill-rule="evenodd" d="M4 1h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2Zm0 1a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1Z" fill="currentColor"/>
+  <rect x="2.75" y="1.75" width="3.25" height="12.5" fill="currentColor"/>
+  <rect x="7" y="4" width="5" height="2" fill="currentColor"/>
 </svg>
