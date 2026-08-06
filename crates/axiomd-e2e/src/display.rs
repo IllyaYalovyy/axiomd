@@ -35,6 +35,7 @@
 use std::io::ErrorKind;
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -73,6 +74,9 @@ impl Display {
                 &format!("--height={}", SURFACE.1),
             ])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
+            // A group of its own, so a compositor is ended with everything else one
+            // launch is made of rather than left behind by a killed run (issue #44).
+            .process_group(0)
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .stdin(Stdio::null())
@@ -96,7 +100,15 @@ impl Display {
         display
     }
 
-    /// The environment an application launched onto this display needs.
+    /// The environment an application launched onto this display needs — the same two
+    /// values in a sandbox as outside one.
+    ///
+    /// A sandbox used to be handed the socket by absolute path, on the grounds that its
+    /// runtime directory is its own. It is not handed one now: `flatpak run` binds the
+    /// compositor named by *its own* `WAYLAND_DISPLAY` into the sandbox and nothing
+    /// else, so pointing flatpak itself at this display (`containment::sandboxed`) makes
+    /// this compositor the only one in there — where an absolute path merely made it the
+    /// chosen one, with the developer's session socket mounted beside it (issue #44).
     pub(crate) fn wayland(&self) -> [(&str, PathBuf); 2] {
         [
             ("XDG_RUNTIME_DIR", self.runtime_dir.clone()),
@@ -104,14 +116,22 @@ impl Display {
         ]
     }
 
-    /// The same compositor, named the one way an application in a sandbox can reach
-    /// it: `WAYLAND_DISPLAY` as an absolute path.
-    ///
-    /// A sandbox has a runtime directory of its own, so the socket cannot be found by
-    /// name inside one. libwayland uses an absolute `WAYLAND_DISPLAY` verbatim instead
-    /// of looking in `XDG_RUNTIME_DIR` for it, which is what makes this work at all.
-    pub(crate) fn wayland_in_a_sandbox(&self) -> [(&str, PathBuf); 1] {
-        [("WAYLAND_DISPLAY", self.runtime_dir.join(&self.socket))]
+    /// The socket this compositor listens on, which is what a launch on it must report
+    /// itself to be drawing on (see `containment::confirm`).
+    pub(crate) fn socket_path(&self) -> PathBuf {
+        self.runtime_dir.join(&self.socket)
+    }
+
+    /// The name a client in this display's own runtime directory finds it by.
+    pub(crate) fn socket_name(&self) -> &str {
+        &self.socket
+    }
+
+    /// The runtime directory this display's world lives in — also where a sandboxed
+    /// launch's own portals are given to live, so everything they mount goes away with
+    /// the launch.
+    pub(crate) fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
     }
 
     /// Blocks until a client can connect, so no test ever races the compositor.
@@ -157,8 +177,7 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        let _ = self.weston.kill();
-        let _ = self.weston.wait();
+        crate::containment::end(&mut self.weston);
     }
 }
 
@@ -357,14 +376,19 @@ impl Environment {
         self.values
             .iter()
             .cloned()
-            .chain(extra)
             // axiomd is single-instance: with a session bus to reach, a second copy
             // hands its document to the developer's already-running axiomd and exits,
             // and the test would drive nothing. Without a bus there is no first copy.
+            //
+            // Ahead of `extra` rather than after it, so that the one launch that is
+            // *meant* to be on a session — the axiomd a `Desktop` stands the developer's
+            // own copy in for — can name a bus and be given it. Nothing else ever does,
+            // and a launch that names none still ends up with no bus at all.
             .chain([(
                 "DBUS_SESSION_BUS_ADDRESS".to_owned(),
                 PathBuf::from("disabled:"),
             )])
+            .chain(extra)
             .collect()
     }
 }

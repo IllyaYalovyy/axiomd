@@ -35,6 +35,7 @@
 #![deny(missing_docs)]
 
 pub mod budget;
+mod containment;
 mod control;
 pub mod corpus;
 mod display;
@@ -47,9 +48,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub use containment::{Whereabouts, in_the_installed_sandbox};
 pub use golden::Screenshot;
 pub use process::Footprint;
 
+use containment::Session;
 use control::Control;
 use display::{Display, Environment};
 pub(crate) use scratch::Scratch;
@@ -456,6 +459,80 @@ impl Preferences {
     }
 }
 
+/// The developer's own desktop, stood in for — so that a test can prove nothing a
+/// launch does ever reaches it (issue #44).
+///
+/// It is what the owner had open when they found their session full of test copies: a
+/// session bus with an axiomd already registered on it, and the compositor that axiomd
+/// draws on. While one of these exists, every launch made on this thread happens in
+/// *this* session rather than in the machine's — so a copy that fails to contain itself
+/// forwards its document to this axiomd and draws its window on this compositor, where
+/// the test can see it, instead of on the desktop of whoever is running the gate.
+///
+/// ```no_run
+/// # use std::path::Path;
+/// let desktop = axiomd_e2e::Desktop::with_axiomd_open(Path::new("reading.md"));
+/// let probe = axiomd_e2e::launch(Path::new("probe.md"));
+///
+/// assert_eq!(desktop.axiomd().window_count(), 1, "the probe opened in the reader's copy");
+/// # let _ = probe;
+/// ```
+pub struct Desktop {
+    /// Cleared first, so nothing started while this is being taken down inherits a
+    /// session that is going away.
+    _session: containment::AmbientSession,
+    axiomd: App,
+    /// Outlives the axiomd registered on it.
+    _bus: Session,
+    _scratch: Scratch,
+}
+
+impl Desktop {
+    /// A desktop with `document` open in axiomd, as the developer's own has.
+    pub fn with_axiomd_open(document: &Path) -> Desktop {
+        let scratch = Scratch::new("desktop");
+        let bus = Session::start(scratch.path(), scratch.path());
+        let axiomd = App::start_under(
+            Under::BesideThisTest,
+            Some(document),
+            None,
+            None,
+            Some(&bus),
+        );
+        axiomd.wait_for_a_rendered_document();
+
+        // What a launch inherits from the session it is started in — the three values a
+        // copy of axiomd would find its way home by.
+        let session = containment::stand_in_for_the_session(vec![
+            (
+                "DBUS_SESSION_BUS_ADDRESS".to_owned(),
+                PathBuf::from(bus.address()),
+            ),
+            (
+                "XDG_RUNTIME_DIR".to_owned(),
+                axiomd._display.runtime_dir().to_path_buf(),
+            ),
+            (
+                "WAYLAND_DISPLAY".to_owned(),
+                PathBuf::from(axiomd._display.socket_name()),
+            ),
+        ]);
+
+        Desktop {
+            _session: session,
+            axiomd,
+            _bus: bus,
+            _scratch: scratch,
+        }
+    }
+
+    /// The copy of axiomd this desktop already had open — the one a test copy must never
+    /// hand anything to.
+    pub fn axiomd(&self) -> &App {
+        &self.axiomd
+    }
+}
+
 /// Starts axiomd showing `document`, the way opening a file from the desktop does.
 ///
 /// Returns once the document is on screen, so a test never has to wait for it.
@@ -506,7 +583,7 @@ pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
 ///
 /// Panics with what to run if no flatpak is installed.
 pub fn launch_installed_flatpak(document: &Path) -> App {
-    let app = App::start_under(Under::InstalledFlatpak, Some(document), None, None);
+    let app = App::start_under(Under::InstalledFlatpak, Some(document), None, None, None);
     app.wait_for_a_rendered_document();
     app
 }
@@ -528,7 +605,7 @@ pub fn launch_installed_flatpak(document: &Path) -> App {
 /// nothing this launch arranged — which is what lets a probe assert that the pictures
 /// beside the document arrive (issue #23) and mean it.
 pub fn launch_installed_flatpak_from_the_desktop(document: &Path) -> App {
-    let app = App::start_under(Under::PortalFlatpak, Some(document), None, None);
+    let app = App::start_under(Under::PortalFlatpak, Some(document), None, None, None);
     app.wait_for_a_rendered_document();
     app
 }
@@ -548,6 +625,7 @@ pub fn launch_installed(prefix: &Path, document: &Path) -> App {
     let app = App::start_under(
         Under::Installed(prefix.to_path_buf()),
         Some(document),
+        None,
         None,
         None,
     );
@@ -581,6 +659,11 @@ pub struct App {
     control: std::cell::RefCell<Control>,
     axiomd: Child,
     socket: PathBuf,
+    /// The session bus a sandboxed launch was given, kept alive for as long as the
+    /// launch is — never read, and never dropped before the launch that registered on
+    /// it. `None` for a launch given no bus at all, which is every native one.
+    #[expect(dead_code, reason = "ownership: the launch's bus outlives the launch")]
+    bus: Option<Session>,
     /// The moment the process was started — before `execve`, before the loader, and
     /// for a packaged launch before anything of the sandbox exists. What
     /// [`App::launched_in`] is measured from.
@@ -600,14 +683,22 @@ impl App {
         preferences: Option<&Preferences>,
         engine: Option<&str>,
     ) -> App {
-        App::start_under(Under::BesideThisTest, document, preferences, engine)
+        App::start_under(Under::BesideThisTest, document, preferences, engine, None)
     }
 
+    /// Starts one launch of `under`, in a world built for it alone.
+    ///
+    /// `on` is the session bus this launch may register on, for the one caller that
+    /// wants a launch *on* a session rather than sealed away from every session: the
+    /// [`Desktop`] standing in for the developer's own. Every other launch is given
+    /// none — which is what makes it impossible for a test copy to find, or be found by,
+    /// the copy the developer has open (issue #44).
     fn start_under(
         under: Under,
         document: Option<&Path>,
         preferences: Option<&Preferences>,
         engine: Option<&str>,
+        on: Option<&Session>,
     ) -> App {
         let scratch = Scratch::new("app");
         let display = Display::start(scratch.path());
@@ -621,21 +712,38 @@ impl App {
         let log = scratch.path().join("axiomd.log");
 
         let control_variable = [("AXIOMD_TEST_CONTROL".to_owned(), socket.clone())];
+        // A sandbox cannot be left without a bus — flatpak proxies whatever session bus
+        // is there and overrides the pin that would have taken it away — so it is given
+        // one of its own instead. See `containment`.
+        let bus = matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak)
+            .then(|| Session::start(scratch.path(), display.runtime_dir()));
+        // What this launch may register on: the bus it was handed, or the one built for
+        // its sandbox, and otherwise nothing at all.
+        let on_a_bus = on.or(bus.as_ref());
+        // What this launch will have to be able to say about itself the moment it
+        // connects, read before the pieces of it are moved into the launch itself.
+        let expected = containment::Expected {
+            display_id: containment::which_socket(&display.socket_path()),
+            display: display.socket_path(),
+            bus: on_a_bus.map(Session::daemon),
+            alone: matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak),
+        };
         let mut command = match under {
             Under::BesideThisTest => {
-                let mut command = Command::new(binary());
+                let mut command = containment::command(binary());
                 environment.apply(
                     &mut command,
                     display
                         .wayland()
                         .into_iter()
                         .map(|(name, value)| (name.to_owned(), value))
-                        .chain(control_variable),
+                        .chain(control_variable)
+                        .chain(on_a_session_bus(on_a_bus)),
                 );
                 command
             }
             Under::Installed(ref prefix) => {
-                let mut command = Command::new(installed_binary(prefix));
+                let mut command = containment::command(installed_binary(prefix));
                 environment.apply(
                     &mut command,
                     display
@@ -654,14 +762,21 @@ impl App {
                                 "{}:/usr/local/share:/usr/share",
                                 prefix.join("share").display(),
                             )),
-                        )]),
+                        )])
+                        .chain(on_a_session_bus(on_a_bus)),
                 );
                 command
             }
             Under::InstalledFlatpak | Under::PortalFlatpak => {
+                // The launch's own runtime directory, inside the sandbox as well as
+                // outside it — which `Display::wayland` is, and which is also where this
+                // launch's document portal mounts. `axiomd-doc` reads
+                // `$XDG_RUNTIME_DIR/doc` to know a portal path when it is handed one
+                // (issue #24), so the sandbox has to be looking at the same directory as
+                // the portal serving it.
                 let sandbox = environment.sandbox_arguments(
                     display
-                        .wayland_in_a_sandbox()
+                        .wayland()
                         .into_iter()
                         .map(|(name, value)| (name.to_owned(), value))
                         .chain(control_variable),
@@ -673,7 +788,15 @@ impl App {
                     Some(scratch.path()),
                     document.filter(|_| !through_the_portal),
                 ];
-                sandboxed_command(sandbox, visible.into_iter().flatten(), through_the_portal)
+                sandboxed_command(
+                    bus.as_ref()
+                        .expect("a sandboxed launch has a bus of its own"),
+                    display.runtime_dir(),
+                    display.socket_name(),
+                    sandbox,
+                    visible.into_iter().flatten(),
+                    through_the_portal,
+                )
             }
         };
         if let Some(engine) = engine {
@@ -709,15 +832,43 @@ impl App {
         };
         control.accept(&mut axiomd, diagnostics);
 
-        App {
+        let app = App {
             control: std::cell::RefCell::new(control),
             axiomd,
             socket,
+            bus,
             spawned,
             served: std::cell::Cell::new(None),
             _display: display,
             scratch,
+        };
+
+        // Before a test is handed a launch: this copy is where this harness put it, and
+        // nowhere the developer can see it (issue #44). A launch that got out is shut
+        // down here rather than driven — `app` is dropped by the panic, which takes its
+        // process group with it.
+        if let Err(complaint) = containment::confirm(&app.whereabouts_said(), &expected) {
+            panic!(
+                "{under} escaped the world this test built for it:\n  {complaint}\n  \
+                 Nothing a test starts may be visible in the developer's own session.",
+            );
         }
+        app
+    }
+
+    /// Where this launch is running: the compositor it draws on, every other compositor
+    /// it could have drawn on, the session bus it registered with, and the session unit
+    /// it runs under (issue #44).
+    ///
+    /// Every launch is held to this at the moment it connects, so a test rarely needs to
+    /// ask — it is public for the containment suite, which asserts what each way of
+    /// launching amounts to.
+    pub fn whereabouts(&self) -> Whereabouts {
+        Whereabouts::read(&self.whereabouts_said())
+    }
+
+    fn whereabouts_said(&self) -> String {
+        self.command("whereabouts", "")
     }
 
     /// Shows `document`, as choosing it in the file chooser would.
@@ -1761,8 +1912,11 @@ impl App {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let _ = self.axiomd.kill();
-        let _ = self.axiomd.wait();
+        // The group rather than the process: a launch is a sandbox around a bus daemon
+        // around an application around the web process that renders its documents, and
+        // ending only the one this harness holds leaves the rest of that tree running on
+        // the developer's machine (issue #44).
+        containment::end(&mut self.axiomd);
 
         let socket = self.socket.clone();
         let deadline = Instant::now() + SETTLES_WITHIN;
@@ -1945,26 +2099,18 @@ fn installed_binary(prefix: &Path) -> PathBuf {
 }
 
 /// `flatpak run`, with the directories the probe needs to be able to see into it and
-/// the pinned environment handed to it.
+/// the pinned environment handed to it — and with every way out of the sandbox closed
+/// by [`containment::sandboxed`], which is where the arguments that keep this launch out
+/// of the developer's session live.
 fn sandboxed_command<'a>(
+    bus: &Session,
+    runtime_dir: &Path,
+    display: &str,
     environment: Vec<String>,
     visible: impl IntoIterator<Item = &'a Path>,
     forwarding_files: bool,
 ) -> Command {
-    assert!(
-        Command::new("flatpak")
-            .args(["info", APP_ID])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success()),
-        "no axiomd flatpak is installed, so there is none to drive.\n  \
-         Build and install one, and run the probes that need it, with:\n    \
-         ./scripts/quality.d/40-flatpak.sh",
-    );
-
-    let mut command = Command::new("flatpak");
-    command.arg("run");
+    let mut command = containment::sandboxed(bus, runtime_dir, display);
     for directory in visible {
         let directory = match directory.is_dir() {
             true => directory.to_path_buf(),
@@ -1974,13 +2120,23 @@ fn sandboxed_command<'a>(
         };
         command.arg(format!("--filesystem={}", directory.display()));
     }
-    command.arg("--nosocket=session-bus");
     if forwarding_files {
         command.arg("--file-forwarding");
     }
     command.args(environment);
     command.arg(APP_ID);
     command
+}
+
+/// The one environment variable that decides whether a launch is on a session at all,
+/// for a launch that is meant to be — see [`App::start_under`].
+fn on_a_session_bus(session: Option<&Session>) -> Option<(String, PathBuf)> {
+    session.map(|session| {
+        (
+            "DBUS_SESSION_BUS_ADDRESS".to_owned(),
+            PathBuf::from(session.address()),
+        )
+    })
 }
 
 /// The application id the package installs under, which is also the bus name a launch
