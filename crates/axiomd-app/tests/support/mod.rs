@@ -11,6 +11,8 @@
 
 #![allow(dead_code)]
 
+pub mod paper;
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};

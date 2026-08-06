@@ -8,10 +8,23 @@
 //!
 //! The launch's printers are pinned to the file backend (`axiomd-e2e/src/display.rs`),
 //! so a suite that prints cannot reach a real printer.
+//!
+//! What a PDF *says* is read with `pdf-extract`; where on the sheet it says it, and how
+//! big, is measured with [`support::paper`] — the half of the suite issue #43's
+//! photographs called for.
+
+mod support;
 
 use std::path::Path;
 
 use axiomd_e2e::{App, Fixture};
+use support::paper::{self, mm};
+
+/// The margins every printed page keeps, top-and-bottom and side, in millimetres.
+///
+/// The intent issue #19 set and #43 put on the page setup rather than in a stylesheet
+/// this engine ignores.
+const MARGIN: (f64, f64) = (18.0, 16.0);
 
 /// A document with one of everything printing has an opinion about: headings, a
 /// paragraph, a link that has to say where it goes, code, a table, and a picture from
@@ -330,11 +343,15 @@ fn no_page_ends_with_a_heading_stranded_at_the_bottom() {
             pages.len(),
         );
         for (at, page) in pages.iter().enumerate() {
+            // Past the number in the footer, which is the last thing on every page and
+            // is not the document (issue #43). Without this the question below is
+            // answered by the footer and nothing is asked at all.
+            let number = (at + 1).to_string();
             let last = page
                 .lines()
-                .rfind(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-                .trim();
+                .map(str::trim)
+                .rfind(|line| !line.is_empty() && *line != number)
+                .unwrap_or_default();
             assert!(
                 !last.starts_with("Section ") && !last.starts_with("Handbook"),
                 "page {} of the {name} PDF ends with the heading {last:?}, and its \
@@ -344,6 +361,269 @@ fn no_page_ends_with_a_heading_stranded_at_the_bottom() {
         }
         assert!(app.close().is_empty(), "something outlived the application");
     }
+}
+
+/// How far a measurement may miss and still be believed, in ems of the largest type on
+/// the page.
+///
+/// Where a glyph starts is written in the PDF; where it *ends* is a question for the
+/// font's own outlines, which are not read here — so the right-hand edge is allowed a
+/// whole character, and the top and bottom, whose ascender and descender are estimated
+/// from the type size, a quarter of one. The left edge is exact and gets a hair of
+/// floating-point slack only. Every allowance is far smaller than the defect it has to
+/// catch: the photographs in issue #43 are of a page with no margin at all, which is
+/// 16 mm — three and a half ems — outside.
+const SLACK: (f64, f64, f64) = (0.5, 1.0, 0.25);
+
+/// Issue #43, the second photograph: a page whose text starts at the paper's physical
+/// edge.
+///
+/// Margins belong to the print machinery, not to the stylesheet — `@page { margin }` is
+/// a rule this engine does not draw (measured for #19) — so they are asserted where the
+/// reader meets them: on the sheet, page by page, for a document long enough to have
+/// pages that are full from top to bottom.
+#[test]
+fn every_printed_page_keeps_the_margins_around_the_document() {
+    let fixture = Fixture::new("print-margins");
+    let document = fixture.write("handbook.md", &handbook(26, &|_| 3));
+    let pdf = document.with_file_name("handbook.pdf");
+    let app = axiomd_e2e::launch(&document);
+
+    export(&app, &pdf);
+
+    let pages = paper::measure(&pdf);
+    assert!(
+        pages.len() >= 3,
+        "the fixture no longer spans enough pages to say anything: {} page(s)",
+        pages.len(),
+    );
+    for (at, page) in pages.iter().enumerate() {
+        let document_on_it = page.above(mm(MARGIN.0));
+        let ink = paper::Page::ink(&document_on_it)
+            .unwrap_or_else(|| panic!("page {} of the PDF has no document on it", at + 1));
+        let em = document_on_it
+            .iter()
+            .map(|run| run.size)
+            .fold(0.0_f64, f64::max);
+        let (side, top_and_bottom) = (mm(MARGIN.1), mm(MARGIN.0));
+        let at = at + 1;
+        assert!(
+            ink.left >= side - SLACK.0,
+            "page {at} starts {:.1} mm from the left edge, inside the {} mm margin: {ink:?}",
+            ink.left / mm(1.0),
+            MARGIN.1,
+        );
+        assert!(
+            ink.right <= page.width - side + em * SLACK.1,
+            "page {at} runs to {:.1} mm from the left edge on a {:.1} mm sheet, through \
+             the {} mm margin: {ink:?}",
+            ink.right / mm(1.0),
+            page.width / mm(1.0),
+            MARGIN.1,
+        );
+        assert!(
+            ink.top <= page.height - top_and_bottom + em * SLACK.2,
+            "page {at} reaches {:.1} mm from the bottom of a {:.1} mm sheet, through the \
+             {} mm margin at the top: {ink:?}",
+            ink.top / mm(1.0),
+            page.height / mm(1.0),
+            MARGIN.0,
+        );
+        assert!(
+            ink.bottom >= top_and_bottom - em * SLACK.2,
+            "page {at} reaches down to {:.1} mm from the bottom edge, inside the {} mm \
+             margin: {ink:?}",
+            ink.bottom / mm(1.0),
+            MARGIN.0,
+        );
+    }
+    assert!(app.close().is_empty(), "something outlived the application");
+}
+
+/// Issue #43, the third defect: body text far larger than any sane print typography.
+///
+/// Paper has no reading distance to adapt to and no window to fill, so print type is
+/// stated in points rather than inherited from the screen's pixels — and asserted in
+/// the points the PDF is actually drawn in.
+#[test]
+fn the_document_is_set_in_print_type_rather_than_screen_type() {
+    let fixture = Fixture::new("print-type");
+    let document = fixture.write("handbook.md", &handbook(6, &|_| 3));
+    let pdf = document.with_file_name("handbook.pdf");
+    let app = axiomd_e2e::launch(&document);
+
+    export(&app, &pdf);
+
+    let pages = paper::measure(&pdf);
+    let body = pages[0]
+        .commonest_size()
+        .expect("a first page with type on it");
+    assert!(
+        (11.0..=12.0).contains(&body),
+        "the document printed at {body:.1} pt, which is not the 11-12 pt body type \
+         paper is set in",
+    );
+    // The headings keep their scale above it rather than all collapsing to one size.
+    let biggest = pages[0]
+        .runs
+        .iter()
+        .map(|run| run.size)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        biggest > body * 1.5,
+        "the heading scale is gone: the largest type on the page is {biggest:.1} pt \
+         against a {body:.1} pt body",
+    );
+    assert!(app.close().is_empty(), "something outlived the application");
+}
+
+/// Issue #43, the fourth defect, and the owner's ruling of 2026-08-05: every page says
+/// which page it is, and says nothing else.
+///
+/// The furniture ruling of 2026-08-02 otherwise stands — no header, no date, no file
+/// name — so the band below the document holds the number and nothing besides.
+#[test]
+fn every_page_is_numbered_in_its_footer_and_carries_no_other_furniture() {
+    let fixture = Fixture::new("print-numbers");
+    let document = fixture.write("handbook.md", &handbook(26, &|_| 3));
+    let pdf = document.with_file_name("handbook.pdf");
+    let app = axiomd_e2e::launch(&document);
+
+    export(&app, &pdf);
+
+    let pages = paper::measure(&pdf);
+    assert!(
+        pages.len() >= 3,
+        "the fixture no longer spans enough pages to number: {} page(s)",
+        pages.len(),
+    );
+    for (at, page) in pages.iter().enumerate() {
+        let footer = page.below(mm(MARGIN.0));
+        let said: Vec<&str> = footer.iter().map(|run| run.text.as_str()).collect();
+        assert_eq!(
+            said,
+            vec![(at + 1).to_string().as_str()],
+            "the foot of page {} says something other than its own number",
+            at + 1,
+        );
+        assert!(
+            (footer[0].centre() - page.width / 2.0).abs() <= 2.0,
+            "the number on page {} sits at {:.1} pt across a {:.1} pt sheet rather than \
+             in the middle of it",
+            at + 1,
+            footer[0].centre(),
+            page.width,
+        );
+    }
+
+    // And a numbered page is a page of the document rather than a page of it over
+    // again: no two sheets carry the same words. The other half of #43's first defect
+    // — a delivery that paginated the document twice would be caught here, in one
+    // file, as well as by the job count.
+    let written: Vec<String> = pages
+        .iter()
+        .map(|page| {
+            page.above(mm(MARGIN.0))
+                .iter()
+                .map(|run| run.text.as_str())
+                .collect::<Vec<&str>>()
+                .join(" ")
+        })
+        .collect();
+    for (at, page) in written.iter().enumerate() {
+        assert!(
+            !written[..at].contains(page),
+            "page {} of the PDF is a page that was already printed",
+            at + 1,
+        );
+    }
+
+    // And it is text, not a picture of a number: whoever receives the PDF can search
+    // it, and every page of the extracted text ends with its own number.
+    for (at, text) in pdf_pages(&pdf).iter().enumerate() {
+        let last = text
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim();
+        assert_eq!(
+            last,
+            (at + 1).to_string(),
+            "the text of page {} does not end with its number",
+            at + 1,
+        );
+    }
+    assert!(app.close().is_empty(), "something outlived the application");
+}
+
+/// Issue #43, the third defect's suspect: zoom is how big the document is drawn *on
+/// screen*, and it is remembered for the window it belongs to — so a reader who
+/// enlarged a document to read it must not discover that they have enlarged it on
+/// paper too.
+///
+/// Measured rather than assumed. WebKitGTK 2.52.5 lays a print job out from the
+/// document rather than from the view's zoom, so this holds the property rather than
+/// repairing it: it fails the day an engine change carries the screen's zoom onto the
+/// paper.
+#[test]
+fn what_the_reader_zoomed_on_screen_never_reaches_the_paper() {
+    let fixture = Fixture::new("print-zoom");
+    let document = fixture.write("handbook.md", &handbook(6, &|_| 3));
+    let app = axiomd_e2e::launch(&document);
+
+    let unzoomed = document.with_file_name("unzoomed.pdf");
+    export(&app, &unzoomed);
+    let across = app.dom("document.documentElement.clientWidth");
+
+    for _ in 0..LADDER_TO_DOUBLE {
+        app.activate("win.zoom-in");
+    }
+    let doubled = app.dom("document.documentElement.clientWidth");
+    assert_eq!(
+        doubled.parse::<f64>().expect("a width in pixels") * 2.0,
+        across.parse::<f64>().expect("a width in pixels"),
+        "the document on screen was not enlarged, so this proves nothing",
+    );
+
+    let zoomed = document.with_file_name("zoomed.pdf");
+    export(&app, &zoomed);
+
+    assert_eq!(
+        sheets(&zoomed),
+        sheets(&unzoomed),
+        "the reader's screen zoom changed what came out on paper",
+    );
+    assert!(app.close().is_empty(), "something outlived the application");
+}
+
+/// How many steps of `win.zoom-in` take the document from 100% to 200% (`zoom.rs`).
+const LADDER_TO_DOUBLE: usize = 5;
+
+/// Every page of a PDF written out as what it puts where, so that two of them can be
+/// compared and the difference read.
+fn sheets(file: &Path) -> String {
+    paper::measure(file)
+        .iter()
+        .enumerate()
+        .map(|(at, page)| {
+            let runs = page
+                .runs
+                .iter()
+                .map(|run| {
+                    format!(
+                        "  {:.1},{:.1} {:.2}pt {:?}\n",
+                        run.left, run.baseline, run.size, run.text
+                    )
+                })
+                .collect::<String>();
+            format!(
+                "page {} {:.1}x{:.1}\n{runs}",
+                at + 1,
+                page.width,
+                page.height
+            )
+        })
+        .collect()
 }
 
 /// UT-014: the reader exports a page, mails it to somebody, and it opens on a machine
@@ -391,6 +671,88 @@ fn an_exported_page_carries_the_whole_document_inside_it() {
 /// The bytes of a real one-pixel PNG header, matched against its own base64 above.
 const PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
 
+/// Issue #43's first defect, and the reason printing was reported as broken at all:
+/// one confirmed dialog printed the document twice, so every page came out of the
+/// printer twice.
+///
+/// One press of Print, one job. The count is taken where the copies leave the window
+/// because this launch's only printer is the file backend and a file written twice is
+/// the same file as one written once — the reader's own count is the sheets in the
+/// output tray.
+///
+/// And what came out is the whole delivery, asserted on the file the printer was given:
+/// the document once, numbered, inside its margins, and identical to what the same
+/// document exports as. Print and PDF are one path (`design_decisions.md`), so a
+/// difference between the two is a defect in itself.
+#[test]
+fn one_confirmed_print_dialog_sends_exactly_one_copy_of_the_document() {
+    let fixture = Fixture::new("print-once");
+    let document = fixture.write("handbook.md", &handbook(26, &|_| 3));
+    let app = axiomd_e2e::launch(&document);
+
+    let exported = document.with_file_name("handbook.pdf");
+    export(&app, &exported);
+
+    // The reader picks their printer out of the dialog's list, and presses Print.
+    app.choose_printer("Print to File");
+    app.activate("win.print");
+    app.wait_for_dialog_saying("Print");
+    app.press("Print");
+
+    let said = app.wait_for_banner("Printed");
+    assert_eq!(
+        said,
+        format!("Printed {}", "handbook.md"),
+        "the window did not say the document was printed",
+    );
+    assert_eq!(
+        app.print_count(),
+        1,
+        "one press of Print sent more than one job to the printer",
+    );
+
+    let printed = only_file(&app.documents_dir());
+    assert_eq!(
+        sheets(&printed),
+        sheets(&exported),
+        "what went to the printer is not the PDF the same document exports as",
+    );
+    for (at, page) in paper::measure(&printed).iter().enumerate() {
+        let said: Vec<&str> = page
+            .below(mm(MARGIN.0))
+            .iter()
+            .map(|run| run.text.as_str())
+            .collect();
+        assert_eq!(
+            said,
+            vec![(at + 1).to_string().as_str()],
+            "the foot of printed page {} says something other than its own number",
+            at + 1,
+        );
+    }
+    assert!(app.close().is_empty(), "something outlived the application");
+}
+
+/// The one file in `folder`, with everything that is in it said when there is not
+/// exactly one — a printer that was sent two jobs to two names would be caught here as
+/// well as by the count.
+fn only_file(folder: &Path) -> std::path::PathBuf {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(folder)
+        .unwrap_or_else(|trouble| panic!("{} cannot be read: {trouble}", folder.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files.len(),
+        1,
+        "the printer was given {} files rather than one: {files:?}",
+        files.len(),
+    );
+    files.remove(0)
+}
+
 /// UT-013's first step: `Ctrl+P` puts the reader's own print dialog up — and changing
 /// their mind leaves
 /// them exactly where they were, with the document still on screen.
@@ -412,5 +774,10 @@ fn the_print_dialog_opens_when_the_reader_asks_and_leaves_quietly() {
     // about a print nobody asked to finish.
     assert_eq!(app.dom_text("h1"), "Quarterly Report");
     assert_eq!(app.banner(), "");
+    assert_eq!(
+        app.print_count(),
+        0,
+        "a dialog the reader closed printed anyway",
+    );
     assert!(app.close().is_empty(), "something outlived the application");
 }

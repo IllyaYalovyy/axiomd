@@ -16,6 +16,29 @@ otherwise by a human. Export follows the same rule: PDF comes from
 WebKit's own print machinery over the already-rendered document, HTML from
 the pipeline itself — never from a converter subprocess.
 
+## Why does axiomd link a PDF library — is that not a converter?
+
+No. The rule above is about **subprocesses and format conversion**: nothing
+axiomd renders may be produced by forking a tool, and Markdown is never
+turned into a document format by anything but the pipeline. Since issue
+#43, printing goes: WebKit paginates the page on screen into a PDF, the
+page numbers are stamped into that PDF in process (`numbering.rs`, on a
+worker), and the result is either the file the reader exported or the file
+sent to their printer as a print job. Nothing is converted — the PDF that
+comes out is the PDF that went in, with one short content stream added per
+page — and no process is started.
+
+It is there because a page number cannot be drawn any other way. Measured
+on WebKitGTK 2.52.5 for #19 and recorded in `axiomd.css`: the engine draws
+neither the `@page` margin boxes CSS reserves for page furniture nor a
+repeating fixed footer. The owner required page numbers on 2026-08-05.
+Stamping is also what makes print and PDF one path rather than two that
+agree today: **what axiomd prints is the PDF it exports.**
+
+The same ruling settles margins. `@page { margin }` is ignored on the
+real-printer path, so the margins live on the `GtkPageSetup` a print job
+carries (`export.rs`), which the engine cannot ignore.
+
 ## Is axiomd an editor?
 
 Yes — by owner decision (2026-08-02) editing is built in from day one,

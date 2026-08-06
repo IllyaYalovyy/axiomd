@@ -624,14 +624,38 @@ body {
  *   - a `position: fixed` footer with `content: counter(page)` was laid out once, at
  *     the end of the flow rather than on every page, and the counter read 0.
  *
- * Stamping the numbers into the PDF afterwards would put them in the exported file
- * and not on the printed page, which is the one thing this stylesheet exists to
- * prevent. So it is escalated in the report for #19 rather than half-done. */
+ * So the number is not drawn from here at all. It is stamped into the paginated PDF
+ * (`numbering.rs`) — which reaches the printed page as well as the exported one,
+ * because since #43 a print job IS the exported PDF, sent on to the printer
+ * (`export.rs`). The owner required page numbers on 2026-08-05; the rest of the
+ * furniture ruling stands, and nothing else is added to a page. */
 
 @media print {
+  /* No margin here, because the margin is not here. This engine ignores an `@page`
+     margin on the real-printer path — the second photograph in #43 is what that looks
+     like on paper: text against the sheet's physical edge. The 18 mm / 16 mm the
+     document is printed inside is on the page setup a print job carries
+     (`export.rs`), which is margin machinery no engine can ignore. Stated as zero
+     rather than left out so that an engine which does honour `@page` cannot add a
+     second margin on top of the first. */
   @page {
     size: auto;
-    margin: 18mm 16mm;
+    margin: 0;
+  }
+
+  /* Paper is not a screen: it has no window to fill and no reading distance to adapt
+     to, so print type is stated in points rather than inherited from the pixels the
+     document is drawn in on screen (#43's third defect). One declaration, at the root,
+     because every size below is relative to it — so the headings keep the scale they
+     have on screen and only their measure changes.
+
+     11pt lands at about 11.7pt on the sheet. WebKitGTK lays a printed page out at
+     1.25x the width it will occupy and scales the result down to fit, so a CSS point
+     comes out about 6.7% larger than a real one — measured on WebKitGTK 2.52.5, where
+     16px of body type printed at 12.8pt. What the tests measure is the paper, not this
+     declaration. */
+  html {
+    font-size: 11pt;
   }
 
   :root {

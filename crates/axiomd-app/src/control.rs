@@ -332,6 +332,16 @@ impl Session {
                 self.target(shell)?.export_to(Path::new(payload));
                 Ok(String::new())
             }
+            // Choosing a printer in the print dialog's own list. GTK draws that list
+            // inside the dialog rather than in this window, and a headless compositor
+            // has no pointer to click a row of it with, so the choice lands where the
+            // dialog would leave it — see `export::Printing::choose`. Everything after
+            // it is the application's own path: the dialog opens on that printer and
+            // the reader presses Print in it.
+            "printer" => {
+                self.target(shell)?.choose_printer(payload);
+                Ok(String::new())
+            }
             // The wheel and the touchpad over the document. A headless compositor has
             // no pointer and no touchpad, and GTK 4 offers no way to inject one, so
             // these land in the calls the view's own scroll controller and zoom
@@ -560,6 +570,11 @@ impl Session {
             // never the thing on screen before it has a frame — is this answer.
             "pane" => Ok(window.pane_showing().to_owned()),
             "renders" => Ok(window.renders().to_string()),
+            // How many copies of the document have left this window for a printer.
+            // The reader counts them in the output tray; a headless run cannot, because
+            // its only printer writes a file and a file written twice looks exactly
+            // like a file written once (issue #43, the every-page-twice defect).
+            "prints" => Ok(window.prints().to_string()),
             "showing" => Ok(window.showing().to_owned()),
             "mode" => Ok(match window.showing() {
                 "editor" => "edit".to_owned(),
