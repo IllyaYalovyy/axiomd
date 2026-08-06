@@ -42,3 +42,8 @@ lopdf = { version = "0.36", default-features = false }
 # which is a session-bus call and nothing more. The same GIO `gtk` already brings, so
 # this adds no code to the build — it only says which crates may talk to the desktop.
 gio = "0.22"
+# The C library's own bindings, for the one thing the standard library leaves out: ending
+# a *process group*. Used only by the test harness (`crates/axiomd-e2e`), and the same
+# libc `gtk` already brings — it adds no code to the build, it only says which crate may
+# reach for a signal.
+libc = "0.2"

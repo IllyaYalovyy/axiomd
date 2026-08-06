@@ -11,3 +11,10 @@ repository.workspace = true
 # gdk only, for the two ends of a screenshot: encoding what the app captured and
 # decoding a pinned golden back to pixels. No display is needed for either.
 gtk.workspace = true
+# One call: `kill` on a *process group*. A launch is a tree — a sandbox, a bus daemon,
+# the application, the web process that renders its documents — and the standard library
+# can put a child in a group of its own but cannot then end that group, so a killed run
+# left the rest of the tree on the developer's machine (issue #44). The same libc gtk
+# already brings, so this adds no code to the build; it only says which crate may reach
+# for a signal.
+libc.workspace = true

@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
 use webkit6::prelude::*;
@@ -491,6 +492,9 @@ impl Session {
                 self.selected.set(None);
                 Ok(String::new())
             }
+            // Where this copy is running, which is how the harness proves a test copy
+            // is nowhere near the developer's own session (issue #44).
+            "whereabouts" => Ok(whereabouts(app)),
             "quit" => Ok(String::new()),
             other => Err(format!("no such command: {other}")),
         }
@@ -607,6 +611,179 @@ impl Session {
             .window_at(index)
             .ok_or_else(|| format!("window {index} has closed"))
     }
+}
+
+/// Where this copy of axiomd is running, in four lines: the compositor it draws on,
+/// every other compositor it could have drawn on instead, the session bus it registered
+/// with, and the control group the desktop started it in.
+///
+/// This exists for one assertion, made at every launch of the test harness (issue #44):
+/// a copy started by a test must be nowhere the developer can see it — not on their
+/// display, not on their session bus, and not in their session's accounting of running
+/// applications. The harness compares each line against the world it built for this
+/// launch and refuses to hand the launch to a test that does not match, so a containment
+/// hole fails a test instead of putting a window on somebody's desktop.
+///
+/// Every line is read from this process rather than described: the display GDK opened,
+/// the sockets that exist beside it, the bus GIO registered on, and the kernel's own
+/// answer about this process's control group.
+fn whereabouts(app: &adw::Application) -> String {
+    let on = display_socket();
+    [
+        format!("backend {}", backend()),
+        format!("display {}", on.display()),
+        format!("display-id {}", which_socket(&on)),
+        format!(
+            "strays {}",
+            other_compositors(&on)
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        format!("bus {}", session_bus(app)),
+        format!("scope {}", control_group()),
+    ]
+    .join("\n")
+}
+
+/// The kind of display this copy opened — `GdkWaylandDisplay` for every launch this
+/// project supports, and the name of whatever else was opened when it is not, which is
+/// an answer rather than a panic.
+fn backend() -> String {
+    gdk::Display::default().map_or_else(
+        || "none".to_owned(),
+        |display| display.type_().name().to_string(),
+    )
+}
+
+/// The compositor socket this copy is drawing on, as an absolute path.
+///
+/// Resolved the way libwayland resolves it (`wl_display_connect(3)`): `WAYLAND_DISPLAY`
+/// verbatim when it is absolute, and otherwise a name inside `XDG_RUNTIME_DIR`. GDK is
+/// asked for the name rather than the environment, so this is the display the toolkit
+/// really opened.
+fn display_socket() -> PathBuf {
+    let Some(display) = gdk::Display::default() else {
+        return PathBuf::from("none");
+    };
+    let named = PathBuf::from(display.name().as_str());
+    if named.is_absolute() {
+        return named;
+    }
+    runtime_dir().join(named)
+}
+
+/// Every *other* compositor this copy could have connected to: a `wayland-…` socket in
+/// its runtime directory, or in the session's own, that is not the one it is on.
+///
+/// The point of the question is the fallback nobody sees coming. A sandbox handed the
+/// host's Wayland socket has a live desktop one `WAYLAND_DISPLAY` away, so a launch that
+/// lost that variable would draw its window on the developer's screen and still pass
+/// every assertion about itself. An empty answer is the harness's proof that there was
+/// nowhere else to go.
+fn other_compositors(on: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let here = which_socket(on);
+    let session = std::fs::metadata("/proc/self")
+        .map(|me| PathBuf::from(format!("/run/user/{}", me.uid())))
+        .unwrap_or_default();
+    let mut found = Vec::new();
+    for directory in [runtime_dir(), session] {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("wayland-") || name.ends_with(".lock") {
+                continue;
+            }
+            // By the socket itself rather than by its name: a sandbox is handed the
+            // harness's compositor bind-mounted under a name of flatpak's choosing, so
+            // the same socket is reachable by two paths and neither is a second display.
+            if which_socket(&path) != here && !found.contains(&path) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Which socket a path names — its filesystem and inode — so that the same socket under
+/// two names is recognised as one, and two sockets under one name are told apart.
+fn which_socket(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    std::fs::metadata(path).map_or_else(
+        |_| "none".to_owned(),
+        |socket| format!("{}:{}", socket.dev(), socket.ino()),
+    )
+}
+
+/// The session bus this copy registered on, named by the process id of the bus daemon
+/// itself — or `none` when it registered on no bus at all.
+///
+/// The daemon's own process is the only thing about a bus that says *which* bus it is.
+/// The address cannot: a sandboxed copy is always given the address of the proxy flatpak
+/// puts in front of it, whatever that proxy is talking to on the far side (probed on
+/// flatpak 1.16.6: the address inside the sandbox is `/run/flatpak/bus` for the
+/// developer's session bus and for a private one alike, and the two even present
+/// different bus GUIDs from the ones behind them). `GetConnectionUnixProcessID` of the
+/// bus's own name travels through the proxy and is answered by the daemon behind it.
+fn session_bus(app: &adw::Application) -> String {
+    let Some(bus) = app.dbus_connection() else {
+        return "none".to_owned();
+    };
+    let asked = ("org.freedesktop.DBus",).to_variant();
+    let answer = bus.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID",
+        Some(&asked),
+        None,
+        gio::DBusCallFlags::NONE,
+        5_000,
+        gio::Cancellable::NONE,
+    );
+    match answer
+        .ok()
+        .and_then(|answer| answer.try_child_value(0))
+        .and_then(|pid| pid.get::<u32>())
+    {
+        Some(pid) => pid.to_string(),
+        // A bus that will not say which daemon it is is not a contained bus.
+        None => "unknown".to_owned(),
+    }
+}
+
+/// The control group this copy runs in, by its last component — which is the name of the
+/// systemd unit the session started it under.
+///
+/// A `flatpak run` asks the session's own service manager for a transient scope named
+/// after the application, and that scope is precisely what makes a launch *visible* as a
+/// running application to the desktop (issue #44: 1,026 of them in a day). A copy under
+/// the scope of whatever started the test is a copy the desktop never counted.
+fn control_group() -> String {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|said| {
+            said.lines()
+                .next_back()
+                .and_then(|line| line.rsplit('/').next())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// Waits until the window has painted a frame with `widget` in it.

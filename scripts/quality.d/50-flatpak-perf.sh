@@ -43,6 +43,20 @@ has() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# This hook starts sandboxed applications and the compositors they draw on, and it exits
+# on the first failure — including failures inside a probe, which is exactly when a launch
+# is most likely to be left behind. So what it started is ended when it leaves, however it
+# leaves (issue #44).
+leak_baseline=$(mktemp)
+"${repo_root}/scripts/leak-sweep.sh" baseline "${leak_baseline}"
+sweep_before_exiting() {
+    local status=$?
+    "${repo_root}/scripts/leak-sweep.sh" sweep "${leak_baseline}" || status=1
+    rm -f "${leak_baseline}" "${output:-}"
+    exit "${status}"
+}
+trap sweep_before_exiting EXIT
+
 has weston ||
     fail "the parity budgets drive the real application on a headless compositor.
   Install it with: sudo dnf install weston"
@@ -68,7 +82,6 @@ mapfile -t metrics < <(
   insist was measured."
 
 output=$(mktemp)
-trap 'rm -f "${output}"' EXIT
 
 # `|| true` so the checks below report the failure with the measured numbers in front of
 # it rather than a bare non-zero exit. `--test-threads=1`: every sample starts a

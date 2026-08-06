@@ -1229,6 +1229,21 @@ fn the_axiomd_a_user_install_leaves_reads_a_document_and_offers_its_preferences(
         "the installed axiomd is not reading its settings out of the schema it installed",
     );
 
+    // And it is contained the way every launch of this harness is (issue #44): on the
+    // compositor this test started, and on no session bus at all — a copy of axiomd that
+    // could see the reader's own would have handed it this document instead of showing it.
+    let where_it_is = app.whereabouts();
+    assert!(
+        where_it_is.display.starts_with(std::env::temp_dir()),
+        "the installed axiomd is drawing on {}, which is not a compositor this test \
+         started",
+        where_it_is.display.display(),
+    );
+    assert_eq!(
+        where_it_is.bus, None,
+        "the installed axiomd registered on a session bus",
+    );
+
     assert!(
         app.close().is_empty(),
         "the installed axiomd left something running",
@@ -1486,11 +1501,7 @@ fn the_installed_flatpak_renders_a_document_opened_through_the_document_portal()
 /// the only reason its answer is worth anything. The shell is the runtime's own:
 /// org.gnome.Platform//49 has an `sh` and `--command=sh` runs it (probed 2026-08-04).
 fn in_the_sandbox(script: &str) -> std::process::Output {
-    tool("flatpak", "sudo dnf install flatpak")
-        .args(["run", "--command=sh", APP_ID, "-c"])
-        .arg(script)
-        .output()
-        .expect("run a shell inside the installed sandbox")
+    axiomd_e2e::in_the_installed_sandbox(script)
 }
 
 /// Issue #23, and the scenario the owner met the flatpak with: a document kept among

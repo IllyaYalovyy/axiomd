@@ -138,6 +138,23 @@ run_project_hooks() {
     fi
 }
 
+# Nothing this run starts may still be running when it ends (issue #44): not an
+# application, not a compositor, not a sandbox. The baseline is taken before anything
+# runs so that only what *this* run added is ever blamed on it, and the sweep is a trap
+# rather than a last line, so a gate that fails half way through — or is killed — still
+# ends what it started. See scripts/leak-sweep.sh.
+leak_baseline=$(mktemp)
+scripts/leak-sweep.sh baseline "${leak_baseline}"
+sweep_before_exiting() {
+    local status=$?
+    if ! scripts/leak-sweep.sh sweep "${leak_baseline}"; then
+        status=1
+    fi
+    rm -f "${leak_baseline}"
+    exit "${status}"
+}
+trap sweep_before_exiting EXIT
+
 run_shell_syntax_checks
 run_rust_checks
 run_node_checks
