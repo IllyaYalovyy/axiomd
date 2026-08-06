@@ -204,6 +204,9 @@ pub(crate) struct DocumentWindow {
     /// How big this window shows its documents. One window's own and nothing that is
     /// written down: it lasts as long as the window and no longer (UT-011).
     zoom: Rc<Zoom>,
+    /// How this window prints, and the printer and paper the reader last chose in it.
+    /// One window's own (invariant 7).
+    printing: crate::export::Printing,
     /// The engine this window has been switched to, or `None` while it follows the
     /// reader's preference. One window's own, and nothing that is written down either.
     engine: Cell<Option<axiomd_engine::EngineId>>,
@@ -478,6 +481,7 @@ impl DocumentWindow {
             capabilities: OnceCell::new(),
             spelling: OnceCell::new(),
             zoom,
+            printing: crate::export::Printing::new(),
             engine: Cell::new(engine),
             parser: OnceCell::new(),
         });
@@ -1811,7 +1815,7 @@ impl DocumentWindow {
     /// it — and a reader who changes their mind is told nothing at all.
     fn print(self: &Rc<Self>) {
         let saying = Rc::downgrade(self);
-        crate::export::print(
+        self.printing.print(
             &self.deliverable(),
             self.window.upcast_ref::<gtk::Window>(),
             move |outcome| {
@@ -1866,6 +1870,18 @@ impl DocumentWindow {
                 window.export_to(&path);
             }
         });
+    }
+
+    /// How many print jobs this window has sent — how many copies of the document
+    /// have gone to a printer.
+    pub(crate) fn prints(&self) -> u32 {
+        self.printing.jobs()
+    }
+
+    /// Which printer this window's print dialog opens on — the far side of choosing
+    /// one in its list (`control.rs`).
+    pub(crate) fn choose_printer(&self, printer: &str) {
+        self.printing.choose(printer);
     }
 
     /// Writes this document to `file` — the far side of the export chooser.

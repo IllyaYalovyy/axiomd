@@ -67,6 +67,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libspelling",
+ "lopdf",
  "pdf-extract",
  "sourceview5",
  "webkit6",

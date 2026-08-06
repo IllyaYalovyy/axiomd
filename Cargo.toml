@@ -26,6 +26,17 @@ sourceview5 = "0.11.2"
 # libspelling, over the same source buffer: the editor's spell checking, which is
 # the reader's to switch off (issue #21, and the `spellcheck` key of #20).
 libspelling = "0.5.0"
+# PDF, in process, for the one thing a print stylesheet cannot do. Measured for issue
+# #19 and confirmed by #43: WebKitGTK draws neither a `@page` margin box nor a
+# repeating fixed footer, so a page number can only be written onto the paginated
+# document — and the owner ruled on 2026-08-05 that page numbers are required. lopdf
+# reads the PDF WebKit just wrote and appends one short content stream to each page;
+# it is a library rather than a converter, so `design_decisions.md`'s "no subprocess,
+# ever" still holds. Pinned to the version the print suite's `pdf-extract` is built on,
+# so the build carries one copy of it rather than two, and taken with default features
+# off: the four it ships on are date formatting and parallel decompression this uses
+# none of.
+lopdf = { version = "0.36", default-features = false }
 # GIO on its own, for the one crate that needs the desktop without needing a toolkit:
 # the document model asks the Documents portal where a document really is (issue #24),
 # which is a session-bus call and nothing more. The same GIO `gtk` already brings, so

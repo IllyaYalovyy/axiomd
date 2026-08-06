@@ -749,7 +749,17 @@ impl App {
     /// once the document the reader was waiting for is on screen.
     pub fn let_the_document_arrive(&self) {
         self.answer_the_held_pages();
-        self.wait_until("document.querySelector('.markdown') !== null");
+        // Styled, not merely present. The article and the stylesheet are two answers
+        // from the origin that serves them, and holding the pages back and letting them
+        // all go at once is exactly the arrangement in which the second can land after
+        // the first: a wait that ended at `.markdown` returned while the page was still
+        // unpainted, and a test reading a colour there read `rgba(0, 0, 0, 0)` roughly
+        // one run in six. The colour itself is still the test's to assert — this only
+        // waits for there to be one.
+        self.wait_until(
+            "document.querySelector('.markdown') !== null && \
+             getComputedStyle(document.body).backgroundColor !== 'rgba(0, 0, 0, 0)'",
+        );
     }
 
     /// The same, and returns at once rather than waiting for the document.
@@ -962,6 +972,16 @@ impl App {
         self.property("renders").parse().expect("a page count")
     }
 
+    /// How many print jobs the addressed window has sent — how many copies of the
+    /// document have gone to a printer.
+    ///
+    /// The count the reader takes off the output tray. This launch's only printer
+    /// writes a file (`display.rs`), and a file written twice is indistinguishable from
+    /// one written once, so the copies are counted where they leave the window.
+    pub fn print_count(&self) -> u32 {
+        self.property("prints").parse().expect("a job count")
+    }
+
     /// Whether the addressed window is showing a document or the status page that
     /// explains why it is not.
     pub fn showing_document(&self) -> bool {
@@ -1149,6 +1169,19 @@ impl App {
     /// waiting, so a test must wait for the window to say it is done.
     pub fn export_to(&self, file: &Path) {
         self.command("export-to", &file.display().to_string());
+    }
+
+    /// Chooses the printer called `printer` in the addressed window's print dialog, as
+    /// picking it out of that dialog's list does.
+    ///
+    /// The one thing a printing test cannot do for itself: GTK draws the printer list
+    /// inside the print dialog, and a headless compositor has no pointer to click a row
+    /// of it with. Everything after the choice — the dialog opening on that printer,
+    /// the reader pressing Print in it, the job that goes out — is the application's
+    /// own doing. This launch has exactly one printer, the file backend's
+    /// (`display.rs`), so `Print to File` is the whole of what may be chosen.
+    pub fn choose_printer(&self, printer: &str) {
+        self.command("printer", printer);
     }
 
     /// Presses the button labelled `label`, wherever the addressed window is showing

@@ -7,6 +7,7 @@ mod editor;
 mod export;
 mod find;
 mod links;
+mod numbering;
 mod outline;
 mod remote;
 mod scheme;
