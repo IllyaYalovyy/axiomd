@@ -318,6 +318,81 @@ fn a_dom_assertion_that_is_untrue_of_the_document_fails() {
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
 
+/// The other half of a harness worth having: an application that dies fails the test
+/// it was running.
+///
+/// This is the defect issue #45 reports, and it is the larger of the two it reports.
+/// On 2026-08-05 eleven core dumps of axiomd were written under test in one day and
+/// every gate over them stayed green, because a launch that had died and a launch that
+/// had quit when asked came back from the harness as the same silence. A test that
+/// waits for something an application that no longer exists can never do must fail on
+/// the death rather than thirty seconds later on the deadline.
+#[test]
+fn a_launch_that_dies_mid_test_fails_the_test_it_was_running() {
+    let fixture = Fixture::new("crash-mid-test");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
+    assert_eq!(app.dom_text("h1"), "Release Notes");
+
+    let started = std::time::Instant::now();
+    let complaint = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        app.crash_the_application();
+        // Something the application would answer in a millisecond, and now never will.
+        app.wait_until_windows(1);
+    }))
+    .expect_err("a test whose application died must fail");
+    let waited = started.elapsed();
+    let complaint = complaint
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or("");
+
+    assert!(
+        complaint.contains("SIGKILL"),
+        "the failure did not name the signal that ended the application: {complaint:?}",
+    );
+    assert!(
+        complaint.contains("died"),
+        "the failure did not say that the application died: {complaint:?}",
+    );
+    // Not by running out the wait: a death read off a timeout is a death read too late
+    // to say anything about, and it is what a whole suite's worth of them would cost.
+    assert!(
+        waited < std::time::Duration::from_secs(20),
+        "the death was reported only when the wait ran out, after {waited:?}",
+    );
+}
+
+/// And the window the crashes of issue #45 actually fell into: after the last assertion
+/// of a test, before it closes its launch. Every assertion passed, so the test passed —
+/// and `close()` found a process that was already gone, could not tell that from one
+/// that had quit when asked, and said nothing.
+#[test]
+fn a_launch_that_dies_after_the_last_assertion_still_fails_its_test() {
+    let fixture = Fixture::new("crash-at-teardown");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
+
+    // The whole of what the test was there to check, and all of it true.
+    assert_eq!(app.dom_text("h1"), "Release Notes");
+    assert_eq!(app.dom_text("h2"), "Details");
+
+    app.crash_the_application();
+    let complaint = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || app.close()))
+        .expect_err("closing a launch that had already died must fail the test");
+    let complaint = complaint
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .unwrap_or("");
+
+    assert!(
+        complaint.contains("SIGKILL"),
+        "closing a launch that had crashed did not name the signal: {complaint:?}",
+    );
+    assert!(
+        complaint.contains("No core dump was recorded"),
+        "the failure did not say where to look for a dump: {complaint:?}",
+    );
+}
+
 /// A document is displayed with JavaScript off and under `default-src 'none'`. Being
 /// under test changes neither: a document that tries to run a script still cannot,
 /// even while the harness is reading the DOM beside it.
