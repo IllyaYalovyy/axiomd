@@ -138,19 +138,27 @@ run_project_hooks() {
     fi
 }
 
-# Nothing this run starts may still be running when it ends (issue #44): not an
-# application, not a compositor, not a sandbox. The baseline is taken before anything
-# runs so that only what *this* run added is ever blamed on it, and the sweep is a trap
-# rather than a last line, so a gate that fails half way through — or is killed — still
-# ends what it started. See scripts/leak-sweep.sh.
+# Nothing this run starts may still be running when it ends (issue #44), and nothing it
+# starts may crash (issue #45). Both baselines are taken before anything runs so that
+# only what *this* run added is ever blamed on it, and both sweeps are a trap rather than
+# a last line, so a gate that fails half way through — or is killed — still ends what it
+# started and still says what it dumped. See scripts/leak-sweep.sh and
+# scripts/coredump-sweep.sh.
 leak_baseline=$(mktemp)
 scripts/leak-sweep.sh baseline "${leak_baseline}"
+coredump_baseline=$(mktemp)
+scripts/coredump-sweep.sh baseline "${coredump_baseline}"
 sweep_before_exiting() {
     local status=$?
+    # Both, every time, whichever fails: a run that leaked *and* crashed has to say so
+    # once rather than hide the second behind the first.
     if ! scripts/leak-sweep.sh sweep "${leak_baseline}"; then
         status=1
     fi
-    rm -f "${leak_baseline}"
+    if ! scripts/coredump-sweep.sh sweep "${coredump_baseline}"; then
+        status=1
+    fi
+    rm -f "${leak_baseline}" "${coredump_baseline}"
     exit "${status}"
 }
 trap sweep_before_exiting EXIT

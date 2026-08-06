@@ -79,6 +79,21 @@ Every fixed bug leaves behind a test that fails without the fix.
 Every new user-facing behavior has a test that fails if the behavior
 disappears. Tests are demonstrated red first (see `agent/skills/test-quality`).
 
+## A crash is a failure
+
+An application that ends under test without being asked to fails the test it
+was running — any signal, any phase, including the moment between the last
+assertion and teardown. The harness reports which signal ended it and where
+the core dump is (`crates/axiomd-e2e/src/crash.rs`), and the gate sweeps for
+dumps written since it started and fails on any of them
+(`scripts/coredump-sweep.sh`). Neither is optional and neither may be
+loosened to make a suite pass: a crash is the defect, not the check that
+noticed it.
+
+Every dump that has been found is triaged in `docs/CRASHES.md`, with its
+root cause and either the commit that fixed it or the upstream evidence that
+it is not ours.
+
 ## Risk Matrix
 
 | Risk / failure mode | User impact | Test layer | Coverage |
@@ -89,6 +104,7 @@ disappears. Tests are demonstrated red first (see `agent/skills/test-quality`).
 | Full-page reload regression | Flash, lost position | e2e (navigation count) | app e2e |
 | Budget regression | App feels slow again | Perf harness | tests/perf |
 | Visual regression | Ugly render | Screenshot golden | e2e goldens |
+| Crash under test | App dies; and it can hide in a green gate | Harness + gate sweep | `axiomd-e2e/src/crash.rs`, `scripts/coredump-sweep.sh` |
 
 ## Local Quality Gate
 

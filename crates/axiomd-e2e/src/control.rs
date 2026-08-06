@@ -11,8 +11,9 @@
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::time::{Duration, Instant};
+
+use crate::crash::Watch;
 
 /// How long the application is allowed to take to answer one command. Far above any
 /// real answer; it exists so a wedged application fails rather than hangs.
@@ -56,10 +57,11 @@ impl Control {
 
     /// Waits for the application to connect, or reports why it never did.
     ///
-    /// `child` is polled alongside the socket so a launch that died — a missing
-    /// library, an unusable display — fails immediately with its own diagnostics
-    /// rather than after the full deadline.
-    pub(crate) fn accept(&mut self, child: &mut Child, diagnostics: impl Fn() -> String) {
+    /// The launch is watched alongside the socket so one that died — a missing library,
+    /// an unusable display, a crash in the first frame — fails immediately with the
+    /// signal that ended it and its own diagnostics, rather than after the full
+    /// deadline (issue #45).
+    pub(crate) fn accept(&mut self, axiomd: &mut Watch, diagnostics: impl Fn() -> String) {
         let deadline = Instant::now() + CONNECT;
         loop {
             match self.listener.accept() {
@@ -88,9 +90,9 @@ impl Control {
                 Err(error) if error.kind() == ErrorKind::WouldBlock => {}
                 Err(error) => panic!("accept on the control socket: {error}"),
             }
-            if let Some(status) = child.try_wait().expect("poll the application") {
+            if let Some(complaint) = axiomd.check() {
                 panic!(
-                    "axiomd exited with {status} before it connected:\n{}",
+                    "{complaint}\n  It never connected at all.\n{}",
                     diagnostics()
                 );
             }

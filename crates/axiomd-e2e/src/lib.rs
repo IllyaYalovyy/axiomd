@@ -38,6 +38,7 @@ pub mod budget;
 mod containment;
 mod control;
 pub mod corpus;
+mod crash;
 mod display;
 mod golden;
 pub mod parity;
@@ -45,7 +46,7 @@ mod process;
 mod scratch;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub use containment::{Whereabouts, in_the_installed_sandbox};
@@ -54,6 +55,7 @@ pub use process::Footprint;
 
 use containment::Session;
 use control::Control;
+use crash::Watch;
 use display::{Display, Environment};
 pub(crate) use scratch::Scratch;
 
@@ -657,7 +659,10 @@ pub fn launch_without_document_with(preferences: &Preferences) -> App {
 /// what — if anything — survived.
 pub struct App {
     control: std::cell::RefCell<Control>,
-    axiomd: Child,
+    /// The application's process, watched for an ending nobody asked for (issue #45).
+    /// Shared rather than owned outright because every wait a test does asks it whether
+    /// there is still an application to wait for.
+    axiomd: std::cell::RefCell<Watch>,
     socket: PathBuf,
     /// The session bus a sandboxed launch was given, kept alive for as long as the
     /// launch is — never read, and never dropped before the launch that registered on
@@ -813,12 +818,14 @@ impl App {
             }
         }
         let spawned = Instant::now();
-        let mut axiomd = command
-            .stdin(Stdio::null())
-            .stdout(append_to(&log))
-            .stderr(append_to(&log))
-            .spawn()
-            .unwrap_or_else(|error| panic!("start {under}: {error}"));
+        let mut axiomd = Watch::over(
+            command
+                .stdin(Stdio::null())
+                .stdout(append_to(&log))
+                .stderr(append_to(&log))
+                .spawn()
+                .unwrap_or_else(|error| panic!("start {under}: {error}")),
+        );
 
         let diagnostics = {
             let log = log.clone();
@@ -834,7 +841,7 @@ impl App {
 
         let app = App {
             control: std::cell::RefCell::new(control),
-            axiomd,
+            axiomd: std::cell::RefCell::new(axiomd),
             socket,
             bus,
             spawned,
@@ -1891,38 +1898,63 @@ impl App {
         self.wait_until(&format!("{now} > {drawn_at}"));
     }
 
+    /// Ends this launch's application the way a crash does, without asking it.
+    ///
+    /// Here for one purpose: this harness promises that an application which dies under
+    /// test fails the test it was running (issue #45), and a promise nobody has seen
+    /// kept is a promise that may not be. The only way to see it kept is to have a real
+    /// launch really die, so the suite that tests the harness kills one.
+    ///
+    /// `SIGKILL`, and deliberately not one of the signals that dumps core: the quality
+    /// gate sweeps for axiomd core dumps and fails on any it finds, so a test that
+    /// dumped one on purpose would fail the gate that runs it. What it leaves is an
+    /// ending nobody asked for, which is the whole of what has to be noticed.
+    pub fn crash_the_application(&self) {
+        let pid = self.axiomd.borrow().pid() as i32;
+        // SAFETY: a signal to the one process this launch started itself.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
     /// Shuts everything down and reports the processes that outlived it.
     ///
     /// An empty answer is the assertion a teardown test makes: no application, no web
     /// process, no network process is still running once a window is gone.
+    ///
+    /// Fails the test outright if the application was not there to be asked — a launch
+    /// that crashed after the last assertion and before this call used to close as
+    /// quietly as one that quit (issue #45), which is how a day of core dumps came to
+    /// sit under a day of green gates.
     pub fn close(mut self) -> Vec<u32> {
         let _ = self.control.borrow_mut().request("quit", "");
         self.control.borrow_mut().hang_up();
-        self.wait_for_exit();
+        if let Some(complaint) = self.wait_for_exit() {
+            panic!("{complaint}\n{}", self.diary());
+        }
         process::launched_with(&self.socket)
     }
 
-    fn wait_for_exit(&mut self) {
-        let deadline = Instant::now() + SETTLES_WITHIN;
-        while Instant::now() < deadline {
-            if self.axiomd.try_wait().expect("poll axiomd").is_some() {
-                // The application is gone; its web processes follow it, and the wait
-                // below is for them rather than for it.
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        // The group rather than the process: a launch is a sandbox around a bus daemon
-        // around an application around the web process that renders its documents, and
-        // ending only the one this harness holds leaves the rest of that tree running on
-        // the developer's machine (issue #44).
-        containment::end(&mut self.axiomd);
+    /// Ends the launch and everything it started, and answers what to say about how it
+    /// ended — `None` when it ended the way it was asked to.
+    fn wait_for_exit(&mut self) -> Option<String> {
+        let ending = self.axiomd.borrow_mut().end();
 
         let socket = self.socket.clone();
         let deadline = Instant::now() + SETTLES_WITHIN;
         while Instant::now() < deadline && !process::launched_with(&socket).is_empty() {
             std::thread::sleep(Duration::from_millis(5));
         }
+        ending
+    }
+
+    /// What the application printed, for a failure that has to be understood from the
+    /// test output alone.
+    fn diary(&self) -> String {
+        format!(
+            "  axiomd said:\n{}",
+            std::fs::read_to_string(self.scratch.path().join("axiomd.log")).unwrap_or_default(),
+        )
     }
 
     /// Waits until the addressed window has finished with what it was asked to show,
@@ -2000,6 +2032,12 @@ impl App {
 
     /// Polls `condition` until it holds, or fails the test saying what never happened,
     /// what the application last answered, and what it printed.
+    ///
+    /// Every wait in this harness ends up here, which is what makes this the one place
+    /// a launch that died mid-run has to be noticed: a condition nothing is left to
+    /// satisfy is not a condition that has not happened yet, and waiting the full
+    /// deadline for it buries the crash under a timeout thirty seconds later (issue
+    /// #45).
     fn settle(&self, what: &str, condition: impl Fn() -> Result<bool, String>) {
         let deadline = Instant::now() + SETTLES_WITHIN;
         loop {
@@ -2008,12 +2046,17 @@ impl App {
                 Ok(false) => "the condition was simply not true yet".to_owned(),
                 Err(complaint) => complaint,
             };
+            if let Some(died) = self.axiomd.borrow_mut().check() {
+                panic!(
+                    "{died}\n  It died while this test was waiting for {what}.\n{}",
+                    self.diary(),
+                );
+            }
             if Instant::now() >= deadline {
                 panic!(
                     "waited {SETTLES_WITHIN:?} for {what} and it never happened.\n  \
-                     last answer: {last}\n  axiomd said:\n{}",
-                    std::fs::read_to_string(self.scratch.path().join("axiomd.log"))
-                        .unwrap_or_default(),
+                     last answer: {last}\n{}",
+                    self.diary(),
                 );
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -2022,10 +2065,23 @@ impl App {
 }
 
 impl Drop for App {
+    /// A launch that a test never closed is still ended here, and a launch that crashed
+    /// is still a failure here: a test that drops its application instead of closing it
+    /// must not be the one path on which a crash goes unreported (issue #45).
+    ///
+    /// Silent while the thread is already failing, because there is a failure being
+    /// reported and a second panic during it would abort the whole suite rather than
+    /// fail one test — and because a launch dropped by a panic on its way out is
+    /// exactly what `start_under` does to a launch that escaped its world.
     fn drop(&mut self) {
         let _ = self.control.borrow_mut().request("quit", "");
         self.control.borrow_mut().hang_up();
-        self.wait_for_exit();
+        let ending = self.wait_for_exit();
+        if let Some(complaint) = ending
+            && !std::thread::panicking()
+        {
+            panic!("{complaint}\n{}", self.diary());
+        }
     }
 }
 
