@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"
+     viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">axiomd alternative 4 — minimal glyph</title>
+  <desc id="desc">GNOME Adwaita-style icon concept for the axiomd Markdown reader.</desc>
+
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f6f5f4"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <filter id="shadow" x="-35%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4"
+                    flood-color="#241f31" flood-opacity="0.22"/>
+    </filter>
+    <filter id="smallShadow" x="-40%" y="-40%" width="190%" height="200%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.4"
+                    flood-color="#241f31" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+
+  <rect x="23" y="14" width="82" height="100" rx="16"
+        fill="url(#page)" stroke="#77767b" stroke-opacity=".18"
+        stroke-width=".8" filter="url(#shadow)"/>
+  <rect x="31" y="25" width="66" height="12" rx="3" fill="url(#blue)"/>
+  <g fill="#77767b" opacity=".34">
+    <rect x="32" y="48" width="50" height="3" rx="1.5"/>
+    <rect x="32" y="56" width="58" height="3" rx="1.5"/>
+  </g>
+  <rect x="31" y="68" width="66" height="34" rx="9" fill="#241f31"/>
+  <path d="M40 93V77h4.3l5.2 6.4 5.2-6.4H59v16h-3.7v-9.6l-5.8 7-5.8-7V93z"
+        fill="#fff"/>
+  <path d="M70 77h5v8h5l-7.5 9-7.5-9h5z" fill="#fff"/>
+  <rect x="32" y="106" width="9" height="4" rx="2" fill="#3584e4"/>
+  <rect x="44" y="106" width="22" height="4" rx="2" fill="#77767b" opacity=".28"/>
+
+</svg>

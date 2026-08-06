@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"
+     viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">axiomd alternative 2 — folded corner</title>
+  <desc id="desc">GNOME Adwaita-style icon concept for the axiomd Markdown reader.</desc>
+
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f6f5f4"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <filter id="shadow" x="-35%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4"
+                    flood-color="#241f31" flood-opacity="0.22"/>
+    </filter>
+    <filter id="smallShadow" x="-40%" y="-40%" width="190%" height="200%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.4"
+                    flood-color="#241f31" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+
+  <path d="M24 16h59l21 21v72c0 4-3 7-7 7H31c-5 0-8-3-8-8V24c0-5 3-8 8-8z"
+        fill="url(#page)" stroke="#77767b" stroke-opacity=".20"
+        stroke-width=".8" filter="url(#shadow)"/>
+  <path d="M83 16v16c0 3 2 5 5 5h16z" fill="url(#blue)"/>
+  <rect x="31" y="29" width="43" height="10" rx="2.5" fill="url(#blue)"/>
+  <g fill="#77767b" opacity=".40">
+    <rect x="32" y="49" width="55" height="3.1" rx="1.55"/>
+    <rect x="32" y="57.5" width="45" height="3.1" rx="1.55"/>
+    <rect x="32" y="66" width="59" height="3.1" rx="1.55"/>
+  </g>
+  <rect x="32" y="78" width="9" height="9" rx="2.2" fill="url(#blue)"/>
+  <path d="M34.2 82.1 36.4 84.1 39.2 80.4"
+        fill="none" stroke="#fff" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="45" y="80.9" width="25" height="3.1" rx="1.55"
+        fill="#77767b" opacity=".40"/>
+  <rect x="72" y="91" width="25" height="18" rx="5" fill="#241f31"/>
+  <path d="M77 104V96h2.4l2.8 3.4L85 96h2.4v8h-2.3v-4.3l-2.9 3.5-2.9-3.5v4.3z"
+        fill="#fff"/>
+  <path d="M90 96h3v4h2.4l-3.9 4.5-3.9-4.5H90z" fill="#fff"/>
+
+</svg>

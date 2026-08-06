@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"
+     viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">axiomd alternative 3 — reader layout</title>
+  <desc id="desc">GNOME Adwaita-style icon concept for the axiomd Markdown reader.</desc>
+
+  <defs>
+    <linearGradient id="page" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f6f5f4"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <filter id="shadow" x="-35%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4"
+                    flood-color="#241f31" flood-opacity="0.22"/>
+    </filter>
+    <filter id="smallShadow" x="-40%" y="-40%" width="190%" height="200%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.4"
+                    flood-color="#241f31" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+
+  <rect x="18" y="16" width="92" height="96" rx="17"
+        fill="url(#page)" stroke="#77767b" stroke-opacity=".18"
+        stroke-width=".8" filter="url(#shadow)"/>
+  <rect x="18" y="16" width="18" height="96" rx="17" fill="url(#blue)"/>
+  <rect x="27" y="16" width="9" height="96" fill="url(#blue)"/>
+  <g fill="#fff" opacity=".92">
+    <circle cx="27" cy="35" r="3.2"/>
+    <circle cx="27" cy="49" r="3.2"/>
+    <circle cx="27" cy="63" r="3.2"/>
+  </g>
+  <rect x="45" y="27" width="52" height="11" rx="2.8" fill="#3584e4"/>
+  <g fill="#77767b" opacity=".38">
+    <rect x="46" y="48" width="47" height="3.2" rx="1.6"/>
+    <rect x="46" y="56.8" width="55" height="3.2" rx="1.6"/>
+    <rect x="46" y="65.6" width="40" height="3.2" rx="1.6"/>
+  </g>
+  <rect x="46" y="78" width="9" height="9" rx="2.2" fill="url(#blue)"/>
+  <path d="M48.2 82.1 50.4 84.1 53.2 80.4"
+        fill="none" stroke="#fff" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="59" y="80.9" width="22" height="3.1" rx="1.55"
+        fill="#77767b" opacity=".38"/>
+  <circle cx="93" cy="94" r="13" fill="#241f31" filter="url(#smallShadow)"/>
+  <path d="M84.5 99V89h2.8l3 3.8 3-3.8h2.7v10h-2.5v-5.7l-3.2 3.9-3.3-3.9V99z"
+        fill="#fff"/>
+  <path d="M99 89h3v5h2.4l-3.9 4.5-3.9-4.5H99z" fill="#fff"/>
+
+</svg>
