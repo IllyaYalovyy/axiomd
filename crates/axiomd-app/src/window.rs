@@ -1758,6 +1758,30 @@ impl DocumentWindow {
         }
     }
 
+    /// Where every chooser this window opens starts: the folder the reader keeps its
+    /// document in.
+    ///
+    /// Under the portal that is not the folder axiomd reads the document from — a
+    /// chooser opening on `/run/user/…/doc/<id>` would be showing the reader a place
+    /// they have never been (issue #24) — so the answer comes from
+    /// [`Home::folder`] and never from the path.
+    ///
+    /// `None` when there is no such place: a document that has never been saved, one
+    /// the desktop would not place, and one named without a folder at all. A chooser
+    /// given none opens on its own default, which is where the reader last was.
+    ///
+    /// One answer for both choosers, asked here rather than derived twice: Save As
+    /// starts in it, and so does the `Ctrl+O` that asks for the next document
+    /// (issue #49).
+    pub(crate) fn folder(&self) -> Option<PathBuf> {
+        self.document
+            .borrow()
+            .home()
+            .and_then(Home::folder)
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    }
+
     /// `Ctrl+Shift+S`, and what the first `Ctrl+S` on an untitled document runs.
     ///
     /// A dialog, and a sanctioned one: the reader asked for something that cannot be
@@ -1768,16 +1792,7 @@ impl DocumentWindow {
             .modal(true)
             .initial_name(as_a_markdown_name(&self.document.borrow().name()))
             .build();
-        // Where the reader keeps the document, which under the portal is not the folder
-        // axiomd reads it from: a chooser opening on `/run/user/…/doc/<id>` would be
-        // showing them a place they have never been (issue #24).
-        if let Some(folder) = self
-            .document
-            .borrow()
-            .home()
-            .and_then(Home::folder)
-            .filter(|folder| !folder.as_os_str().is_empty())
-        {
+        if let Some(folder) = self.folder() {
             dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
         }
 
@@ -2497,7 +2512,8 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
                 gio::Action::print_detailed_name(&action, target.as_ref()).to_string()
             })
             .unwrap_or_default();
-        // Without the mnemonic marks: the reader sees "New Window", not "_New Window".
+        // Without the mnemonic marks: the reader sees "New Document", not
+        // "_New Document".
         said.push(format!("item\t{}\t{action}", label.replace('_', "")));
         if let Some(submenu) = submenu {
             offered(&submenu, said);
@@ -2507,7 +2523,7 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
 
 fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuButton {
     let documents = gio::Menu::new();
-    documents.append(Some(&gettext("_New Window")), Some("app.new"));
+    documents.append(Some(&gettext("_New Document")), Some("app.new"));
     documents.append(Some(&gettext("_Open…")), Some("app.open"));
 
     // How big the document is, shown the way every GNOME application shows it: a row
