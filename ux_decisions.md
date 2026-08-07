@@ -87,6 +87,20 @@ Owner ruling (2026-08-03): the search bar belongs to the document pane —
 compact, overlaid on the document view only. It never spans or disturbs
 the sidebar (issue #26).
 
+## How does the chrome separate from the document?
+
+Owner ruling (2026-08-06), from a side-by-side with Apostrophe on the same
+document: with Adwaita's raised shadow, never a hard hairline. Every top bar
+the reader can see uses `AdwToolbarView`'s raised style — the header, the
+external-change banner in the same box beside it, and the find bar over the
+document — so there is one separation language and one shadow at each
+boundary the reader meets. High contrast renders that shadow as a solid rule;
+that is Adwaita's own high-contrast stylesheet and it stays, because a reader
+who asked for contrast must not be the one reader who cannot see where the
+header ends. The scroll-driven flat-until-scrolled treatment GNOME Text
+Editor uses was considered and NOT taken: the separation is persistent
+(issue #47).
+
 ## Is the sidebar resizable?
 
 Yes (owner ruling 2026-08-03): drag the divider; width persists across
