@@ -56,7 +56,7 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
         gettext_noop("General"),
         &[
             Shortcut {
-                title: gettext_noop("New Window"),
+                title: gettext_noop("New Document"),
                 action: "app.new",
                 keys: &["<Control>n"],
             },

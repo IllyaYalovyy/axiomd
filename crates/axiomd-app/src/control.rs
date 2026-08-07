@@ -190,6 +190,15 @@ impl Session {
                 });
                 Ok(String::new())
             }
+            // The near side of `Ctrl+O`: the folder the chooser it opens starts in,
+            // read off the very dialog the action builds. The chooser itself is a
+            // native dialog outside the window's widget tree and is the one thing here
+            // a test cannot press (`docs/TESTING.md`), so this is where the reader's
+            // next chooser opening is asserted (issue #49). Empty when it starts
+            // nowhere in particular and the chooser's own default stands.
+            "opening" => Ok(crate::shell::where_the_open_chooser_starts(shell, app)
+                .map(|folder| folder.display().to_string())
+                .unwrap_or_default()),
             // The other half of opening: the document takes over the window the user
             // is in, which is where `Ctrl+O` and the file chooser end.
             "open-here" => {

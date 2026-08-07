@@ -130,3 +130,40 @@ fn a_document_that_is_not_there_is_still_named_and_placed() {
 
     assert!(app.close().is_empty(), "the launch left something running");
 }
+
+/// Issue #49: the place the window says the document is, is the place the reader is
+/// put when they ask for the next one — not wherever the desktop last left a chooser.
+#[test]
+fn the_chooser_for_the_next_document_opens_where_this_one_is_kept() {
+    let fixture = Fixture::new("opening-here");
+    let document = fixture.write("notes.md", NOTES);
+    let app = axiomd_e2e::launch(&document);
+
+    assert_eq!(
+        app.where_the_open_chooser_starts(),
+        document
+            .parent()
+            .expect("the document has a folder")
+            .display()
+            .to_string(),
+        "Ctrl+O does not open where the reader keeps the document they are reading",
+    );
+
+    assert!(app.close().is_empty(), "the launch left something running");
+}
+
+/// And a document with nowhere to be gives the chooser nowhere to start: it opens on
+/// its own default — wherever the reader was last — rather than on a folder invented
+/// for a document that has never been anywhere.
+#[test]
+fn the_chooser_starts_nowhere_in_particular_for_a_document_that_is_nowhere() {
+    let app = axiomd_e2e::launch_without_document();
+
+    assert_eq!(
+        app.where_the_open_chooser_starts(),
+        "",
+        "an untitled window sends the reader to a folder it made up",
+    );
+
+    assert!(app.close().is_empty(), "the launch left something running");
+}

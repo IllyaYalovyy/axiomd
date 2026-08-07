@@ -939,6 +939,17 @@ impl App {
         self.wait_for_a_page_after(finished);
     }
 
+    /// The folder the chooser `Ctrl+O` opens starts in, or an empty string when it
+    /// starts nowhere in particular and the chooser's own default stands.
+    ///
+    /// Read off the dialog the `app.open` action builds, for the window the reader is
+    /// in. A native file chooser is drawn by the desktop rather than in the window, so
+    /// its own list of files is the one thing this harness cannot look at
+    /// (`docs/TESTING.md`); how it is opened is asserted here instead.
+    pub fn where_the_open_chooser_starts(&self) -> String {
+        self.command("opening", "")
+    }
+
     /// Directs later commands at the window at `index`, counting from the first one
     /// opened. Without this every command addresses the newest window.
     pub fn select_window(&self, index: usize) {

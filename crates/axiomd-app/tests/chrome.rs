@@ -19,7 +19,7 @@ const NOTES: &str = "# Release Notes\n\nThe first paragraph.\n";
 /// Every row of the shortcuts dialog, in the order the reader reads them: what it is
 /// called, and the keys it is on as GTK spells them.
 const LISTED: &[(&str, &str)] = &[
-    ("New Window", "<Control>n"),
+    ("New Document", "<Control>n"),
     ("Open Document", "<Control>o"),
     ("Preferences", "<Control>comma"),
     ("Keyboard Shortcuts", "<Control>question"),
@@ -56,7 +56,7 @@ fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
     assert_eq!(
         menu.offers(),
         [
-            ("New Window", "app.new"),
+            ("New Document", "app.new"),
             ("Open…", "app.open"),
             ("Find…", "win.find"),
             // The submenu of engines, and what a reader who points at it reads: every

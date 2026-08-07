@@ -302,7 +302,7 @@ mod tests {
         assert_eq!(
             home.folder(),
             None,
-            "Save As would open on the portal's own folder",
+            "Save As and Ctrl+O would open on the portal's own folder",
         );
         assert_eq!(
             home.path(),

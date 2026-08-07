@@ -16,7 +16,7 @@
 //! a symlink all find the window that is already open.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
@@ -373,11 +373,15 @@ fn add_action(app: &adw::Application, name: &str, activate: impl Fn(&adw::Applic
     app.add_action(&action);
 }
 
-/// Ctrl+O: the file chooser, and then the document.
+/// The chooser `Ctrl+O` opens, ready to be shown: what it offers, and where it starts.
 ///
-/// The chooser is a dialog the user asked for, which is the only kind this app has;
-/// the document it produces then opens without any further question.
-fn ask_for_a_document(shell: &Rc<Shell>, app: &adw::Application) {
+/// Where it starts is `into`'s own folder — the one answer Save As opens on
+/// ([`DocumentWindow::folder`], which is the reader's real folder and never the
+/// portal's, issue #24), so the two choosers cannot come to open in two different
+/// places. A window with nowhere to start from — untitled, or holding a document the
+/// desktop would not place — leaves it unset, and the chooser's own default stands:
+/// never an error, and never a folder the reader has not been in.
+fn open_dialog(into: Option<&Rc<DocumentWindow>>) -> gtk::FileDialog {
     let markdown = markdown_filter();
 
     let filters = gio::ListStore::new::<gtk::FileFilter>();
@@ -390,7 +394,36 @@ fn ask_for_a_document(shell: &Rc<Shell>, app: &adw::Application) {
         .modal(true)
         .build();
 
+    if let Some(folder) = into.and_then(|window| window.folder()) {
+        dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
+    }
+
+    dialog
+}
+
+/// Where the chooser `Ctrl+O` opens would start, asked of the chooser itself.
+///
+/// The chooser is a native dialog outside any window's widget tree and is the one
+/// thing here a test cannot press (`docs/TESTING.md`); this is the configuration it is
+/// shown with, so a test reads where the reader's next chooser really opens rather
+/// than what the code meant by it.
+pub(crate) fn where_the_open_chooser_starts(
+    shell: &Rc<Shell>,
+    app: &adw::Application,
+) -> Option<PathBuf> {
+    open_dialog(shell.active_window(app).as_ref())
+        .initial_folder()
+        .and_then(|folder| folder.path())
+}
+
+/// Ctrl+O: the file chooser, and then the document.
+///
+/// The chooser is a dialog the user asked for, which is the only kind this app has;
+/// the document it produces then opens without any further question.
+fn ask_for_a_document(shell: &Rc<Shell>, app: &adw::Application) {
     let into = shell.active_window(app);
+    let dialog = open_dialog(into.as_ref());
+
     let parent = app.active_window();
     let shell = shell.clone();
     let app = app.clone();
