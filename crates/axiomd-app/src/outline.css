@@ -43,6 +43,24 @@
   box-shadow: inset 0 -1px var(--border-color);
 }
 
+/* The title row while it is the reader's place: above the first heading of a document
+   they are at its title, and that is the row marked, because the panel saying nothing at
+   all reads as broken and marking the first section would be a lie (issue #50).
+
+   The same two marks a section is drawn with and the same values (see below): the grey
+   wash of the panel's own foreground, and the accent spent on an outline round it. What
+   is not the same is the shape — the title row is the full width of the panel and has no
+   pill of its own — so the outline is drawn on the row's own edges. Nothing here moves
+   when the mark comes and goes: the padding and the height are the same either way,
+   because this mark arrives and leaves under a reader who is scrolling, and a panel that
+   twitched at the first heading would be worse than one that said nothing. The hairline
+   the row wears at rest is what the outline replaces, both being the line under the
+   title. */
+.axiomd-outline-header.axiomd-outline-current {
+  background-color: color-mix(in srgb, currentColor 18%, transparent);
+  box-shadow: inset 0 0 0 3px var(--accent-bg-color);
+}
+
 .axiomd-outline-name {
   font-weight: 700;
 }
@@ -202,6 +220,11 @@ listview.axiomd-outline > row > treeexpander.axiomd-outline-current expander {
    `crates/axiomd-app/tests/outline.rs` asserts exactly that with the desktop in high
    contrast. */
 @media (prefers-contrast: more) {
+  .axiomd-outline-header.axiomd-outline-current {
+    background-color: color-mix(in srgb, currentColor 36%, transparent);
+    box-shadow: inset 0 0 0 4px var(--accent-bg-color);
+  }
+
   listview.axiomd-outline > row > treeexpander.axiomd-outline-current {
     background-color: color-mix(in srgb, currentColor 36%, transparent);
     box-shadow: inset 0 0 0 4px var(--accent-bg-color);

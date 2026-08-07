@@ -917,15 +917,23 @@ fn the_sidebar_draws_the_readers_place_and_redraws_it_as_they_read() {
         !above_everything.is_blank(),
         "the sidebar was captured as a blank rectangle",
     );
-    assert_eq!(
-        above_everything.pixels_coloured(ACCENT),
-        0,
-        "a reader above every section was drawn a pill anyway",
+    // Above every section the mark is on the title row and on no section (issue #50):
+    // the panel is never markerless, and the mark never claims a section the reader is
+    // not in.
+    let (_, title_ends) = place_marked_in_accent(&above_everything);
+    assert!(
+        drawn_as_here(&app).is_empty(),
+        "a reader above every section was drawn a pill on {:?}",
+        drawn_as_here(&app),
     );
 
     app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
     app.wait_until_section("Reference");
     let reading = app.sidebar_screenshot();
+    assert!(
+        place_marked_in_accent(&reading).0 > title_ends,
+        "the mark was still on the title row while the reader was inside a section",
+    );
     assert!(
         !reading.looks_like(&above_everything),
         "the sidebar drew the same picture whether or not the reader was in a section",
@@ -944,6 +952,126 @@ fn the_sidebar_draws_the_readers_place_and_redraws_it_as_they_read() {
     assert!(
         app.sidebar_screenshot().looks_like(&above_everything),
         "the sidebar did not go back to the picture it draws above every section",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Issue #50: the sidebar is never markerless. Above the first heading the reader is at
+/// the document's title, so the title row (issue #35) is what carries their place —
+/// which is true, where marking the first section would be a lie.
+///
+/// The whole journey in one test, because the defect is a state rather than a moment:
+/// the panel a freshly opened document greets the reader with, the mark moving into the
+/// first section as they read into it, and the mark coming home when they scroll back
+/// up. Read off the pixels as well as off the model, because "the title row is marked"
+/// is a claim about what the reader can see.
+#[test]
+fn the_title_row_carries_the_readers_place_while_they_are_above_every_section() {
+    let fixture = Fixture::new("outline-title-place");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.wait_for("the page to say where the reader is", || {
+        app.section_reports() > 0
+    });
+    app.wait_until_section("");
+
+    // A document opens showing its very top, which is the state every first open starts
+    // in: something is marked, and it is the title row.
+    let outline = app.outline();
+    assert!(
+        outline.at_the_title,
+        "a freshly opened document left the sidebar with nothing marked at all",
+    );
+    assert!(
+        drawn_as_here(&app).is_empty(),
+        "the sidebar marked {:?} for a reader who is above every section",
+        drawn_as_here(&app),
+    );
+    assert_eq!(
+        outline.section, "",
+        "marking the title row changed what the sidebar says the reader's section is",
+    );
+
+    let at_the_title = app.sidebar_screenshot();
+    let (top, bottom) = place_marked_in_accent(&at_the_title);
+    assert!(
+        top <= 1,
+        "the mark a reader above every section is drawn starts {top} pixels down the \
+         panel, which is not the title row at the top of it",
+    );
+    // The same grammar the sections are marked in (issue #48): the accent is drawn
+    // around the row, never as its fill.
+    let height = bottom - top + 1;
+    let rim = at_the_title.pixels_coloured(ACCENT);
+    let inside = at_the_title
+        .band(top + 4, height - 8)
+        .pixels_coloured(ACCENT);
+    assert!(
+        inside * 4 < rim,
+        "{inside} of the {rim} accent pixels on the title row are inside it rather than \
+         around it, so the title row is filled with the accent and not outlined in it",
+    );
+
+    // The reader reads on into the first section of the document. The mark moves to it,
+    // exactly as it has always moved between sections.
+    app.dom("document.querySelector('h1[id=\"guide\"]').scrollIntoView(true)");
+    app.wait_until_section("Guide");
+    let in_the_first_section = app.sidebar_screenshot();
+    assert!(
+        !app.outline().at_the_title,
+        "the title row kept the reader's place after they read into a section",
+    );
+    assert_eq!(drawn_as_here(&app), ["Guide"]);
+    assert!(
+        place_marked_in_accent(&in_the_first_section).0 > bottom,
+        "the mark is still drawn on the title row while the reader is in a section",
+    );
+    // And the title row really was painted as the reader's place, rather than merely
+    // said to be: the row through the middle of it is a different row of pixels now.
+    let middle = (top + bottom) / 2;
+    assert!(
+        !at_the_title
+            .band(middle, 1)
+            .looks_like(&in_the_first_section.band(middle, 1)),
+        "the title row is painted the same whether or not it is the reader's place",
+    );
+
+    // And back up above it, which is where the reader who scrolls home ends up.
+    app.dom("document.scrollingElement.scrollTop = 0");
+    app.wait_until_section("");
+    assert!(
+        app.outline().at_the_title,
+        "scrolling back above the first heading left the sidebar markerless",
+    );
+    assert!(
+        app.sidebar_screenshot().looks_like(&at_the_title),
+        "the sidebar did not go back to the picture it draws above every section",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// A document with no headings at all: there is no section to be in and never will be,
+/// so the title row is the reader's place for as long as the document is open.
+#[test]
+fn a_document_with_no_headings_marks_its_title_row() {
+    let fixture = Fixture::new("outline-title-no-headings");
+    let app = axiomd_e2e::launch(&fixture.write("plain.md", "Just words.\n\n- and a list\n"));
+
+    let outline = app.outline();
+    assert!(outline.shown, "the sidebar went away instead of saying so");
+    assert!(outline.headings().is_empty(), "{:?}", outline.headings());
+    assert_eq!(outline.notice, "No headings");
+    assert!(
+        outline.at_the_title,
+        "a document with no headings left the sidebar with nothing marked at all",
+    );
+
+    let panel = app.sidebar_screenshot();
+    let (top, _) = place_marked_in_accent(&panel);
+    assert!(
+        top <= 1,
+        "the mark is {top} pixels down a panel whose only row is its title row",
     );
 
     assert!(app.close().is_empty(), "the launch left processes behind");
@@ -1075,6 +1203,10 @@ fn hovering_changes_nothing_the_window_says_about_where_the_reader_is() {
 
 /// The non-happy path of the pill itself: a reader above the first heading is in no
 /// section, and running the pointer over the sidebar must not invent one for them.
+///
+/// Their place is the title row while they are up there (issue #50), so what the
+/// pointer may not do is move it off the title row on to a section — measured in the
+/// pixels of the panel as well as in the rows it says are marked.
 #[test]
 fn hovering_above_every_section_draws_the_reader_no_place_at_all() {
     let fixture = Fixture::new("outline-hover-nowhere");
@@ -1083,6 +1215,9 @@ fn hovering_above_every_section_draws_the_reader_no_place_at_all() {
         app.section_reports() > 0
     });
     app.wait_until_section("");
+    let at_the_title = app.sidebar_screenshot();
+    let (_, title_ends) = place_marked_in_accent(&at_the_title);
+    let marked = at_the_title.pixels_coloured(ACCENT);
 
     for section in ["Getting started", "Reference"] {
         app.hover_over(section);
@@ -1098,11 +1233,22 @@ fn hovering_above_every_section_draws_the_reader_no_place_at_all() {
              section",
             drawn_as_here(&app),
         );
+        assert!(
+            app.outline().at_the_title,
+            "the pointer over {section:?} took the reader's place off the title row",
+        );
+        let hovered = app.sidebar_screenshot();
         assert_eq!(
-            app.sidebar_screenshot().pixels_coloured(ACCENT),
-            0,
-            "the pointer over {section:?} drew an accent pill for a reader who is in \
-             no section",
+            hovered.pixels_coloured(ACCENT),
+            marked,
+            "the pointer over {section:?} changed how much of the sidebar is drawn in \
+             the accent colour",
+        );
+        assert_eq!(
+            place_marked_in_accent(&hovered).1,
+            title_ends,
+            "the pointer over {section:?} drew an accent pill somewhere down the list \
+             for a reader who is in no section",
         );
     }
 
@@ -1478,6 +1624,43 @@ fn a_high_contrast_sidebar_still_looks_the_way_it_was_approved() {
 
     app.sidebar_screenshot()
         .assert_matches("outline-high-contrast");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The picture a freshly opened document greets the reader with (issue #50): the top of
+/// the document, so the title row is the row carrying their place. Pinned the same way
+/// as every other golden here, from `outline-title-light.actual.png`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_sidebar_at_the_top_of_a_light_document_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-title-light");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+    app.wait_for("the page to say where the reader is", || {
+        app.section_reports() > 0
+    });
+    app.wait_until_section("");
+
+    app.sidebar_screenshot()
+        .assert_matches("outline-title-light");
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The same panel on a dark desktop. Pinned from `outline-title-dark.actual.png`.
+#[test]
+#[ignore = "awaiting the owner's first visual approval; see the comment above"]
+fn a_sidebar_at_the_top_of_a_dark_document_still_looks_the_way_it_was_approved() {
+    let fixture = Fixture::new("outline-golden-title-dark");
+    let dark = Preferences::with("outline-golden-title-dark", "theme", "'dark'");
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &dark);
+    app.wait_for("the page to say where the reader is", || {
+        app.section_reports() > 0
+    });
+    app.wait_until_section("");
+
+    app.sidebar_screenshot()
+        .assert_matches("outline-title-dark");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

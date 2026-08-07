@@ -43,6 +43,13 @@
 //! a frame in which the answer can have changed (`view.rs`, `track.js`), or the editor's
 //! caret. Nothing here polls, measures a height, or reads the file.
 //!
+//! Above the first heading there is no section to mark, and the panel says so by marking
+//! the title row instead of nothing at all (issue #50): a reader up there is at the
+//! document's title, which is true, where marking its first section would be a lie. So
+//! the panel is never markerless while it has a document, which is the state every
+//! freshly opened document starts in. Only the presentation changes — where the reader is
+//! is still "no section", and everything downstream of that answer is untouched.
+//!
 //! That place is this module's own ([`Here`]) rather than the list's selection, which is
 //! the whole of issue #42 — see the type for what the pointer does to a selection and
 //! why the two cannot be the same thing. The pointer and the keyboard may move the
@@ -131,8 +138,8 @@ const NOTHING: &str = "nothing";
 /// What the sidebar says instead of a list, for a document that has no sections.
 const NO_HEADINGS: &str = gettext_noop("No headings");
 
-/// What the section the reader is on is drawn wearing, and the only thing `outline.css`
-/// gives the accent pill to.
+/// What the row the reader is on is drawn wearing — a section, or the title row while
+/// they are above every section — and the only thing `outline.css` gives the accent to.
 const CURRENT: &str = "axiomd-outline-current";
 
 /// One window's outline sidebar.
@@ -229,19 +236,54 @@ pub(crate) enum Browsing<'a> {
 /// GTK 4.20.4, reaching for the `GtkListItemWidget` from a factory's bind handler
 /// segfaults inside `gtk_list_item_base_update` (reproduced on this machine). The
 /// stylesheet draws everything on that node in consequence — see `outline.css`.
-#[derive(Default)]
+///
+/// There is always somewhere for the mark to be (issue #50). A reader above the first
+/// heading is in no section, and the row that is true of them is the title row over the
+/// list, so that is the one wearing the mark until they read into a section. The mark is
+/// therefore never nowhere, and never on a section the reader is not in.
 struct Here {
-    /// The section, or `None` for a reader above the first heading of the document.
+    /// The section, or `None` for a reader above the first heading of the document —
+    /// which is the state the title row is marked in.
     at: RefCell<Option<Entry>>,
+    /// The title row (issue #35), which carries the mark for exactly that state. Held
+    /// rather than looked up, because it is one widget for the life of the panel while
+    /// the rows under it come and go with every render.
+    title: gtk::Widget,
 }
 
 impl Here {
+    /// The reader above the first heading of a document not yet opened: at the title,
+    /// and marked there from the first frame the panel is drawn in.
+    fn new(title: &impl IsA<gtk::Widget>) -> Self {
+        let here = Self {
+            at: RefCell::new(None),
+            title: title.as_ref().clone(),
+        };
+        here.dress_the_title();
+        here
+    }
+
     /// Whether `section` is the one being read.
     fn is(&self, section: &Entry) -> bool {
         self.at
             .borrow()
             .as_ref()
             .is_some_and(|here| here.key() == section.key())
+    }
+
+    /// Whether the title row is the one carrying the mark, which it is exactly while no
+    /// section is.
+    fn at_the_title(&self) -> bool {
+        self.at.borrow().is_none()
+    }
+
+    /// Draws the title row as the reader's place, or stops drawing it as one — whichever
+    /// the section they are in now calls for.
+    fn dress_the_title(&self) {
+        match self.at_the_title() {
+            true => self.title.add_css_class(CURRENT),
+            false => self.title.remove_css_class(CURRENT),
+        }
     }
 
     /// Draws `marked` as the reader's place, or stops drawing it as one — whichever the
@@ -270,6 +312,7 @@ impl Here {
                 self.dress(&marked, &section);
             }
         }
+        self.dress_the_title();
         true
     }
 
@@ -324,7 +367,27 @@ impl Outline {
             .build();
         selection.set_selected(gtk::INVALID_LIST_POSITION);
 
-        let here = Rc::new(Here::default());
+        // The title row, so the sidebar reads as a panel about a document rather than as
+        // a list of words: what it is called, and how much of it there is. Built before
+        // the list because it is where the reader's place is drawn until they read into
+        // a section (issue #50).
+        let name = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["axiomd-outline-name"])
+            .build();
+        let count = gtk::Label::builder()
+            .css_classes(["axiomd-outline-count"])
+            .build();
+        let header = gtk::Box::builder()
+            .spacing(6)
+            .css_classes(["axiomd-outline-header"])
+            .build();
+        header.append(&name);
+        header.append(&count);
+
+        let here = Rc::new(Here::new(&header));
         let list = gtk::ListView::builder()
             .model(&selection)
             // A heading is a place, not a file: one click goes there, as it does in
@@ -355,24 +418,6 @@ impl Outline {
         faces.add_named(&nothing, Some(NOTHING));
         faces.set_visible_child_name(NOTHING);
         faces.set_vexpand(true);
-
-        // The title row, so the sidebar reads as a panel about a document rather than as
-        // a list of words: what it is called, and how much of it there is.
-        let name = gtk::Label::builder()
-            .xalign(0.0)
-            .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .css_classes(["axiomd-outline-name"])
-            .build();
-        let count = gtk::Label::builder()
-            .css_classes(["axiomd-outline-count"])
-            .build();
-        let header = gtk::Box::builder()
-            .spacing(6)
-            .css_classes(["axiomd-outline-header"])
-            .build();
-        header.append(&name);
-        header.append(&count);
 
         let panel = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -798,18 +843,24 @@ impl Outline {
         self.split.shows_sidebar()
     }
 
-    /// The whole panel as the reader reads it, top to bottom: the title row, then one
-    /// line per row on screen — its level, its chevron, whether it is drawn as the
-    /// reader's place, and its words.
+    /// The whole panel as the reader reads it, top to bottom: the title row — what it
+    /// says, and whether it is the row drawn as the reader's place — then one line per
+    /// row on screen, with its level, its chevron, whether *it* is drawn as their place,
+    /// and its words.
     ///
-    /// One answer rather than four, because the four are one moment: a chevron turned
+    /// One answer rather than five, because the five are one moment: a chevron turned
     /// down is a claim about the rows under it, and the reader's place is a claim about
-    /// which of the rows on screen it is.
+    /// which one row of the panel it is — the title row included, which is the whole of
+    /// issue #50.
     pub(crate) fn shown(&self) -> String {
         let mut said = vec![format!(
-            "title\t{}\t{}",
+            "title\t{}\t{}\t{}",
             self.name.label(),
             self.count.label(),
+            match self.here.at_the_title() {
+                true => "here",
+                false => "-",
+            },
         )];
         for position in 0..self.tree.n_items() {
             let (Some(row), Some(entry)) = (self.row_at(position), self.entry_at(position)) else {
@@ -942,14 +993,17 @@ impl Outline {
     }
 
     /// The section the reader is in, as the sidebar shows it highlighted, or an empty
-    /// string when no section is.
+    /// string when they are in none — which is a reader above the first heading, and is
+    /// still the answer now that the title row is what carries their mark up there
+    /// (issue #50: the presentation changed, this did not).
     pub(crate) fn current(&self) -> String {
         self.here.text()
     }
 
     /// Puts the highlight on the section the reader's line falls in: the last row at or
     /// before it, and none at all while they are still above the first one — which is
-    /// where a document that opens with a paragraph starts.
+    /// where every freshly opened document starts, and where the title row carries the
+    /// mark instead (issue #50).
     ///
     /// The rows are the ones on screen, in document order, so a reader inside a section
     /// they have folded away is shown the section that holds it: their place is always
