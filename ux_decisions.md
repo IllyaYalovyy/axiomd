@@ -125,6 +125,25 @@ cannot tell the accent from the wash still sees which row is theirs.
 Issue #42's guarantee is untouched by this and stands: the mark belongs to
 the section being read and the pointer can never take it.
 
+## What is marked while the reader is above the first heading?
+
+The title row (owner report, issue #50, 2026-08-06). The outline is never
+markerless: a document opened at its top used to mark nothing at all, which
+is honest — the reader is in no section — but reads as broken, and it is the
+state every first open starts in. A reader above the first heading is at the
+document's title, so the title row over the list (issue #35) carries the
+mark until they read into a section, and takes it back when they scroll
+above it again. Marking the *first section* instead was considered and is
+refused: it would say the reader is somewhere they are not.
+
+Presentation only. Where the reader is is still "no section" everywhere it
+is asked — the tracking bridge's zero report, its cadence, and the span map
+are untouched — and the mark is drawn in the same grammar issue #48 ruled
+for sections: the grey wash, the accent as an outline and never a fill. It
+follows the row's own shape, which for a full-width title row is the row's
+edges rather than a pill. A document with no headings at all keeps the mark
+on its title row for as long as it is open.
+
 ## Is the sidebar resizable?
 
 Yes (owner ruling 2026-08-03): drag the divider; width persists across

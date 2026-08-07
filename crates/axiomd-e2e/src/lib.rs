@@ -103,6 +103,10 @@ pub struct Outline {
     /// What the title row says beside that name: how many sections the document has,
     /// or an empty string for a document with none.
     pub count: String,
+    /// Whether the title row is the one drawn as the reader's place — which is what
+    /// "the reader is above the first heading" looks like, and the one state in which
+    /// no row of the list is marked (issue #50).
+    pub at_the_title: bool,
     /// The rows the reader can see, top to bottom. A section folded away takes its own
     /// rows out of this, exactly as it takes them off the screen.
     pub rows: Vec<Row>,
@@ -1485,10 +1489,11 @@ impl App {
 
     /// The outline sidebar of the addressed window, as the reader sees it.
     ///
-    /// One question rather than four, because the four are only ever meaningful
+    /// One question rather than five, because the five are only ever meaningful
     /// together: a section highlighted in a sidebar nobody can see is not a highlight,
-    /// and a notice standing where a list of headings would be is the same panel
-    /// saying something else.
+    /// a notice standing where a list of headings would be is the same panel saying
+    /// something else, and which row is marked is a question about the panel rather
+    /// than about the list — the title row is one of the answers (issue #50).
     pub fn outline(&self) -> Outline {
         let panel = self.property("outline");
         let titled: Vec<&str> = panel
@@ -1501,6 +1506,7 @@ impl App {
             shown: self.property("outline-shown") == "true",
             title: titled.first().copied().unwrap_or_default().to_owned(),
             count: titled.get(1).copied().unwrap_or_default().to_owned(),
+            at_the_title: titled.get(2).copied() == Some("here"),
             rows: panel.lines().filter_map(row_of).collect(),
             section: self.property("outline-section"),
             notice: self.property("outline-notice"),
