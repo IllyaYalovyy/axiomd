@@ -372,7 +372,15 @@ impl DocumentWindow {
         // document the reader is still reading is said next to it, never over it.
         let notice = Notice::new();
 
+        // Raised, so the chrome above the document is separated from it by Adwaita's
+        // own shadow rather than by a hard edge (issue #47). It is the one style whose
+        // documentation says "opaque background with a persistent shadow"; the border
+        // style beside it replaces that shadow with the line this replaces. The shadow
+        // belongs to the `.top-bar` box every top bar shares, so the notice bar below
+        // the header is inside the same separation and casts no second shadow of its
+        // own — one boundary, wherever it happens to fall.
         let layout = adw::ToolbarView::new();
+        layout.set_top_bar_style(adw::ToolbarStyle::Raised);
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -438,7 +446,13 @@ impl DocumentWindow {
         // is that pressing Ctrl+F leaves the outline beside them exactly where it was —
         // a bar spanning the window pushes every heading down the screen to make room
         // for itself, which is the defect this undoes.
+        //
+        // Raised for the same reason the window's own chrome is: the bar is chrome over
+        // the document, and one separation language covers every bar the reader can see
+        // (issue #47). A shut bar has no height, so the style costs the reader nothing
+        // until they press Ctrl+F.
         let pane = adw::ToolbarView::new();
+        pane.set_top_bar_style(adw::ToolbarStyle::Raised);
         pane.add_top_bar(find.widget());
         pane.set_content(Some(&surfaces));
 

@@ -37,6 +37,13 @@ const CHANNEL_TOLERANCE: u8 = 8;
 /// How much of the picture may be changed before the picture is.
 const CHANGED_PIXEL_BUDGET: f64 = 0.001;
 
+/// How far below a boundary [`Screenshot::shading_below`] looks, in rows.
+///
+/// Deep enough that the last row is past the reach of any shading Adwaita casts — its
+/// raised toolbars blur over four pixels — because that row is the settled colour the
+/// rest are measured against.
+pub const SHADING_ROWS: usize = 12;
+
 /// What the user would see, as pixels.
 ///
 /// Held in the one layout every path here shares — `gdk`'s download format — so the
@@ -132,6 +139,73 @@ impl Screenshot {
                     && pixel[2].abs_diff(red) <= CHANNEL_TOLERANCE
             })
             .count()
+    }
+
+    /// The `rows` rows of this picture starting at `from`, as a picture of their own.
+    ///
+    /// What lets a golden of a boundary be a golden of *the boundary*: pin the whole
+    /// window and the document in it is pinned too, so every unrelated change to how a
+    /// paragraph is drawn fails a test about the header's shadow and sends a human back
+    /// to approve something nobody changed. A strip across the boundary holds the thing
+    /// that was approved and nothing else.
+    ///
+    /// A strip that runs past the bottom of the picture stops there.
+    pub fn band(&self, from: u32, rows: u32) -> Screenshot {
+        let from = from.min(self.height);
+        let height = rows.min(self.height - from);
+        let row = (from * self.width) as usize * 4;
+        Screenshot {
+            width: self.width,
+            height,
+            pixels: self.pixels[row..row + (height * self.width) as usize * 4].to_vec(),
+        }
+    }
+
+    /// How the content below `boundary` is shaded by whatever sits above it, read down
+    /// the columns from `columns.0` up to `columns.1`.
+    ///
+    /// Entry `n` is how much darker row `boundary + n` is than the settled content
+    /// further down, averaged across those columns and measured in channel steps: `0`
+    /// where the content is already its own colour, and larger the deeper the shading.
+    /// The profile is [`SHADING_ROWS`] long, and the last row of it is the settled
+    /// colour every other row is measured against — so the columns handed in have to be
+    /// ones the content is plain in, which is what makes averaging across them a
+    /// measurement rather than a reading of whatever text happened to be there.
+    ///
+    /// What this makes testable is the difference between the three ways a bar can meet
+    /// the content under it, which no other question here can tell apart: nothing at all
+    /// is a profile of zeroes, a hard line is one shaded row and then the content, and a
+    /// shadow fades over several. A screenshot golden says the picture changed; this
+    /// says what it changed *to*, and needs nobody's approval to say it.
+    pub fn shading_below(&self, boundary: u32, columns: (u32, u32)) -> Vec<u8> {
+        let rows: Vec<f64> = (0..SHADING_ROWS)
+            .map(|row| self.mean_luminance(boundary + row as u32, columns))
+            .collect();
+        let settled = rows[SHADING_ROWS - 1];
+        rows.iter()
+            .map(|row| (settled - row).clamp(0.0, 255.0).round() as u8)
+            .collect()
+    }
+
+    /// How light row `y` is on average between `columns.0` and `columns.1`.
+    ///
+    /// A row past the bottom of the picture reads as the last row there is, rather than
+    /// as black: the profile's own reference row can fall off a boundary measured near
+    /// the foot of a window, and a reference of black would report every row above it as
+    /// unshaded — a wrong answer that looks exactly like the right one.
+    fn mean_luminance(&self, y: u32, columns: (u32, u32)) -> f64 {
+        let (from, to) = (columns.0.min(self.width), columns.1.min(self.width));
+        if self.height == 0 || from >= to {
+            return 0.0;
+        }
+        let row = (y.min(self.height - 1) * self.width) as usize * 4;
+        let total: u32 = (from..to)
+            .map(|x| {
+                let pixel = &self.pixels[row + x as usize * 4..][..3];
+                u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])
+            })
+            .sum();
+        f64::from(total) / f64::from((to - from) * 3)
     }
 
     /// Fails the test unless this is still the picture a human approved as `golden`.
@@ -562,5 +636,116 @@ mod tests {
 
         assert!(blank.is_blank());
         assert!(!picture().is_blank());
+    }
+
+    /// A surface meeting a bar above it, shaded `profile` deep and its own colour under
+    /// that — the three ways a boundary can be drawn, made into pictures.
+    fn boundary(profile: &[u8]) -> Screenshot {
+        let (width, height) = (20u32, 20u32);
+        let mut pixels = Vec::new();
+        for y in 0..height {
+            let shade = profile.get(y as usize).copied().unwrap_or(0);
+            for _ in 0..width {
+                let value = 240 - shade;
+                pixels.extend_from_slice(&[value, value, value, 255]);
+            }
+        }
+        Screenshot {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    /// The measurement the boundary suite rests on, held to the three cases it exists to
+    /// tell apart. Read wrong in either direction it would pass a hairline as a shadow
+    /// or fail a shadow as nothing, and the suite would say so about the application.
+    #[test]
+    fn the_shading_below_a_boundary_tells_a_shadow_from_a_line_and_from_nothing() {
+        let rows = |profile: &[u8]| boundary(profile).shading_below(0, (0, 20));
+
+        assert_eq!(
+            rows(&[]),
+            vec![0; SHADING_ROWS],
+            "bare content is not shaded"
+        );
+        assert_eq!(
+            rows(&[16]),
+            [16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "a hard line is one shaded row and then the content",
+        );
+        assert_eq!(
+            rows(&[24, 12, 6, 2]),
+            [24, 12, 6, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+            "a shadow is read as the fade it is",
+        );
+    }
+
+    /// Read from further down, the same picture says what is under *that* row — which is
+    /// how one capture answers for the header, a banner and a search bar at once.
+    #[test]
+    fn the_shading_is_measured_from_the_row_it_is_asked_about() {
+        let shadow = boundary(&[24, 12, 6, 2]);
+
+        assert_eq!(shadow.shading_below(1, (0, 20))[..3], [12, 6, 2]);
+        assert_eq!(shadow.shading_below(4, (0, 20)), vec![0; SHADING_ROWS]);
+        // And a row past the bottom of the picture is unshaded rather than a panic.
+        assert_eq!(shadow.shading_below(19, (0, 20)), vec![0; SHADING_ROWS]);
+        assert_eq!(shadow.shading_below(40, (0, 20)), vec![0; SHADING_ROWS]);
+    }
+
+    /// Columns are read as asked and no others, so a test can keep the window's corners
+    /// and its scrollbar out of a measurement of the boundary between them.
+    #[test]
+    fn only_the_columns_asked_for_are_measured() {
+        let (width, height) = (20u32, 4u32);
+        let mut pixels = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                // Shaded on the left half of the top row only.
+                let value = if y == 0 && x < 10 { 200 } else { 240 };
+                pixels.extend_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let lopsided = Screenshot {
+            width,
+            height,
+            pixels,
+        };
+
+        assert_eq!(lopsided.shading_below(0, (0, 10))[0], 40);
+        assert_eq!(lopsided.shading_below(0, (10, 20))[0], 0);
+        // Half in and half out, averaged: the reason the columns handed in have to be
+        // ones the content is plain in.
+        assert_eq!(lopsided.shading_below(0, (0, 20))[0], 20);
+    }
+
+    /// A band is the rows it was asked for and nothing else — the whole of what keeps a
+    /// golden of a boundary from being a golden of the document beneath it.
+    #[test]
+    fn a_band_is_the_rows_of_the_picture_it_was_cut_from() {
+        let whole = picture();
+        let band = whole.band(6, 18);
+
+        assert_eq!(band.size(), (40, 18));
+        // Rows 6..24 of the source are the dark panel's rows, so the band is the panel
+        // from edge to edge and nothing above or below it.
+        assert_eq!(band.pixels_coloured((32, 32, 32)), 24 * 18);
+        assert_eq!(band.pixels_coloured((240, 240, 240)), 40 * 18 - 24 * 18);
+        // Two bands of the same rows are the same picture, which is what pinning one
+        // means; a band of other rows is not.
+        assert!(band.looks_like(&picture().band(6, 18)));
+        assert!(!band.looks_like(&whole.band(0, 18)));
+    }
+
+    /// A band running off the bottom stops at the bottom, so a boundary near the foot of
+    /// a window is still a picture rather than a panic.
+    #[test]
+    fn a_band_past_the_bottom_stops_at_the_bottom() {
+        let whole = picture();
+
+        assert_eq!(whole.band(24, 18).size(), (40, 6));
+        assert_eq!(whole.band(30, 18).size(), (40, 0));
+        assert_eq!(whole.band(99, 18).size(), (40, 0));
     }
 }
