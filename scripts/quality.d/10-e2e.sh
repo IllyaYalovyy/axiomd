@@ -47,12 +47,19 @@ command -v weston >/dev/null 2>&1 ||
 # 3. The suite is only a gate if the gate still runs it. `--no-run` reuses what
 #    the test step already built, so this costs a cargo no-op rather than a
 #    second run of the suite.
-if ! cargo test --workspace --all-targets --all-features --no-run --message-format=short 2>&1 |
-    grep -q 'tests/e2e.rs'; then
+#
+#    The list is taken whole and searched afterwards, the way every other hook
+#    here does it. Piped straight into `grep -q` it failed at random: `grep -q`
+#    stops at the first match, cargo goes on writing into a closed pipe, and
+#    `set -o pipefail` reports the SIGPIPE that follows as the pipeline's status
+#    — so the check said the e2e target had been removed on runs where it was
+#    right there in the list. Whether it flaked came down to how much cargo had
+#    left to say, which is to say, to how many test targets the workspace has.
+targets=$(cargo test --workspace --all-targets --all-features --no-run --message-format=short 2>&1)
+grep -q 'tests/e2e.rs' <<<"${targets}" ||
     fail "the e2e target is no longer part of \`cargo test --workspace --all-targets\`.
   It must stay an ordinary test target: that is what runs it in the gate and what
   keeps it under clippy."
-fi
 
 # 4. Whatever happened during this run, the approved pictures must be exactly the
 #    ones that were approved. This catches a re-pin however it was reached —
