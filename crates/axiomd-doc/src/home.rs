@@ -92,7 +92,7 @@ impl Home {
     /// offered in that case rather than the portal's own folder, which holds this one
     /// document and nothing else and is not a place the reader has ever been.
     pub fn folder(&self) -> Option<&Path> {
-        Some(self.kept.as_deref()?.parent().unwrap_or(Path::new("")))
+        Some(self.kept()?.parent().unwrap_or(Path::new("")))
     }
 
     /// What a window puts under the document's name: the folder it is in, with the
@@ -110,10 +110,26 @@ impl Home {
     /// The same, in full and unshortened — what the reader gets on hovering the
     /// subtitle, which is where a path too long for a header bar goes.
     pub fn full(&self) -> String {
-        match &self.kept {
+        match self.kept() {
             Some(kept) => kept.display().to_string(),
             None => self.name(),
         }
+    }
+
+    /// The path the reader keeps this document at — the one name anything that writes
+    /// something down *about* a document has to write it down under (issue #51).
+    ///
+    /// [`Home::path`] will not do for that: under the document portal it is a fuse path
+    /// carrying a document id the desktop mints afresh, so the same document is a
+    /// different path the next time it is opened and what was remembered about it
+    /// would never be found again. This is the path that does not move.
+    ///
+    /// `None` when the desktop would not say where the document really is, which is the
+    /// one case where axiomd knows a document's name and nothing about its place: a
+    /// name alone is not an identity — two folders can each hold a `notes.md` — so
+    /// there is nothing to write anything down under.
+    pub fn kept(&self) -> Option<&Path> {
+        self.kept.as_deref()
     }
 
     /// The document's own name. The portal keeps it (probed: forwarding

@@ -92,6 +92,7 @@ use crate::editor::Editor;
 use crate::find::{Find, Searchable};
 use crate::links::Follow;
 use crate::outline::{Browsing, Outline};
+use crate::places::Places;
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
@@ -160,6 +161,9 @@ pub(crate) struct DocumentWindow {
     surfaces: gtk::Stack,
     scheme: Rc<Scheme>,
     settings: Rc<Settings>,
+    /// Where the reader left off in the documents they have read — read when this
+    /// window is given one, written when it closes or saves (issue #51).
+    places: Rc<Places>,
     /// The text this window owns, and everything true about it that is not the text.
     document: RefCell<Document>,
     open: RefCell<Option<OpenDocument>>,
@@ -184,6 +188,9 @@ pub(crate) struct DocumentWindow {
     /// Set once the reader has answered the question about unsaved work, so that the
     /// close they asked for goes through the second time rather than asking again.
     leaving: Cell<bool>,
+    /// The same, for where the reader had got to: the page is asked and answers on the
+    /// main loop, so the close waits one turn for it and then goes through (issue #51).
+    noted: Cell<bool>,
     /// Where the reader has been in this window, and where they are in it.
     history: RefCell<History>,
     /// The remote images this window has asked for and not yet heard back about, so
@@ -480,6 +487,7 @@ impl DocumentWindow {
             surfaces,
             scheme: scheme.clone(),
             settings: settings.clone(),
+            places: Places::new(settings),
             document: RefCell::new(Document::untitled()),
             open: RefCell::new(None),
             mode: Cell::new(Mode::Read),
@@ -488,6 +496,7 @@ impl DocumentWindow {
             rerender: Cell::new(0),
             autosave: Cell::new(0),
             leaving: Cell::new(false),
+            noted: Cell::new(false),
             history: RefCell::new(History::default()),
             fetching: RefCell::new(Vec::new()),
             layout: OnceCell::new(),
@@ -714,18 +723,30 @@ impl DocumentWindow {
             self.window.add_action(&action);
         }
 
-        // Unsaved work is the one thing that may stop a close, and only by asking the
-        // reader — who asked to close — a question they answer once.
+        // Two things may hold a close up, each of them once. Unsaved work, by asking
+        // the reader — who asked to close — a question they answer once; and where they
+        // had got to, which only the page knows and answers on the next turn of the
+        // loop (issue #51). Neither is a question the reader is left with: the second
+        // is not a question at all, and it lasts one turn.
         let closing = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
             let Some(window) = closing.upgrade() else {
                 return glib::Propagation::Proceed;
             };
             window.pull_text();
-            if window.leaving.get() || !window.document.borrow().is_modified() {
+            if !window.leaving.get() && window.document.borrow().is_modified() {
+                window.ask_about_unsaved_work();
+                return glib::Propagation::Stop;
+            }
+            if window.noted.replace(true) {
                 return glib::Propagation::Proceed;
             }
-            window.ask_about_unsaved_work();
+            let noting = Rc::downgrade(&window);
+            window.note_where_they_are(move || {
+                if let Some(window) = noting.upgrade() {
+                    window.leave();
+                }
+            });
             glib::Propagation::Stop
         });
     }
@@ -1382,6 +1403,7 @@ impl DocumentWindow {
                     *self.document.borrow_mut() = document;
                     if let Some(open) = self.open.borrow().as_ref() {
                         open.loaded.set(true);
+                        self.take_up_where_they_left_off(open);
                     }
                     self.notice.hide();
                     self.retitle();
@@ -1415,6 +1437,73 @@ impl DocumentWindow {
             External::Conflict => self.offer_the_choice(),
         }
         self.retitle();
+    }
+
+    /// Puts the reader back where they were the last time they read this document
+    /// (issue #51).
+    ///
+    /// Taken here, on the document's first arrival, and applied by the very render this
+    /// is about to ask for — which is the render that loads the page. So the page is
+    /// already in the right place by the time it says it has been drawn, and the
+    /// surface standing in front of it only comes away then (issue #41, `view.rs`).
+    /// There is no moment in which the reader is shown the top of a document they left
+    /// in the middle, because there is no moment in which they are shown the document
+    /// at all before the place is taken.
+    ///
+    /// Nothing new is scrolled: the line goes to the same call a mode switch and a live
+    /// reload hand their line to, which clamps it to the nearest surviving block —
+    /// so a document that lost the anchored line between visits lands on the block
+    /// before it, and one that shrank past the anchor lands on its last block
+    /// (`place.js`). A reader who followed a link to a section of the document asked
+    /// for somewhere in particular, and that wins.
+    fn take_up_where_they_left_off(&self, open: &OpenDocument) {
+        if !open.fragment.is_empty() {
+            return;
+        }
+        if let Some(home) = open.home.as_ref()
+            && let Some(line) = self.places.left_off_at(home)
+        {
+            self.view.place_after_next_render(line);
+        }
+    }
+
+    /// Writes down where the reader has got to in this window's document, and then does
+    /// `then` — which is how a close waits for it (issue #51).
+    ///
+    /// Where they are is the source line of the block at the top of the page, which is
+    /// the same anchor the mode switch trades in (invariant 5). In the editor the
+    /// window already knows it; in read mode only the page does, and it answers on the
+    /// main loop — so `then` is what happens afterwards rather than what happens next.
+    ///
+    /// A document the reader has not actually been shown is left alone: a window closed
+    /// while its document was still arriving would otherwise write down the top of it
+    /// and lose the place the reader had.
+    fn note_where_they_are(self: &Rc<Self>, then: impl FnOnce() + 'static) {
+        let home = self
+            .open
+            .borrow()
+            .as_ref()
+            .filter(|open| open.loaded.get())
+            .and_then(|open| open.home.clone());
+        let Some(home) = home else {
+            return then();
+        };
+        match self.mode.get() {
+            Mode::Edit => {
+                self.places.remember(&home, self.editor.caret_line());
+                then();
+            }
+            Mode::Read if !self.view.showing_the_document() => then(),
+            Mode::Read => {
+                let window = Rc::downgrade(self);
+                self.view.topmost_source_line(move |line| {
+                    if let Some(window) = window.upgrade() {
+                        window.places.remember(&home, line);
+                    }
+                    then();
+                });
+            }
+        }
     }
 
     /// The one place in the app where the reader is asked something about a document
@@ -1751,6 +1840,10 @@ impl DocumentWindow {
             Ok(()) => {
                 self.notice.hide();
                 self.retitle();
+                // The other moment a place is worth keeping (issue #51): the reader has
+                // just said this is the version, and a copy that never gets to close —
+                // a crash, a session ending under it — still has where they were.
+                self.note_where_they_are(|| {});
             }
             // A save the reader asked for and did not get is said where they are
             // looking, and stays there until something else happens.

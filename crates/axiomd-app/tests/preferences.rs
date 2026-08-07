@@ -260,6 +260,13 @@ fn every_row_the_dialog_offers_turns_and_is_written_down() {
             "false",
         ),
         ("Reading Width", "46", "72", "reading-width", "72"),
+        (
+            "Remember Reading Position",
+            "true",
+            "false",
+            "remember-position",
+            "false",
+        ),
         ("Autosave", "true", "false", "autosave", "false"),
         ("Autosave Delay", "2", "9", "autosave-delay", "9"),
         ("Check Spelling", "true", "false", "spellcheck", "false"),

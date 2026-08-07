@@ -82,6 +82,16 @@
       </description>
     </key>
 
+    <key name="remember-position" type="b">
+      <default>true</default>
+      <summary>Remember the reading position</summary>
+      <description>
+        Whether a document opens where the reader last left it. With this off
+        nothing is written down and nothing is restored; places already written
+        down are kept.
+      </description>
+    </key>
+
     <key name="autosave" type="b">
       <default>true</default>
       <summary>Save edits automatically</summary>

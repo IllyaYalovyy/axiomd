@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod support;
 
-use axiomd_e2e::Fixture;
+use axiomd_e2e::{Fixture, Preferences};
 use support::Origin;
 
 /// The application id, which the manifest, the desktop entry, the metainfo, the icons
@@ -1378,6 +1378,79 @@ fn the_installed_flatpak_renders_a_document_and_fetches_nothing_until_asked() {
         app.mode_switch().icon,
         "view-reveal-symbolic",
         "the packaged runtime has no icon for editing's face of the mode switch",
+    );
+}
+
+/// Where the reader left off survives being closed and opened again *inside the
+/// sandbox* (issue #51).
+///
+/// The store is written to `g_get_user_state_dir()`, which is one of the paths a
+/// packaged application does not share with the host: a feature that worked on a
+/// development build and silently forgot everything under flatpak would look exactly
+/// like a feature that works. So this is asked of the installed package, with the whole
+/// round trip inside it — a window reads a document to a section, closes, and a second
+/// launch of the same package puts the reader back there.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_opens_a_document_where_the_reader_left_it() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-position");
+    let preferences = Preferences::new("flatpak-position");
+    let mut source = String::from("# Sandboxed\n\nThe opening words.\n\n");
+    for chapter in 1..=6 {
+        source.push_str(&format!("## Chapter {chapter}\n\n"));
+        for paragraph in 1..=12 {
+            source.push_str(&format!(
+                "Chapter {chapter}, paragraph {paragraph}: a line of prose long enough \
+                 to take up room on the page it is read on.\n\n"
+            ));
+        }
+    }
+    let document = fixture.write("sandboxed.md", &source);
+
+    let at_the_section = "Math.round(Array.from(document.querySelectorAll('h2')) \
+         .find(heading => heading.textContent === 'Chapter 3').getBoundingClientRect().top)";
+    let scrolled = "Math.round(document.scrollingElement.scrollTop)";
+
+    let reading = axiomd_e2e::launch_installed_flatpak_with(&document, &preferences);
+    assert_eq!(
+        reading.dom(scrolled),
+        "0",
+        "the packaged application did not open a fresh document at the top",
+    );
+    reading.press("Chapter 3");
+    reading.wait_for("the document to arrive at the section", || {
+        reading
+            .dom(at_the_section)
+            .parse::<i32>()
+            .is_ok_and(|top| top.abs() <= 4)
+    });
+    reading.close_window();
+    reading.wait_until_windows(0);
+    assert!(
+        reading.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+
+    let again = axiomd_e2e::launch_installed_flatpak_with(&document, &preferences);
+    assert_eq!(
+        again.dom_text("h1"),
+        "Sandboxed",
+        "the second sandboxed launch is not showing the document",
+    );
+    let top: i32 = again
+        .dom(at_the_section)
+        .parse()
+        .expect("where the section is on screen");
+    assert!(
+        top.abs() <= 4,
+        "the packaged application forgot where the reader was: Chapter 3 is {top}px \
+         from the top of the page",
+    );
+    assert!(
+        again.close().is_empty(),
+        "the sandboxed launch left something running",
     );
 }
 

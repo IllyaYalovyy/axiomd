@@ -184,6 +184,29 @@ window — never on save, which names the page rather than opening one.
 A document that was *opened* with no headings keeps the "No headings"
 empty state: that is the right answer for a document that has none.
 
+## Does a document open where the reader left it?
+
+Yes, by default (issue #51) — the Evince/Papers behaviour a GNOME reader
+expects. The place is a span anchor, never a pixel offset: the source line
+of the block that was at the top of the page, restored through the very
+machinery a mode switch and a live reload use (invariant 5). It is applied
+before the reader is shown the document at all, so there is no top-then-jump.
+
+Three rulings go with it:
+
+- **Never a question.** A document that lost the anchored line between
+  visits lands on the nearest surviving block; a store that is missing or
+  damaged opens the document at the top. Silently, both times — the open
+  path is never interrupted (VISION principle 6, invariant 12).
+- **Last write wins.** Several windows on one document each write down
+  where their reader was as they close, and the last window to close is
+  the place the document opens at next time. Nothing is merged: two
+  windows are two readings, and the most recent one is the answer.
+- **Off keeps what is already written.** "Remember Reading Position" off
+  stops both halves — nothing restored, nothing written — and leaves the
+  places already written down alone, so turning it back on resumes rather
+  than starts over.
+
 ## Is YAML frontmatter rendered?
 
 No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as

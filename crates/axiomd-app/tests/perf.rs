@@ -379,11 +379,15 @@ fn ten_windows_cost_bounded_memory_and_give_it_back_when_they_close() {
         per_window,
     );
 
-    for _ in 1..MANY_WINDOWS {
-        app.select_window(app.window_count() - 1);
+    // One at a time, waiting for each to go before the next is picked. A window closing
+    // takes a turn of the main loop — it writes down where its reader had got to first
+    // (issue #51) — so a loop that addressed the last window by index without waiting
+    // would address the same closing window twice and leave half of them open.
+    for remaining in (1..MANY_WINDOWS).rev() {
+        app.select_window(remaining);
         app.close_window();
+        app.wait_until_windows(remaining);
     }
-    app.wait_until_windows(1);
     // Closing a window frees what it owned, and its web process is most of what it
     // owned. That process leaves on its own time, so this waits for it rather than
     // reading memory that is about to be given back.

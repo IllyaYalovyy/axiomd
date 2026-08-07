@@ -277,7 +277,15 @@ impl Environment {
 
         let data = scratch.join("data");
         let cache = scratch.join("cache");
-        let state = scratch.join("state");
+        // What the application learned rather than what the reader chose: where they
+        // left off in each document they have read (issue #51). It goes beside their
+        // settings when a test has given the launch a store of its own, for the same
+        // reason the settings do — a second launch over the same store is the reader
+        // coming back to their own machine, and a place they left is exactly the kind
+        // of thing that has to still be there when they do. A launch without a store
+        // keeps it in its own scratch, where it dies with the launch.
+        let state =
+            settings.map_or_else(|| scratch.join("state"), |settings| settings.join("state"));
         for directory in [&data, &cache, &state] {
             make_private_dir(directory);
         }
