@@ -8,23 +8,25 @@
  * from the current foreground so a hairline is a hairline on both.
  *
  * Loaded once per display at APPLICATION priority, which in GTK's cascade outranks the
- * theme whatever its selectors are — that is what lets the panel take the accent pill
- * back from .navigation-sidebar, which deliberately makes selection neutral, and take
- * the theme's own selection wash away again (issue #42).
+ * theme whatever its selectors are — that is what lets the panel take the theme's own
+ * selection wash off `.navigation-sidebar`'s rows and put the reader's place somewhere
+ * the pointer cannot reach it (issue #42). It borrows that sheet's grammar rather than
+ * its selector: greys for where you are, the accent for an outline and nothing else
+ * (issue #48).
  *
  * # What is drawn on what
  *
  * A row is two nodes: the `row` GTK builds and recycles, and the `treeexpander` this
- * panel puts inside it. Every mark is drawn on the second one — the pill, the hover
- * wash, the focus ring — and the first draws nothing at all. That is not a preference:
- * the pill is a class `outline.rs` puts on as a row is bound to a section, and touching
- * the `row` widget from there crashes GTK 4.20.4 inside its own list-item update
+ * panel puts inside it. Every mark is drawn on the second one — the reader's place, the
+ * hover wash, the focus ring — and the first draws nothing at all. That is not a
+ * preference: the place is a class `outline.rs` puts on as a row is bound to a section,
+ * and touching the `row` widget from there crashes GTK 4.20.4 in its own list-item update
  * (segfault in `gtk_list_item_base_update`, reproduced on this machine). The widgets
  * this panel makes itself are safe to restyle there, so those are the ones marked.
  *
  * The `row` therefore carries no padding and no ink, and the `treeexpander` carries
  * what it used to: the padding, the rounded corners and the background. What the reader
- * sees is unchanged — the same pill, the same size, in the same place.
+ * sees is a pill of the same size in the same place, whatever it is painted in.
  */
 
 /* The panel: its own surface, so the sidebar reads as a designed thing rather than as
@@ -77,22 +79,55 @@ listview.axiomd-outline > row > treeexpander {
   min-height: 24px;
 }
 
-/* Where the reader is: the GNOME pill, in the accent colour, following the document as
-   they read.
+/* Where the reader is: a quiet grey pill with the accent drawn around it, following the
+   document as they read.
 
    The class is the panel's own, put on by `outline.rs` as a row is bound to a section,
    and it is deliberately not `:selected` (issue #42). The list is built with
    single-click activation, and in that mode GTK moves the selection on to whatever row
-   the pointer crosses — so a pill riding the selection was a pill the pointer could
-   steal, and did. The accent belongs to the section being read and to nothing else. */
+   the pointer crosses — so a mark riding the selection was a mark the pointer could
+   steal, and did. This mark belongs to the section being read and to nothing else.
+
+   The fill is grey, not accent (issue #48). `.navigation-sidebar` paints a selected row
+   in a wash of its own text colour — `color-mix(in srgb, currentColor 10%, transparent)`,
+   libadwaita 1.8.6 — and that is the language a GNOME sidebar says "this one" in; the
+   accent is spent on an outline instead of on the fill, which is what "use the accent"
+   meant all along. The wash here is deeper than the theme's own because it has one more
+   job than a selection does: it has to be told apart from the hover wash two rules down
+   at a glance, not merely noticed. Both are mixes of currentColor, so light and dark
+   each get their own greys with nothing theme-specific written here.
+
+   The outline rather than a leading-edge bar, of the two the issue offers: an outline is
+   the shape libadwaita itself gives a row that is being singled out
+   (`row:drop(active)`, `inset 0 0 0 1px var(--accent-bg-color)`, same sheet), it needs
+   no side of its own so it is right in both text directions, and it leaves the mark
+   legible when the wash beneath it is all a high-contrast desktop will allow. The owner
+   pins the choice with the goldens. */
 listview.axiomd-outline > row > treeexpander.axiomd-outline-current {
-  background-color: var(--accent-bg-color);
-  color: var(--accent-fg-color);
+  background-color: color-mix(in srgb, currentColor 18%, transparent);
+  box-shadow: inset 0 0 0 3px var(--accent-bg-color);
 }
 
+/* The text of the row the reader is on is the panel's ordinary text, at full strength:
+   a section written at a level the panel dims (four and deeper) is not dimmed while it
+   is the section being read. Weight is left to the level it is written at — bolding the
+   current row would reflow its label every time the reader crosses a heading, which is
+   movement in a panel that should be still. */
 listview.axiomd-outline > row > treeexpander.axiomd-outline-current label {
   opacity: 1;
-  color: var(--accent-fg-color);
+}
+
+/* Hover on the row the reader is already on: the wash deepens, the outline stays. The
+   row answers the pointer without ever stopping being the reader's place — the two
+   marks are drawn on different properties, so neither can take the other's place. The
+   step is the one libadwaita takes between a selected row and a selected row under the
+   pointer (10% to 13%, and 19% pressed). */
+listview.axiomd-outline > row:hover > treeexpander.axiomd-outline-current {
+  background-color: color-mix(in srgb, currentColor 23%, transparent);
+}
+
+listview.axiomd-outline > row:active > treeexpander.axiomd-outline-current {
+  background-color: color-mix(in srgb, currentColor 29%, transparent);
 }
 
 /* Hover says "you can go here", never "you are here": a wash of the text's own colour,
@@ -150,15 +185,34 @@ listview.axiomd-outline > row > treeexpander.axiomd-outline-current expander {
   opacity: 1;
 }
 
-/* High contrast is a design of its own, not the same one with harder colours. Two
-   things change: the pill says where the reader is by its shape as well as its colour,
-   so it survives a reader who cannot tell the accent from the wash; and the wash — 8%
-   of the foreground, which is nearly nothing on a desktop that asked for contrast —
-   comes up to where it can be seen. libadwaita answers the same query for its own
-   sheet, which is what makes it the right one to ask (`main.css`, libadwaita 1.8.6). */
+/* High contrast, where every wash comes up — 8% of the foreground is nearly nothing on
+   a desktop that asked for contrast — and the two marks are pulled a third further
+   apart in thickness and twice as far apart in grey.
+
+   This block is a refinement and never the thing that carries high contrast, because it
+   cannot be relied on to run: GTK answers `prefers-contrast` from the desktop's settings
+   portal, while libadwaita answers `is_high_contrast()` from the portal *or* from
+   `org.gnome.desktop.a11y.interface` (`adw_settings`, libadwaita 1.8.6), so a desktop
+   that has set the GSettings key and has no portal running puts the application in high
+   contrast with this query still false. Probed on GTK 4.20.4 and libadwaita 1.8.6 under
+   the e2e harness: with high contrast on, libadwaita's own variables changed the panel
+   and a rule inside this block did not paint. Everything the reader needs in high
+   contrast is therefore in the ordinary rules above — the outline is a step in
+   luminance and the wash is twice the pointer's, neither of which is a colour — and
+   `crates/axiomd-app/tests/outline.rs` asserts exactly that with the desktop in high
+   contrast. */
 @media (prefers-contrast: more) {
   listview.axiomd-outline > row > treeexpander.axiomd-outline-current {
-    box-shadow: inset 0 0 0 1px var(--accent-fg-color);
+    background-color: color-mix(in srgb, currentColor 36%, transparent);
+    box-shadow: inset 0 0 0 4px var(--accent-bg-color);
+  }
+
+  listview.axiomd-outline > row:hover > treeexpander.axiomd-outline-current {
+    background-color: color-mix(in srgb, currentColor 42%, transparent);
+  }
+
+  listview.axiomd-outline > row:active > treeexpander.axiomd-outline-current {
+    background-color: color-mix(in srgb, currentColor 48%, transparent);
   }
 
   listview.axiomd-outline > row:hover > treeexpander:not(.axiomd-outline-current) {

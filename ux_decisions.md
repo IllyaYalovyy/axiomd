@@ -101,6 +101,30 @@ header ends. The scroll-driven flat-until-scrolled treatment GNOME Text
 Editor uses was considered and NOT taken: the separation is persistent
 (issue #47).
 
+## How is the chapter the reader is in marked in the outline?
+
+Owner ruling clarified (2026-08-06): **the accent is a line, never a fill.**
+"Use the accent colour" always meant use it *as an accent*; the solid blue
+lozenge with white text that shipped on 2026-08-05 was a misreading of that
+instruction by the task spec, not a change of direction, and no later task
+may "restore" it. The current chapter is a neutral grey wash — the language
+`.navigation-sidebar` itself says "this one" in — with the accent spent on a
+thin outline around the pill and the row's text left in the ordinary
+foreground (issue #48).
+
+Of the two accent shapes the ruling allows, a leading-edge bar or an outline,
+the outline is what ships: it is the shape libadwaita gives a row it singles
+out (`row:drop(active)`), it needs no side of its own so it reads the same in
+both text directions, and it is the one that stays visible when the wash
+under it is all a high-contrast desktop will allow. The state ladder is the
+acceptance bar and is measured, not eyeballed: hover is washed at most half
+as deep as the chapter being read, and the chapter being read is the only one
+that carries an outline. Both differences are luminance, so a reader who
+cannot tell the accent from the wash still sees which row is theirs.
+
+Issue #42's guarantee is untouched by this and stands: the mark belongs to
+the section being read and the pointer can never take it.
+
 ## Is the sidebar resizable?
 
 Yes (owner ruling 2026-08-03): drag the divider; width persists across

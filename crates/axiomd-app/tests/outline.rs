@@ -8,7 +8,7 @@
 //! bridge that answers every scroll event instead of every frame is Apostrophe's
 //! mistake reproduced.
 
-use axiomd_e2e::{App, Fixture, Preferences};
+use axiomd_e2e::{App, Fixture, Preferences, Screenshot};
 
 /// The sections of the test document, in order, with the level each is written at.
 const SECTIONS: [(usize, &str); 4] = [
@@ -1195,6 +1195,235 @@ fn the_keyboard_walks_the_sidebar_without_moving_the_place_and_still_picks_a_sec
     assert_eq!(app.navigation_count(), 1);
 
     assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// A strip of the panel the sections are never written across: past the end of the
+/// longest of them and short of the pill's own right-hand edge, so a luminance read
+/// across it is a reading of the paint and never of a letter that happened to be there.
+const PLAIN: (u32, u32) = (190, 225);
+
+/// The pill the accent is drawn on, as the first and last row of the picture it appears
+/// on — found the way a reader finds it, by looking for the blue.
+fn place_marked_in_accent(sidebar: &Screenshot) -> (u32, u32) {
+    let (_, height) = sidebar.size();
+    let rows: Vec<u32> = (0..height)
+        .filter(|row| sidebar.band(*row, 1).pixels_coloured(ACCENT) > 0)
+        .collect();
+    match (rows.first(), rows.last()) {
+        (Some(top), Some(bottom)) => (*top, *bottom),
+        _ => panic!("the accent is drawn nowhere on the sidebar"),
+    }
+}
+
+/// How far the fill of the pill whose top row is `top` is from the panel's plain
+/// background, in channel steps of luminance.
+///
+/// Luminance rather than colour, because that is the whole question two of these tests
+/// ask: a difference this measures is one a reader who cannot tell the accent from the
+/// wash — or is looking at a screen that renders neither in colour — can still see. It
+/// is read both ways round because a wash of the foreground darkens a row on a light
+/// desktop and lightens one on a dark desktop, and only one of the two readings is
+/// above zero on either.
+fn wash_depth(sidebar: &Screenshot, top: u32, height: u32) -> u8 {
+    // Down and out of the pill: the row the profile settles on is the margin below it,
+    // so this reads how much darker the pill is than the panel.
+    let darker = sidebar.shading_below(top + height - 11, PLAIN)[0];
+    // Down and into it: the profile settles inside the pill instead, so this reads how
+    // much darker the panel is than the pill.
+    let lighter = sidebar.shading_below(top - 8, PLAIN)[0];
+    darker.max(lighter)
+}
+
+/// How hard an edge the pill whose top row is `top` has, in the same channel steps: the
+/// step between its outline and its own fill, which is nothing at all on a pill that has
+/// no outline.
+fn rim_step(sidebar: &Screenshot, top: u32, height: u32) -> u8 {
+    // The top edge against the fill below it, and the bottom edge against the fill above
+    // it — again both ways round, because the accent is darker than the fill on a light
+    // desktop and lighter than it on a dark one.
+    let darker = sidebar.shading_below(top, PLAIN)[0];
+    let lighter = sidebar.shading_below(top + height - 14, PLAIN)[0];
+    darker.max(lighter)
+}
+
+/// The height of one pill and the row it sits in, taken from the pill the accent marks:
+/// libadwaita leaves 2px under a `.navigation-sidebar` row (`margin: 0 6px 2px`,
+/// libadwaita 1.8.6) and this panel does not take that back.
+fn pitch(height: u32) -> u32 {
+    height + 2
+}
+
+/// Issue #48: the reader's place is a quiet grey pill with the accent around it, and
+/// never a pill of accent.
+///
+/// "Use the accent colour" meant use it *as an accent*; the sidebar had been reading it
+/// as a fill, and painted the section being read in a solid blue lozenge with white
+/// text. `.navigation-sidebar` says "this one" in washes of its own foreground and
+/// spends colour on an outline, and that is the language this panel speaks now.
+///
+/// Everything asserted here is read off the pixels rather than off a stylesheet: how
+/// much of the panel is drawn in the accent, where in the pill it is, and how far the
+/// fill is from the panel behind it. A rule that never resolved leaves the surface
+/// looking almost right and answers every one of these with the wrong number.
+fn the_place_is_a_grey_pill_outlined_in_the_accent(name: &str, desktop: &Preferences) {
+    let fixture = Fixture::new(name);
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), desktop);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    let resting = app.sidebar_screenshot();
+    let (top, bottom) = place_marked_in_accent(&resting);
+    let height = bottom - top + 1;
+
+    // The accent is around the pill, not in it. Everything inside the outline — the pill
+    // less a generous four pixels of rim on each side — is drawn in something else, so
+    // what the row is *filled* with cannot be the accent whatever else it may be.
+    let inside = resting.band(top + 4, height - 8);
+    let rim = resting.pixels_coloured(ACCENT);
+    assert!(
+        inside.pixels_coloured(ACCENT) * 4 < rim,
+        "{} of the {rim} accent pixels are inside the pill rather than around it, so the \
+         reader's place is filled with the accent and not outlined in it",
+        inside.pixels_coloured(ACCENT),
+    );
+
+    // And it is an edge, not a tint: the outline steps away from the fill it surrounds by
+    // far more than the eight channel steps this harness calls a change at all.
+    let edge = rim_step(&resting, top, height);
+    assert!(
+        edge >= 40,
+        "the reader's place is outlined by a step of {edge} channel steps, which is not \
+         an outline a reader can see",
+    );
+
+    // The fill itself is a wash of the panel's own foreground, deep enough to read as a
+    // marked row on its own.
+    let here = wash_depth(&resting, top, height);
+    assert!(
+        here >= 24,
+        "the reader's place is filled with a wash {here} channel steps from the plain \
+         panel, which is not a pill",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The hierarchy the marker exists inside, in luminance: what the pointer does to a row
+/// has to be visibly less than what reading it does, and hovering the row the reader is
+/// already on has to leave it still the row they are on.
+///
+/// The pointer is put on "Getting started", two rows above the section being read, so
+/// that neither mark is measured across the other's edge.
+fn hover_is_visibly_less_than_being_read(name: &str, desktop: &Preferences) {
+    let fixture = Fixture::new(name);
+    let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), desktop);
+    app.dom("document.querySelector('h2[id=\"reference\"]').scrollIntoView(true)");
+    app.wait_until_section("Reference");
+
+    let resting = app.sidebar_screenshot();
+    let (top, bottom) = place_marked_in_accent(&resting);
+    let height = bottom - top + 1;
+    let elsewhere = top - 2 * pitch(height);
+    let here = wash_depth(&resting, top, height);
+    assert_eq!(
+        wash_depth(&resting, elsewhere, height),
+        0,
+        "a row nobody is reading and nothing is pointing at is painted anyway",
+    );
+
+    app.hover_over("Getting started");
+    let hovered = app.sidebar_screenshot();
+
+    // Hover is drawn, and drawn as a wash of its own with no edge to it.
+    let under_the_pointer = wash_depth(&hovered, elsewhere, height);
+    assert!(
+        under_the_pointer >= 8,
+        "the pointer over a row washed it by {under_the_pointer} channel steps, which is \
+         inside this harness's own tolerance — nothing says the row is clickable",
+    );
+    assert_eq!(
+        rim_step(&hovered, elsewhere, height),
+        0,
+        "the pointer drew an outline round a row, which is the mark that means the \
+         reader is reading it",
+    );
+
+    // And it is unmistakably the lesser of the two: the reader's place is washed at
+    // least twice as deep, and still carries the outline the hovered row has none of.
+    assert!(
+        here >= 2 * under_the_pointer,
+        "the reader's place is washed {here} channel steps deep and a row under the \
+         pointer {under_the_pointer}, which is not a difference told apart at a glance",
+    );
+    assert_eq!(
+        wash_depth(&hovered, top, height),
+        here,
+        "the pointer somewhere else changed how the reader's place is painted",
+    );
+
+    // The pointer arriving on the very row the reader is on: the wash deepens, and every
+    // part of the marker that says "you are here" is still there.
+    app.hover_over("Reference");
+    let on_it = app.sidebar_screenshot();
+    let pressed = wash_depth(&on_it, top, height);
+    assert!(
+        pressed > here,
+        "the pointer on the reader's own row answered it with nothing: {pressed} channel \
+         steps against {here} at rest",
+    );
+    assert!(
+        rim_step(&on_it, top, height) >= 40,
+        "the pointer on the reader's own row took its outline away",
+    );
+    assert_eq!(
+        on_it.pixels_coloured(ACCENT),
+        resting.pixels_coloured(ACCENT),
+        "the pointer on the reader's own row changed how much of the panel is accent",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+#[test]
+fn a_light_sidebar_draws_the_place_in_grey_outlined_in_the_accent() {
+    let desktop = Preferences::new("outline-paint-light");
+    the_place_is_a_grey_pill_outlined_in_the_accent("outline-paint-light", &desktop);
+}
+
+#[test]
+fn a_dark_sidebar_draws_the_place_in_grey_outlined_in_the_accent() {
+    let desktop = Preferences::with("outline-paint-dark", "theme", "'dark'");
+    the_place_is_a_grey_pill_outlined_in_the_accent("outline-paint-dark", &desktop);
+}
+
+/// The desktop the marker may not be a colour on: high contrast, where a reader who
+/// cannot tell the accent from the wash still has to be able to see which row is theirs.
+/// Both of the differences asserted above are luminance — the outline's step and the
+/// depth of the wash — so passing here is passing without colour.
+#[test]
+fn a_high_contrast_sidebar_draws_the_place_without_relying_on_colour() {
+    let desktop = Preferences::new("outline-paint-contrast");
+    desktop.set_high_contrast(true);
+    the_place_is_a_grey_pill_outlined_in_the_accent("outline-paint-contrast", &desktop);
+}
+
+#[test]
+fn a_light_sidebar_tells_the_pointer_apart_from_the_reader() {
+    let desktop = Preferences::new("outline-ladder-light");
+    hover_is_visibly_less_than_being_read("outline-ladder-light", &desktop);
+}
+
+#[test]
+fn a_dark_sidebar_tells_the_pointer_apart_from_the_reader() {
+    let desktop = Preferences::with("outline-ladder-dark", "theme", "'dark'");
+    hover_is_visibly_less_than_being_read("outline-ladder-dark", &desktop);
+}
+
+#[test]
+fn a_high_contrast_sidebar_tells_the_pointer_apart_without_relying_on_colour() {
+    let desktop = Preferences::new("outline-ladder-contrast");
+    desktop.set_high_contrast(true);
+    hover_is_visibly_less_than_being_read("outline-ladder-contrast", &desktop);
 }
 
 /// The visual specification of the sidebar on a light desktop (issue #35).
