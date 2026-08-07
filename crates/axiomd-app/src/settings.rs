@@ -22,7 +22,8 @@
 //! An installed axiomd finds its schema among the system's compiled schemas. A copy
 //! running from the build tree — `cargo run`, the test suite, the e2e harness — finds
 //! the one its own build compiled ([`build.rs`](../build.rs)). The installed schema
-//! wins when both exist, which is what a running system should honour.
+//! wins when both exist, which is what a running system should honour — except under
+//! test, where the tree being tested wins instead ([`schema`]).
 
 mod dialog;
 
@@ -60,6 +61,8 @@ pub(crate) enum Key {
     WindowHeight,
     /// Whether it opens filling the screen. Window state.
     WindowMaximized,
+    /// Whether a document opens where the reader last left it.
+    RememberPosition,
     /// Whether edits are written back without being asked for.
     Autosave,
     /// How long after the last edit that happens, in seconds.
@@ -78,7 +81,7 @@ impl Key {
         not(test),
         allow(dead_code, reason = "the completeness tests are its only reader")
     )]
-    const ALL: [Key; 13] = [
+    const ALL: [Key; 14] = [
         Key::Theme,
         Key::ReadingWidthLimited,
         Key::ReadingWidth,
@@ -87,6 +90,7 @@ impl Key {
         Key::WindowWidth,
         Key::WindowHeight,
         Key::WindowMaximized,
+        Key::RememberPosition,
         Key::Autosave,
         Key::AutosaveDelay,
         Key::Spellcheck,
@@ -105,6 +109,7 @@ impl Key {
             Key::WindowWidth => "window-width",
             Key::WindowHeight => "window-height",
             Key::WindowMaximized => "is-maximized",
+            Key::RememberPosition => "remember-position",
             Key::Autosave => "autosave",
             Key::AutosaveDelay => "autosave-delay",
             Key::Spellcheck => "spellcheck",
@@ -339,6 +344,17 @@ impl Settings {
         self.sidebar_width()
     }
 
+    /// Whether a document opens where the reader last left it (issue #51).
+    ///
+    /// Asked at the two moments it decides anything — when a document opens, and when
+    /// a window closes or saves — rather than remembered, so turning it reaches the
+    /// very next open and the very next close without a restart, a reopen or a watch
+    /// to keep in step (invariant 14). Off stops both halves: nothing is restored and
+    /// nothing is written down.
+    pub(crate) fn remember_position(&self) -> bool {
+        self.store.boolean(Key::RememberPosition.name())
+    }
+
     /// Tells `check` whether the editor marks misspelled words — now, and again every
     /// time the reader changes their mind.
     ///
@@ -537,10 +553,20 @@ fn motion() -> axiomd_render::Motion {
 }
 
 /// The compiled schema, from wherever this copy of axiomd can find one.
+///
+/// The other way round under test, and only under test: a test binary is asking about
+/// the axiomd in *this tree*, so the schema this tree compiled is the one it must be
+/// answered with. A developer who has run `scripts/install.sh --user` has an axiomd of
+/// their own whose schema is whatever they installed, and with that answered first the
+/// first test to add a key to the schema aborts the whole binary — GLib ends the
+/// process on a key its schema does not have, so it is not even a failure that names
+/// itself. Nothing about the running application changes: outside a test the installed
+/// schema still wins, which is what a running system should honour.
 fn schema() -> gio::SettingsSchema {
-    if let Some(installed) =
-        gio::SettingsSchemaSource::default().and_then(|source| source.lookup(SCHEMA, true))
-    {
+    let installed =
+        || gio::SettingsSchemaSource::default().and_then(|source| source.lookup(SCHEMA, true));
+    #[cfg(not(test))]
+    if let Some(installed) = installed() {
         return installed;
     }
 
@@ -548,6 +574,7 @@ fn schema() -> gio::SettingsSchema {
     gio::SettingsSchemaSource::from_directory(built, None, true)
         .ok()
         .and_then(|source| source.lookup(SCHEMA, false))
+        .or_else(installed)
         .unwrap_or_else(|| {
             panic!(
                 "axiomd's settings schema is neither installed nor in {}. \
@@ -619,6 +646,7 @@ mod tests {
             (Key::WindowWidth, "900"),
             (Key::WindowHeight, "700"),
             (Key::WindowMaximized, "false"),
+            (Key::RememberPosition, "true"),
             (Key::Autosave, "true"),
             (Key::AutosaveDelay, "2"),
             (Key::Spellcheck, "true"),

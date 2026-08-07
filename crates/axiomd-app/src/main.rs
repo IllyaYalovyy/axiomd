@@ -9,6 +9,7 @@ mod find;
 mod links;
 mod numbering;
 mod outline;
+mod places;
 mod remote;
 mod scheme;
 mod settings;

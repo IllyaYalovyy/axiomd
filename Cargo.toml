@@ -42,6 +42,14 @@ lopdf = { version = "0.36", default-features = false }
 # which is a session-bus call and nothing more. The same GIO `gtk` already brings, so
 # this adds no code to the build — it only says which crates may talk to the desktop.
 gio = "0.22"
+# GLib itself, named for one reason only: `g_get_user_state_dir` — where a desktop
+# keeps what an application learned rather than what the reader configured, and where
+# the reading positions of issue #51 go. It is behind the bindings' `v2_72` gate (the
+# GLib release that added the call, 2022), which is far below the GNOME 49 platform
+# baseline this project targets — glib 2.86 on the machine this is built on. The same
+# glib `gtk` and `gio` already bring: this adds no code to the build, it raises one
+# feature gate and says which crates may reach for it.
+glib = { version = "0.22", features = ["v2_72"] }
 # The C library's own bindings, for the one thing the standard library leaves out: ending
 # a *process group*. Used only by the test harness (`crates/axiomd-e2e`), and the same
 # libc `gtk` already brings — it adds no code to the build, it only says which crate may

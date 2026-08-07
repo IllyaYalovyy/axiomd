@@ -106,6 +106,14 @@ fn appearance(settings: &Rc<Settings>) -> adw::PreferencesPage {
         &gettext("Show Outline"),
         &gettext("List a document's headings beside it. F9 shows or hides it in one window."),
     ));
+    // Beside the outline rather than under Editing: it is about how a document arrives
+    // in front of a reader, which is what this group answers (issue #51).
+    group.add(&toggle(
+        settings,
+        Key::RememberPosition,
+        &gettext("Remember Reading Position"),
+        &gettext("Open each document where you last left it."),
+    ));
 
     page(
         &gettext("Appearance"),

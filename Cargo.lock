@@ -64,6 +64,7 @@ dependencies = [
  "axiomd-engine",
  "axiomd-i18n",
  "axiomd-render",
+ "glib",
  "gtk4",
  "libadwaita",
  "libspelling",

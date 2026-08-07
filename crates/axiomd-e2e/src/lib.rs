@@ -463,6 +463,18 @@ impl Preferences {
     fn keyfile(&self) -> PathBuf {
         self.scratch.path().join("glib-2.0/settings/keyfile")
     }
+
+    /// The file the application writes down where the reader left off in each document
+    /// into, under the state directory a launch over this store is given (issue #51).
+    ///
+    /// Not a preference — it is what the application learned rather than what the
+    /// reader chose — but it lives with them for the same reason: a test that launches
+    /// twice over one store is the reader coming back to their own machine. Named here
+    /// so that a test can damage it or take it away and assert what a reader whose
+    /// store is broken gets.
+    pub fn reading_positions(&self) -> PathBuf {
+        self.scratch.path().join("state/axiomd/reading-positions")
+    }
 }
 
 /// The developer's own desktop, stood in for — so that a test can prove nothing a
@@ -590,6 +602,24 @@ pub fn launch_with(document: &Path, preferences: &Preferences) -> App {
 /// Panics with what to run if no flatpak is installed.
 pub fn launch_installed_flatpak(document: &Path) -> App {
     let app = App::start_under(Under::InstalledFlatpak, Some(document), None, None, None);
+    app.wait_for_a_rendered_document();
+    app
+}
+
+/// The same, over a store the probe controls — so that two launches of the *package*
+/// share the settings and the state directory a reader's own two launches share.
+///
+/// The store's directory is handed to the sandbox alongside this launch's own, for the
+/// same reason and on the same terms: it is an argument to this launch, not a
+/// permission of the package (see [`launch_installed_flatpak`]).
+pub fn launch_installed_flatpak_with(document: &Path, preferences: &Preferences) -> App {
+    let app = App::start_under(
+        Under::InstalledFlatpak,
+        Some(document),
+        Some(preferences),
+        None,
+        None,
+    );
     app.wait_for_a_rendered_document();
     app
 }
@@ -795,6 +825,10 @@ impl App {
                 // to the sandbox: the portal is what the application reaches it by.
                 let visible = [
                     Some(scratch.path()),
+                    // The store a probe launches twice over, when it was given one: the
+                    // settings and the state directory the second launch has to find
+                    // where the first left them (issue #51).
+                    preferences.map(|preferences| preferences.scratch.path()),
                     document.filter(|_| !through_the_portal),
                 ];
                 sandboxed_command(
