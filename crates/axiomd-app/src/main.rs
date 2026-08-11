@@ -10,6 +10,7 @@ mod links;
 mod numbering;
 mod outline;
 mod places;
+mod recent;
 mod remote;
 mod scheme;
 mod settings;

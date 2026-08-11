@@ -622,9 +622,10 @@ impl Session {
     }
 }
 
-/// Where this copy of axiomd is running, in four lines: the compositor it draws on,
-/// every other compositor it could have drawn on instead, the session bus it registered
-/// with, and the control group the desktop started it in.
+/// Where this copy of axiomd is running: the compositor it draws on, every other
+/// compositor it could have drawn on instead, the session bus it registered with, the
+/// control group the desktop started it in, and the directory it writes what it tells
+/// the desktop into.
 ///
 /// This exists for one assertion, made at every launch of the test harness (issue #44):
 /// a copy started by a test must be nowhere the developer can see it — not on their
@@ -652,6 +653,11 @@ fn whereabouts(app: &adw::Application) -> String {
         ),
         format!("bus {}", session_bus(app)),
         format!("scope {}", control_group()),
+        // Where the desktop keeps what applications tell it, this copy's answer to it:
+        // the list of recently used documents axiomd registers an open in is one file
+        // under here (issue #52). The developer's own is the one directory a test run
+        // must never write a single entry into (issue #44).
+        format!("data {}", glib::user_data_dir().display()),
     ]
     .join("\n")
 }

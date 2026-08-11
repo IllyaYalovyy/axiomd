@@ -78,6 +78,11 @@ pub struct Whereabouts {
     /// The control group it runs in, by the name of the session unit — an
     /// `app-flatpak-io.github.etf.axiomd-*.scope` here is the defect issue #44 reports.
     pub scope: String,
+    /// The data directory it writes what it tells the desktop into — where its list of
+    /// recently used documents is (issue #52). The developer's own is the one directory
+    /// a launch must never reach: a suite that registered its fixtures there would put
+    /// a thousand documents that no longer exist into the reader's Files → Recent.
+    pub data: PathBuf,
 }
 
 impl Whereabouts {
@@ -100,6 +105,7 @@ impl Whereabouts {
                 .collect(),
             bus: line("bus").parse().ok(),
             scope: line("scope"),
+            data: PathBuf::from(line("data")),
         }
     }
 }
@@ -113,6 +119,8 @@ pub(crate) struct Expected {
     pub(crate) display_id: String,
     /// The daemon of the session bus it was given, or `None` for a launch given none.
     pub(crate) bus: Option<u32>,
+    /// The data directory this launch was pinned to, inside its own scratch.
+    pub(crate) data: PathBuf,
     /// Whether this launch has a world of its own, in which no other compositor exists.
     ///
     /// True of a sandboxed launch, which is the one that can be *sealed*: it lives in a
@@ -174,6 +182,15 @@ pub(crate) fn confirm(said: &str, expected: &Expected) -> Result<(), String> {
             "the session started it as the unit {} — the desktop is counting this test \
              as a running application",
             found.scope,
+        ));
+    }
+    if found.data != expected.data {
+        wrong.push(format!(
+            "it keeps what it tells the desktop in {} and this launch's own data \
+             directory is {} — every document it opens goes into somebody else's list \
+             of recent files",
+            found.data.display(),
+            expected.data.display(),
         ));
     }
     if found.backend != "GdkWaylandDisplay" {
@@ -375,7 +392,12 @@ impl Drop for Session {
 ///
 /// `arguments` are the ones the launch itself needs (its pinned environment, the
 /// directories it must see); everything this adds is containment.
-pub(crate) fn sandboxed(session: &Session, runtime_dir: &Path, display: &str) -> Command {
+pub(crate) fn sandboxed(
+    session: &Session,
+    runtime_dir: &Path,
+    display: &str,
+    home: &Path,
+) -> Command {
     assert!(
         Command::new("flatpak")
             .args(["info", APP_ID])
@@ -414,7 +436,48 @@ pub(crate) fn sandboxed(session: &Session, runtime_dir: &Path, display: &str) ->
     command.env("WAYLAND_DISPLAY", display);
     command.env("XDG_RUNTIME_DIR", runtime_dir);
     command.env("DBUS_SESSION_BUS_ADDRESS", session.address());
+
+    // And the home flatpak itself is looking at, which is the fourth way out of a
+    // launch (issue #52 found it, issue #44's rule condemns it). flatpak makes the
+    // application's own XDG directories — `~/.var/app/<id>/{data,config,cache}` and the
+    // state directory under it — and it makes them under the home of the process that
+    // starts the sandbox, ignoring what it was told: probed on flatpak 1.16.6, a launch
+    // given `--env=XDG_DATA_HOME=/tmp/…` still answered `~/.var/app/<id>/data` from
+    // inside, while `--env=HOME` was honoured. So every pinned data, config and state
+    // directory this harness sets was quietly ignored inside a sandbox, and the
+    // packaged probes were writing where a *reader's* packaged axiomd writes — the
+    // developer's own copy of the application, one entry per test open in its list of
+    // recent documents and one place-in-a-document per fixture that no longer exists.
+    //
+    // Naming the home flatpak reads puts all of it inside the world this harness built.
+    // The user installation has to be named with it, because that is found under the
+    // real home and this is no longer it.
+    command.env("HOME", home);
+    command.env("FLATPAK_USER_DIR", user_installation());
     command
+}
+
+/// Where flatpak keeps the application's own data for a launch whose home is `home` —
+/// the directory the desktop's list of recently used documents is written into from
+/// inside the sandbox (issue #52).
+///
+/// The path is the same inside the sandbox and out: flatpak binds the application's
+/// directory into the sandbox under its own name, which is what lets a test read what a
+/// packaged launch told the desktop.
+pub(crate) fn sandbox_data_home(home: &Path) -> PathBuf {
+    home.join(format!(".var/app/{APP_ID}/data"))
+}
+
+/// The flatpak installation the package under test is installed in — the developer's
+/// own user installation, named explicitly because a launch's home is not theirs.
+fn user_installation() -> PathBuf {
+    std::env::var_os("FLATPAK_USER_DIR").map_or_else(
+        || {
+            PathBuf::from(std::env::var_os("HOME").expect("a home directory"))
+                .join(".local/share/flatpak")
+        },
+        PathBuf::from,
+    )
 }
 
 /// Runs `script` in the installed sandbox — the package's own `sh`, in the package's own

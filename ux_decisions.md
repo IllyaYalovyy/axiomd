@@ -207,6 +207,39 @@ Three rulings go with it:
   places already written down alone, so turning it back on resumes rather
   than starts over.
 
+## Do documents read in axiomd appear in the desktop's recent files?
+
+Yes (issue #52, tier 1). Every real open — from Files, from the command
+line, from `Ctrl+O`, and by following a relative link or a `[[wikilink]]` —
+registers the document with `GtkRecentManager`, so it turns up in
+Files → Recent, in the file chooser's Recent view and in Shell search like
+a document opened in any other GNOME application. An untitled page joins
+when the reader first gives it a name; a file axiomd *wrote* — an exported
+PDF or page — never does, because the reader made it rather than read it.
+
+What is registered is the path the reader keeps the document at, never the
+`/run/user/…/doc/…` path the document portal handed over: the desktop mints
+that afresh for every open, so an entry spelled with it would name nothing
+at all by the time the reader pressed it.
+
+**An in-app recent surface is deliberately not in this tier** — an empty
+state listing recent documents, a split open button — and is a later owner
+decision. Tier 1 feeds the desktop and keeps no list of its own.
+
+## Why is there no File History switch in axiomd's preferences?
+
+Because the desktop already has one, and it is the reader's answer for
+every application at once (issue #52). GNOME's Settings → Privacy → File
+History reaches GTK as `Gtk/RecentFilesEnabled`, and with it off GTK writes
+nothing to the recent list at all — probed on GTK 4.20.4: the file is not
+so much as created. A switch of axiomd's own could therefore only disagree
+with the desktop about a decision the reader has already made there.
+
+This is the one recorded exception to invariant 14 ("every behavior knob
+lives in preferences and applies live"): there is no axiomd knob to put in
+preferences, because the knob is the platform's. Ageing and capping the
+list are the desktop's too — axiomd writes entries and nothing else.
+
 ## Is YAML frontmatter rendered?
 
 No — out of scope (owner ruling 2026-08-02). Frontmatter is parsed as
