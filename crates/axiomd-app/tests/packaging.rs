@@ -1860,6 +1860,64 @@ impl Drop for Exported {
     }
 }
 
+/// A document read in the packaged application is in the desktop's recent documents,
+/// under the path the reader keeps it at (issue #52).
+///
+/// Asked of the package because both halves of the answer are things a development
+/// build cannot show. The list lives under `g_get_user_data_dir()`, which inside the
+/// sandbox is the package's own directory rather than the host's — a feature that fed
+/// the desktop on a development build and fed nothing under flatpak would look exactly
+/// like a feature that works. And the document arrives here through the **document
+/// portal**, as a `/run/user/<uid>/doc/<id>/…` path that the desktop mints afresh for
+/// every open: an entry spelled with it would name nothing at all by the time the
+/// reader pressed it, so what has to be registered is the host path the portal answers
+/// `GetHostPaths` with (`axiomd-doc`).
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_registers_the_host_path_with_the_desktop() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-recent");
+    let document = fixture.write("notes.md", "# Sandboxed\n\nA paragraph.\n");
+
+    // The portal is the route only while it is the *only* route (see the portal
+    // rendering probe above): a fixture the sandbox could reach by itself would leave
+    // this test passing while asserting nothing about portal paths.
+    let reachable = in_the_sandbox(&format!("cat {}", document.display()));
+    assert!(
+        !reachable.status.success(),
+        "the sandbox can read {} without the portal, so this test is no longer about \
+         the path the desktop is given",
+        document.display(),
+    );
+
+    let app = axiomd_e2e::launch_installed_flatpak_from_the_desktop(&document);
+
+    let entry = app.wait_until_recent(&document);
+    assert_eq!(
+        entry.kind, "text/markdown",
+        "the packaged application told the desktop its document is something else",
+    );
+    assert!(
+        entry.applications.iter().any(|name| name == APP_ID),
+        "nothing registered the document, so Open With has nothing to offer for it: {:?}",
+        entry.applications,
+    );
+    assert!(
+        !app.recent_documents()
+            .iter()
+            .any(|entry| entry.document.starts_with("/run/user")),
+        "the packaged application registered the portal's own path, which names nothing \
+         the next time the reader opens the document: {:?}",
+        app.recent_documents(),
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
 /// UT-001 for the packaged application, as far as the boundary in `docs/TESTING.md`
 /// category 2 goes: with the flatpak installed, the desktop's own answer to "what
 /// opens Markdown" is axiomd.

@@ -54,6 +54,22 @@ fn is_contained(app: &axiomd_e2e::App, how: &str, sealed: bool) {
         "{how} is drawing on {}, which is not a compositor this test started",
         where_it_is.display.display(),
     );
+    // Where this launch writes what it tells the desktop — its list of recently used
+    // documents above all (issue #52). A suite that wrote there for real would leave the
+    // developer's Files → Recent full of fixtures from a scratch directory that no
+    // longer exists, one entry per test open, which is issue #44's rule applied to the
+    // one thing an application is *meant* to tell the desktop.
+    assert!(
+        where_it_is.data.starts_with(std::env::temp_dir()),
+        "{how} keeps what it tells the desktop in {}, which is not a directory this \
+         test made — its recent documents are going into somebody's real list",
+        where_it_is.data.display(),
+    );
+    assert_ne!(
+        where_it_is.data,
+        glib::user_data_dir(),
+        "{how} is writing into the data directory of whoever is running this suite",
+    );
     assert!(
         !where_it_is.scope.contains(APP_ID),
         "{how} runs under the session unit {}, so the desktop is counting this test as \

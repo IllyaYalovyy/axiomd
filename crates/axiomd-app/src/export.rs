@@ -265,6 +265,11 @@ fn deliver(document: &Document, destination: Destination, then: Rc<impl Fn(Outco
     let destination = RefCell::new(Some(destination));
     operate(&operation, move |outcome| match outcome {
         Outcome::Done(_) => {
+            // What the toolkit wrote is not something the reader opened. It registers
+            // an export with the desktop's recent documents on its own account, and
+            // neither an exported copy nor a print job's paginated temporary belongs
+            // in a list of what the reader has been reading (issue #52, `recent.rs`).
+            crate::recent::written(&paginated);
             if let Some(destination) = destination.borrow_mut().take() {
                 number_and_send(destination, paginated.clone(), then.clone());
             }

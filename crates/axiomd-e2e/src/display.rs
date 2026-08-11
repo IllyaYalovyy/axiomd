@@ -275,7 +275,7 @@ impl Environment {
         )
         .expect("write the pinned font configuration");
 
-        let data = scratch.join("data");
+        let data = data_home(scratch);
         let cache = scratch.join("cache");
         // What the application learned rather than what the reader chose: where they
         // left off in each document they have read (issue #51). It goes beside their
@@ -404,6 +404,29 @@ impl Environment {
 /// The file every address and document axiomd hands to the desktop is written into.
 pub(crate) fn handed_over_log(scratch: &Path) -> PathBuf {
     scratch.join("handed-over.log")
+}
+
+/// Where this launch's desktop keeps what applications tell it about themselves —
+/// `XDG_DATA_HOME`, and so the desktop's own list of recently used documents
+/// (issue #52).
+///
+/// Inside the launch's scratch, and named here rather than joined at each end, because
+/// two answers to this question would be a launch writing into the developer's real
+/// recent list while a test read an empty file beside it (issue #44).
+pub(crate) fn data_home(scratch: &Path) -> PathBuf {
+    scratch.join("data")
+}
+
+/// The home a *sandboxed* launch's own directories hang off — what flatpak builds
+/// `~/.var/app/<id>` under, and so where a packaged launch's data, configuration, cache
+/// and state really go (see `containment::sandboxed`).
+///
+/// Beside the store when a probe was given one, exactly as the state directory is
+/// ([`Environment::pin`]): two launches of the package over one store are the reader
+/// coming back to their own machine, and what the first one wrote has to still be there
+/// for the second. Otherwise the launch's own scratch, where it dies with the launch.
+pub(crate) fn sandbox_home(scratch: &Path, settings: Option<&Path>) -> PathBuf {
+    settings.unwrap_or(scratch).join("flatpak-home")
 }
 
 /// Makes this launch's desktop answer for the things axiomd hands it.

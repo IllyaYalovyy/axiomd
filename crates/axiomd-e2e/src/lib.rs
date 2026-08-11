@@ -43,6 +43,7 @@ mod display;
 mod golden;
 pub mod parity;
 mod process;
+mod recent;
 mod scratch;
 
 use std::path::{Path, PathBuf};
@@ -52,6 +53,7 @@ use std::time::{Duration, Instant};
 pub use containment::{Whereabouts, in_the_installed_sandbox};
 pub use golden::{SHADING_ROWS, Screenshot};
 pub use process::Footprint;
+pub use recent::RecentDocument;
 
 use containment::Session;
 use control::Control;
@@ -710,6 +712,11 @@ pub struct App {
     /// How long it was from there to this launch's first document on screen, stamped
     /// the moment that happened rather than read later.
     served: std::cell::Cell<Option<Duration>>,
+    /// Where this launch's desktop keeps what applications tell it — the launch's own
+    /// data directory, which for a sandboxed launch is the one flatpak made rather than
+    /// the one that was pinned. Held here so that a test asking what the desktop was
+    /// told does not have to know which kind of launch it is holding.
+    data: PathBuf,
     // Ordering matters: the application and the compositor are killed before the
     // directories they were living in are removed.
     _display: Display,
@@ -759,13 +766,27 @@ impl App {
         // What this launch may register on: the bus it was handed, or the one built for
         // its sandbox, and otherwise nothing at all.
         let on_a_bus = on.or(bus.as_ref());
+        // Where this launch keeps what it tells the desktop. A sandbox's is not the
+        // pinned `XDG_DATA_HOME` — flatpak makes the application's directories itself,
+        // under the home it is looking at, and that home is this launch's own
+        // (`containment::sandboxed`).
+        let sandboxed = matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak);
+        let sandbox_home = display::sandbox_home(
+            scratch.path(),
+            preferences.map(|preferences| preferences.scratch.path()),
+        );
+        let data = match sandboxed {
+            true => containment::sandbox_data_home(&sandbox_home),
+            false => display::data_home(scratch.path()),
+        };
         // What this launch will have to be able to say about itself the moment it
         // connects, read before the pieces of it are moved into the launch itself.
         let expected = containment::Expected {
             display_id: containment::which_socket(&display.socket_path()),
             display: display.socket_path(),
             bus: on_a_bus.map(Session::daemon),
-            alone: matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak),
+            data: data.clone(),
+            alone: sandboxed,
         };
         let mut command = match under {
             Under::BesideThisTest => {
@@ -836,6 +857,7 @@ impl App {
                         .expect("a sandboxed launch has a bus of its own"),
                     display.runtime_dir(),
                     display.socket_name(),
+                    &sandbox_home,
                     sandbox,
                     visible.into_iter().flatten(),
                     through_the_portal,
@@ -884,6 +906,7 @@ impl App {
             bus,
             spawned,
             served: std::cell::Cell::new(None),
+            data,
             _display: display,
             scratch,
         };
@@ -1064,6 +1087,44 @@ impl App {
     /// test never writes into the developer's home (see `display.rs`).
     pub fn documents_dir(&self) -> PathBuf {
         display::documents_dir(self.scratch.path())
+    }
+
+    /// The recently used documents of the desktop this launch runs on — what its
+    /// Files → Recent and its file chooser's Recent view are built from (issue #52).
+    ///
+    /// The desktop is this launch's own, inside the world the harness built for it:
+    /// what a test reads here is what axiomd told *that* desktop, and the developer's
+    /// real recent list is somewhere no launch can reach (issue #44, and `whereabouts`
+    /// proves it of every launch).
+    ///
+    /// A snapshot rather than a wait, for the assertion that something is *not* there.
+    /// Use [`App::wait_until_recent`] for the one that something is.
+    pub fn recent_documents(&self) -> Vec<RecentDocument> {
+        recent::documents(&self.data)
+    }
+
+    /// Waits until `document` is in that list, and answers its entry.
+    ///
+    /// The desktop is told about a document on the main loop and writes its list when
+    /// it gets round to it, so this is a condition with a deadline like every other
+    /// wait here — never a read the moment after an open.
+    pub fn wait_until_recent(&self, document: &Path) -> RecentDocument {
+        self.settle(
+            &format!(
+                "{} to reach the desktop's recent documents",
+                document.display()
+            ),
+            || {
+                Ok(self
+                    .recent_documents()
+                    .iter()
+                    .any(|entry| entry.document == document))
+            },
+        );
+        self.recent_documents()
+            .into_iter()
+            .find(|entry| entry.document == document)
+            .expect("the entry this call just waited for")
     }
 
     /// Waits until `javascript` evaluates to something truthy in the document.
@@ -2230,11 +2291,12 @@ fn sandboxed_command<'a>(
     bus: &Session,
     runtime_dir: &Path,
     display: &str,
+    home: &Path,
     environment: Vec<String>,
     visible: impl IntoIterator<Item = &'a Path>,
     forwarding_files: bool,
 ) -> Command {
-    let mut command = containment::sandboxed(bus, runtime_dir, display);
+    let mut command = containment::sandboxed(bus, runtime_dir, display, home);
     for directory in visible {
         let directory = match directory.is_dir() {
             true => directory.to_path_buf(),

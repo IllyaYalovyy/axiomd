@@ -93,6 +93,7 @@ use crate::find::{Find, Searchable};
 use crate::links::Follow;
 use crate::outline::{Browsing, Outline};
 use crate::places::Places;
+use crate::recent;
 use crate::remote;
 use crate::scheme::{Publication, Scheme};
 use crate::settings::{Settings, Watch};
@@ -1404,6 +1405,16 @@ impl DocumentWindow {
                     if let Some(open) = self.open.borrow().as_ref() {
                         open.loaded.set(true);
                         self.take_up_where_they_left_off(open);
+                        // The reader has this document open, which is the moment the
+                        // desktop's recent list is about — and the one place every way
+                        // of opening one arrives at, whether they were given it by the
+                        // desktop, chose it in the chooser, or followed a link to it
+                        // (issue #52). Nothing is registered for a file that could not
+                        // be read: the reader is looking at a page saying why, and an
+                        // entry offering to open it again would be a lie.
+                        if let Some(home) = open.home.as_ref() {
+                            recent::opened(home);
+                        }
                     }
                     self.notice.hide();
                     self.retitle();
@@ -1925,6 +1936,11 @@ impl DocumentWindow {
         if let Some(open) = self.open.borrow().as_ref() {
             open.loaded.set(true);
         }
+        // The document has a name and a place now, so there is something for the
+        // desktop to offer to open again — which is exactly what an untitled page had
+        // not got (issue #52). Nothing was read here, so this is the one open the
+        // arrival above does not cover.
+        recent::opened(&home);
         self.retitle();
         self.rerender_now();
     }

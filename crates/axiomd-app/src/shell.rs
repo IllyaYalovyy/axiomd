@@ -30,9 +30,10 @@ use crate::scheme::Scheme;
 use crate::settings::{Settings, Watch};
 use crate::window::DocumentWindow;
 
-/// Owner-chosen application id (2026-08-02). Also the D-Bus well-known name and
-/// the base name of the desktop file, so it cannot change casually.
-const APP_ID: &str = "io.github.etf.axiomd";
+/// Owner-chosen application id (2026-08-02). Also the D-Bus well-known name, the base
+/// name of the desktop file and the name axiomd registers a recent document under, so
+/// it cannot change casually.
+pub(crate) const APP_ID: &str = "io.github.etf.axiomd";
 
 /// The command line's name for the engine documents are read with — a testing flag,
 /// so that a suite can drive the real application on an engine other than the reader's
