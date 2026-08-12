@@ -1719,14 +1719,28 @@ impl App {
         }
     }
 
-    /// Drags the divider between the outline and the document `across` pixels — to the
-    /// right when positive, as the reader's hand goes.
+    /// Drags the divider between the outline and the document: the pointer takes hold of
+    /// it and travels to each place in `through` in turn — pixels right of where it
+    /// pressed, positive as the reader's hand goes — before letting go where the last
+    /// one leaves it. Answers how wide the outline was drawn after each of those moves.
     ///
-    /// A press, a move and a release, as the pointer makes them. A headless compositor
-    /// has no pointer, so this is the divider's own gesture, exactly as pressing a
-    /// button here emits the button's own `clicked`.
-    pub fn drag_divider(&self, across: i32) {
-        self.command("divider", &format!("drag {across}"));
+    /// A press, a series of moves and a release, as the pointer makes them. A headless
+    /// compositor has no pointer, so this is the divider's own gesture, exactly as
+    /// pressing a button here emits the button's own `clicked` — but the *places* are
+    /// the reader's, held in the window's own frame and translated into the gesture's
+    /// before each delivery, because a pointer that has not moved has not moved however
+    /// far the widget under it has (issue #53). The screen catches up between moves, so
+    /// what each translation reads is where the widgets really are.
+    ///
+    /// A drag that arrives at the right width by way of the wrong ones is a drag the
+    /// reader watched flicker, so the widths are answered one per move rather than once
+    /// at the end.
+    pub fn drag_divider(&self, through: &[i32]) -> Vec<i32> {
+        let path: Vec<String> = through.iter().map(i32::to_string).collect();
+        self.command("divider", &format!("drag {}", path.join(" ")))
+            .split_whitespace()
+            .map(|width| width.parse().expect("a width"))
+            .collect()
     }
 
     /// Double-clicks that divider, as the reader putting the outline back to its usual

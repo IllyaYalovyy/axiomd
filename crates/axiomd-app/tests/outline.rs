@@ -550,7 +550,7 @@ fn dragging_the_divider_widens_the_outline_and_the_width_comes_back_next_time() 
         "a reader who has never touched the divider did not get the usual width",
     );
 
-    app.drag_divider(90);
+    app.drag_divider(&[45, 90]);
     app.wait_until_sidebar_width(USUAL + 90);
 
     // The room came out of the document beside it, and the two still meet: an outline
@@ -591,6 +591,106 @@ fn dragging_the_divider_widens_the_outline_and_the_width_comes_back_next_time() 
     assert!(again.close().is_empty(), "the launch left processes behind");
 }
 
+/// The other side of issue #53's drag: a divider in a window too narrow to hold both
+/// panes has nothing to divide. The outline is overlaying the document there, the two
+/// are not sharing the width, and a drag of the edge between them moves neither.
+#[test]
+fn dragging_an_outline_that_is_overlaying_the_document_moves_neither() {
+    let fixture = Fixture::new("outline-drag-overlaid");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    app.resize(480, 700);
+    app.wait_for("the outline to get out of a narrow window's way", || {
+        !app.outline().shown
+    });
+    // Called up over the document, which is the one way to have a divider to drag at
+    // this width at all.
+    app.activate("win.outline");
+    assert!(app.outline().shown, "the outline could not be called up");
+    app.wait_until_sidebar_width(USUAL);
+
+    let before = app.layout();
+    app.drag_divider(&[60, 120]);
+    let after = app.layout();
+
+    assert_eq!(
+        after.sidebar.width, before.sidebar.width,
+        "the outline overlaying the document was resized by a drag of an edge that \
+         divides nothing",
+    );
+    assert_eq!(
+        (after.document.x, after.document.width),
+        (before.document.x, before.document.width),
+        "the document under the overlaid outline gave up room it was not sharing",
+    );
+    assert_eq!(
+        app.outline().headings().first().map(String::as_str),
+        Some("h1 Guide"),
+        "the overlaid outline stopped listing the document",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Issue #53, the jitter: the reader's hand is what the divider follows, so a hand that
+/// has stopped moving stops the divider, and a hand that has only gone one way never
+/// takes it back the other.
+///
+/// The pointer walks right in three steps and then stands still for four more deliveries
+/// — a real pointer delivers motion events while it rests on a divider, and every one of
+/// them is a chance to move the outline somewhere the reader did not ask for. The
+/// outline's width is read after every single delivery, because a drag that ends at the
+/// right width by way of the wrong ones is exactly what the reader reported watching:
+/// both panes flickering for the length of the drag.
+#[test]
+fn the_divider_holds_still_while_the_pointer_does_and_never_goes_back() {
+    let fixture = Fixture::new("outline-drag-steady");
+    let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
+
+    assert_eq!(
+        app.layout().sidebar.width,
+        USUAL,
+        "a reader who has never touched the divider did not get the usual width",
+    );
+
+    let widths = app.drag_divider(&[40, 80, 120, 120, 120, 120]);
+
+    assert_eq!(
+        widths,
+        vec![
+            USUAL + 40,
+            USUAL + 80,
+            USUAL + 120,
+            USUAL + 120,
+            USUAL + 120,
+            USUAL + 120,
+        ],
+        "the outline did not follow the pointer: it was drawn {widths:?} while the \
+         pointer went 40, 80, 120 and then stood still",
+    );
+    assert!(
+        widths.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the outline went back the way the pointer never went: {widths:?}",
+    );
+
+    // And the document gave up exactly that room, once, rather than the two of them
+    // trading it back and forth.
+    app.wait_until_sidebar_width(USUAL + 120);
+    let after = app.layout();
+    assert_eq!(
+        after.document.x,
+        after.sidebar.right(),
+        "the outline and the document are not meeting at the divider",
+    );
+    assert_eq!(
+        app.dom_text("h1"),
+        "Guide",
+        "the document beside the dragged outline is not readable",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
 /// The non-happy path: a reader who shoves the divider as far as it goes, either way.
 /// Neither pane may be crushed to something unusable, so both ends stop.
 #[test]
@@ -598,7 +698,7 @@ fn the_divider_stops_before_either_pane_is_crushed() {
     let fixture = Fixture::new("outline-bounds");
     let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
 
-    app.drag_divider(10_000);
+    app.drag_divider(&[5_000, 10_000]);
     app.wait_until_sidebar_width(WIDEST_IN_THIS_WINDOW);
     let widest = app.layout();
     assert!(
@@ -612,7 +712,7 @@ fn the_divider_stops_before_either_pane_is_crushed() {
         "the document beside the widest outline is not readable",
     );
 
-    app.drag_divider(-10_000);
+    app.drag_divider(&[-5_000, -10_000]);
     app.wait_until_sidebar_width(NARROWEST);
     assert_eq!(
         app.outline().headings().first().map(String::as_str),
@@ -632,7 +732,7 @@ fn double_clicking_the_divider_puts_the_outline_back() {
     let preferences = Preferences::new("outline-restore");
     let app = axiomd_e2e::launch_with(&fixture.write("guide.md", &guide()), &preferences);
 
-    app.drag_divider(120);
+    app.drag_divider(&[60, 120]);
     app.wait_until_sidebar_width(USUAL + 120);
     preferences.wait_until("sidebar-width", &(USUAL + 120).to_string());
 
@@ -661,7 +761,7 @@ fn a_width_chosen_while_wide_comes_back_when_the_window_is_wide_again() {
     let fixture = Fixture::new("outline-resize-narrow");
     let app = axiomd_e2e::launch(&fixture.write("guide.md", &guide()));
 
-    app.drag_divider(90);
+    app.drag_divider(&[45, 90]);
     app.wait_until_sidebar_width(USUAL + 90);
 
     app.resize(480, 700);

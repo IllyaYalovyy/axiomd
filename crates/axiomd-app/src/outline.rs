@@ -87,11 +87,18 @@
 //! window with room honours the chosen width exactly, and a narrower one shrinks the
 //! two panes together instead of leaving the document a sliver.
 //!
+//! A drag is measured in the split view's frame and never in the grip's, because the
+//! grip rides on the edge of the pane the drag resizes: a gesture reports its offset in
+//! the coordinates of the widget it is on, so measuring there would mean measuring in a
+//! frame the measurement itself moves — see [`Outline::dragged`] for what that did to
+//! the reader (issue #53) and for `GtkPaned`'s version of the same rule.
+//!
 //! The one thing no test here drives is a real pointer: a headless compositor has none
 //! and GTK 4 offers no way to inject one. So a drag arrives as the divider's own
 //! gesture signals ([`Outline::drag`], [`Outline::restore`]) — the very signals a
-//! press, a move and a release emit — a chevron is turned by `listitem.toggle-expand`,
-//! the action `GtkTreeExpander` itself puts on its gesture and on `Ctrl+Space`
+//! press, a move and a release emit, from the places a hand holding still holds still in
+//! — a chevron is turned by `listitem.toggle-expand`, the action `GtkTreeExpander`
+//! itself puts on its gesture and on `Ctrl+Space`
 //! (GTK 4.20, `Gtk-4.0.gir`), picking a section activates `list.activate-item`, which
 //! is the action <kbd>Enter</kbd> is bound to and the one a click's release fires
 //! (GTK 4.20, `GtkListBase`), and running the pointer over the sidebar or walking the
@@ -108,6 +115,7 @@ use axiomd_render::Heading;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
+use gtk::graphene;
 
 use crate::settings::Settings;
 
@@ -157,6 +165,10 @@ pub(crate) struct Outline {
     faces: gtk::Stack,
     /// The sidebar the split view holds: the panel, and the grip on its edge.
     sidebar: gtk::Box,
+    /// That grip: the part of the edge the pointer takes hold of. Held because where
+    /// it is drawn is where a drag begins, and because it moves — it is on the edge of
+    /// the very pane a drag resizes.
+    grip: gtk::Box,
     /// The title row: which document this is the outline of, and how many sections it
     /// has.
     name: gtk::Label,
@@ -173,6 +185,14 @@ pub(crate) struct Outline {
     /// drag moves the divider from where the reader is looking at it rather than from
     /// a remembered width a narrow window is not honouring.
     grabbed: Cell<i32>,
+    /// Where the reader's hand took hold of the divider, in the split view's frame:
+    /// the one anchor a drag is measured against, taken once at the press and in the
+    /// one frame moving the divider cannot move (issue #53). `None` before the first
+    /// drag of the window's life.
+    anchor: Cell<Option<(f64, f64)>>,
+    /// The same press as GTK recorded it, in the frame it delivers offsets in, so that
+    /// an offset can be put back where it came from and read in the frame above.
+    pressed: Cell<(f64, f64)>,
     /// The source line the reader was last known to be on, so that a document which
     /// has just been re-rendered under them highlights the same section rather than
     /// none (live reload, and every keystroke in edit mode).
@@ -485,6 +505,7 @@ impl Outline {
             here,
             faces,
             sidebar,
+            grip: grip.clone(),
             name,
             count,
             divider: gtk::GestureDrag::new(),
@@ -492,6 +513,8 @@ impl Outline {
             settings: settings.clone(),
             width: Cell::new(BOUNDS.0),
             grabbed: Cell::new(BOUNDS.0),
+            anchor: Cell::new(None),
+            pressed: Cell::new((0.0, 0.0)),
             at: Cell::new(0),
             held: Cell::new(false),
             settling: Cell::new(false),
@@ -528,24 +551,28 @@ impl Outline {
         outline.widen_to(settings.sidebar_width());
 
         // A drag moves the divider from where it is drawn, so where it is drawn is
-        // taken at the press. The release is the only moment anything is written down:
-        // one write per drag, not one per frame of it.
+        // taken at the press — and so is where the hand took hold of it, in the one
+        // frame the drag cannot move. The release is the only moment anything is
+        // written down: one write per drag, not one per frame of it.
         let grabbing = Rc::downgrade(&outline);
-        outline.divider.connect_drag_begin(move |_, _, _| {
+        outline.divider.connect_drag_begin(move |_, x, y| {
             if let Some(outline) = grabbing.upgrade() {
                 outline.grabbed.set(outline.sidebar.width());
+                outline.took_hold(x, y);
             }
         });
         let dragging = Rc::downgrade(&outline);
-        outline.divider.connect_drag_update(move |_, across, _| {
-            if let Some(outline) = dragging.upgrade() {
-                outline.dragged(across);
-            }
-        });
+        outline
+            .divider
+            .connect_drag_update(move |_, across, along| {
+                if let Some(outline) = dragging.upgrade() {
+                    outline.dragged(across, along);
+                }
+            });
         let released = Rc::downgrade(&outline);
-        outline.divider.connect_drag_end(move |_, across, _| {
+        outline.divider.connect_drag_end(move |_, across, along| {
             if let Some(outline) = released.upgrade() {
-                outline.dragged(across);
+                outline.dragged(across, along);
                 outline.settings.remember_sidebar_width(outline.width.get());
             }
         });
@@ -592,15 +619,111 @@ impl Outline {
         self.sidebar.upcast_ref()
     }
 
-    /// Drags the divider `across` pixels, exactly as the pointer does: the grip's own
-    /// gesture, which is what a press, a move and a release emit.
-    pub(crate) fn drag(&self, across: f64) {
+    /// Drags the divider, exactly as the pointer does: a press on the grip, a move to
+    /// each place in `through` — pixels right of where it pressed — and a release where
+    /// the last one left it. Answers how wide the outline was drawn after each move.
+    ///
+    /// # The pointer is still when the screen is still, not when the widget is
+    ///
+    /// Where the pointer is is held here in the split view's frame, because that is the
+    /// frame the reader's hand is still in: the split view fills the window and a drag
+    /// cannot move it. Every delivery is that place translated into the frame the
+    /// gesture is *actually* on at that moment, and emitted as the offset from the press
+    /// that GTK would have computed — `gtk_gesture_get_point` translates each event into
+    /// the controller widget's own coordinates as it arrives, and `GtkGestureDrag`
+    /// subtracts the point recorded at the press (GTK 4.20, `gtkgesture.c`,
+    /// `gtkgesturedrag.c`). So a gesture on a widget the drag itself moves is handed
+    /// offsets that move with it, and one on a widget that stands still is handed the
+    /// distance the hand travelled.
+    ///
+    /// That translation is the whole of this seam (issue #53). A helper that emitted a
+    /// fixed offset instead — as this one did until #53 — simulates a world in which
+    /// widgets do not move under the pointer, and in that world the defect it is here to
+    /// catch cannot happen.
+    ///
+    /// Each move is given its frames before the next one, so the layout it asks for has
+    /// landed and the widgets really are where the next translation says they are. A
+    /// pointer that outran the screen would be a different test.
+    pub(crate) async fn drag(&self, through: &[f64]) -> Vec<i32> {
+        // The pointer comes down in the middle of the grip, and where that is is
+        // remembered in the frame that cannot move.
+        let middle = graphene::Point::new(GRIP as f32 / 2.0, self.grip.height() as f32 / 2.0);
+        // The grip not being on screen at all — a collapsed sidebar has no divider to
+        // drag — is nothing to press, and no width to answer with.
+        let Some(pressed) = self.grip.compute_point(&self.split, &middle) else {
+            return Vec::new();
+        };
+        let Some(start) = self.in_the_gesture_frame(&pressed) else {
+            return Vec::new();
+        };
         self.divider
-            .emit_by_name::<()>("drag-begin", &[&0.0f64, &0.0f64]);
+            .emit_by_name::<()>("drag-begin", &[&start.0, &start.1]);
+
+        let mut widths = Vec::with_capacity(through.len());
+        let mut at = 0.0;
+        for target in through {
+            at = *target;
+            let Some(offset) = self.offset_from(&start, &pressed, at) else {
+                break;
+            };
+            self.divider
+                .emit_by_name::<()>("drag-update", &[&offset.0, &offset.1]);
+            widths.push(self.width_on_screen().await);
+        }
+        // The release is delivered from where the pointer is now, in the frame the
+        // gesture is on now — which is not the frame the last move was delivered in if
+        // that move took the grip with it.
+        let offset = self.offset_from(&start, &pressed, at).unwrap_or_default();
         self.divider
-            .emit_by_name::<()>("drag-update", &[&across, &0.0f64]);
-        self.divider
-            .emit_by_name::<()>("drag-end", &[&across, &0.0f64]);
+            .emit_by_name::<()>("drag-end", &[&offset.0, &offset.1]);
+        widths
+    }
+
+    /// What GTK would deliver for a pointer `across` pixels right of where it pressed:
+    /// its place now, in the frame the gesture is on now, less the place the press was
+    /// recorded at.
+    fn offset_from(
+        &self,
+        start: &(f64, f64),
+        pressed: &graphene::Point,
+        across: f64,
+    ) -> Option<(f64, f64)> {
+        let now = graphene::Point::new(pressed.x() + across as f32, pressed.y());
+        let now = self.in_the_gesture_frame(&now)?;
+        Some((now.0 - start.0, now.1 - start.1))
+    }
+
+    /// A place in the split view's frame, in the frame the divider's gesture is on —
+    /// asked of the widget rather than assumed, because which widget that is is the
+    /// answer this whole seam turns on.
+    fn in_the_gesture_frame(&self, at: &graphene::Point) -> Option<(f64, f64)> {
+        let widget = self.divider.widget()?;
+        let there = self.split.compute_point(&widget, at)?;
+        Some((f64::from(there.x()), f64::from(there.y())))
+    }
+
+    /// How wide the outline is drawn once the width just asked for has reached the
+    /// screen.
+    ///
+    /// Two frames at least — a width set on the main loop is allocated in the next
+    /// frame's layout phase, and read back on the frame after that — and then as many
+    /// more as it is still moving in, up to a handful. Every one of them is a frame the
+    /// compositor delivered; nothing here sleeps.
+    async fn width_on_screen(&self) -> i32 {
+        /// The most frames one move of the pointer is watched for. A width still moving
+        /// after this many is not a slow layout, it is a width that will not settle.
+        const FRAMES: usize = 8;
+
+        let mut last = self.sidebar.width();
+        for frame in 0..FRAMES {
+            crate::control::drawn(self.split.upcast_ref()).await;
+            let width = self.sidebar.width();
+            if frame > 0 && width == last {
+                return width;
+            }
+            last = width;
+        }
+        last
     }
 
     /// Double-clicks the divider, which is what puts the outline back to the width a
@@ -610,16 +733,76 @@ impl Outline {
             .emit_by_name::<()>("released", &[&2i32, &0.0f64, &0.0f64]);
     }
 
-    /// Where a drag `across` pixels from where it took hold leaves the divider.
+    /// Where the reader's hand took hold of the divider, remembered in the split view's
+    /// frame — and where GTK will be measuring from, which is the same place in the
+    /// frame it delivers offsets in.
+    ///
+    /// Taken once, at the press, and never taken again: an anchor re-derived per event
+    /// from a widget the drag itself moves is the defect of issue #53.
+    fn took_hold(&self, x: f64, y: f64) {
+        self.pressed.set((x, y));
+        self.anchor.set(self.in_the_split(x, y));
+    }
+
+    /// Where a drag leaves the divider, `across` and `along` being the offset from the
+    /// press GTK has just delivered.
+    ///
+    /// # Which frame this is measured in, and why it cannot move
+    ///
+    /// GTK delivers a drag as an offset from the press *in the coordinates of the widget
+    /// the gesture is on*: every event is translated into that widget's frame as it
+    /// arrives (`gtk_gesture_get_point`) and `GtkGestureDrag` subtracts the point the
+    /// press was recorded at (GTK 4.20). The gesture here is on the grip, and the grip
+    /// rides on the edge of the sidebar this very handler resizes — so the frame the
+    /// offset is measured in moves every time the offset is acted on, and a pointer
+    /// holding still is delivered an offset that alternates between the distance it
+    /// travelled and nothing at all. That is issue #53: the width oscillating between
+    /// two values at input-event rate, both panes flickering, for the whole drag.
+    ///
+    /// So the offset is put back where it came from — the point in the grip's frame that
+    /// produced it — and translated into the split view's frame, which fills the window
+    /// and cannot move while a drag moves what is inside it. Against the anchor taken at
+    /// the press in that same frame, what comes out is the distance the reader's hand
+    /// travelled and nothing else.
+    ///
+    /// `GtkPaned` reaches the same place by construction: its drag gesture is on the
+    /// paned itself rather than on the handle it moves, and `gesture_drag_update_cb`
+    /// measures `start + offset` in that stationary frame (GTK 4.20, `gtkpaned.c`).
+    /// Hanging the gesture on the split view here would need the hit test `GtkPaned`
+    /// carries with it, because a press anywhere over the document is not a drag of the
+    /// divider; the grip already answers that question by being the widget the pointer
+    /// hits. What was wrong was never which widget is pressed — it was which frame the
+    /// travel is measured in.
     ///
     /// Nothing while the outline is overlaying the document: the two panes are not
     /// sharing the window's width, so there is nothing between them to move.
-    fn dragged(&self, across: f64) {
+    fn dragged(&self, across: f64, along: f64) {
         if self.split.is_collapsed() {
             return;
         }
-        let wanted = self.grabbed.get().saturating_add(across.round() as i32);
+        let (pressed, Some(anchor)) = (self.pressed.get(), self.anchor.get()) else {
+            return;
+        };
+        // Where the pointer is now, said in the frame the offset was measured in, and
+        // then in the frame that has not moved since the press.
+        let Some(here) = self.in_the_split(pressed.0 + across, pressed.1 + along) else {
+            return;
+        };
+        let travelled = here.0 - anchor.0;
+        let wanted = self.grabbed.get().saturating_add(travelled.round() as i32);
         self.widen_to(wanted.min(self.widest_here()));
+    }
+
+    /// A place in the frame the divider's gesture measures in, in the split view's own —
+    /// asked of the gesture rather than assumed, so this says where the pointer is
+    /// whatever widget the gesture is hung on.
+    ///
+    /// `None` only for a grip that is not in the window at all, which is not a state a
+    /// drag can begin in.
+    fn in_the_split(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let widget = self.divider.widget()?;
+        let there = widget.compute_point(&self.split, &graphene::Point::new(x as f32, y as f32))?;
+        Some((f64::from(there.x()), f64::from(there.y())))
     }
 
     /// Puts the outline at `width` pixels, within the bounds neither pane may cross.
