@@ -1132,10 +1132,12 @@ impl DocumentWindow {
         self.zoom.pinched(scale);
     }
 
-    /// A drag of the divider between the outline and the document, `across` pixels from
-    /// where it took hold — landing where the divider's own gesture lands.
-    pub(crate) fn drag_divider(&self, across: f64) {
-        self.outline.drag(across);
+    /// A drag of the divider between the outline and the document: the pointer takes
+    /// hold of it and travels to each place in `through` in turn — pixels right of where
+    /// it pressed — before letting go. Answers how wide the outline was drawn after each
+    /// of those moves.
+    pub(crate) async fn drag_divider(&self, through: &[f64]) -> Vec<i32> {
+        self.outline.drag(through).await
     }
 
     /// A double-click on that divider, which puts the outline back to its usual width.

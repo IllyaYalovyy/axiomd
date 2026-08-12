@@ -377,20 +377,35 @@ impl Session {
             // double click that puts it back. Same reason as `scroll` and `pinch` —
             // there is no pointer to move — so these emit the divider's own gesture
             // signals, which is what a press, a move and a release emit (`outline.rs`).
+            //
+            // A drag is a path rather than a distance: the places the pointer visits,
+            // in order, each one delivered as GTK would deliver it from there. What
+            // comes back is how wide the outline was drawn after each of them, which is
+            // how a test sees a divider that arrives at the right width by way of the
+            // wrong ones (issue #53).
             "divider" => {
                 let window = self.target(shell)?;
                 if payload == "restore" {
                     window.restore_divider();
-                } else if let Some(across) = payload.strip_prefix("drag ") {
-                    window.drag_divider(
-                        across
-                            .parse::<f64>()
-                            .map_err(|_| format!("not a drag distance: {across:?}"))?,
-                    );
-                } else {
-                    return Err(format!("not a divider gesture: {payload:?}"));
+                    return Ok(String::new());
                 }
-                Ok(String::new())
+                let Some(path) = payload.strip_prefix("drag ") else {
+                    return Err(format!("not a divider gesture: {payload:?}"));
+                };
+                let through = path
+                    .split_whitespace()
+                    .map(|place| {
+                        place
+                            .parse::<f64>()
+                            .map_err(|_| format!("not a drag distance: {place:?}"))
+                    })
+                    .collect::<Result<Vec<f64>, String>>()?;
+                let widths = window.drag_divider(&through).await;
+                Ok(widths
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<String>>()
+                    .join(" "))
             }
             "pinch" => {
                 let scale = payload
@@ -812,7 +827,12 @@ fn runtime_dir() -> PathBuf {
 ///
 /// `begin_updating` is what makes the frame happen at all: a window with nothing moving
 /// in it paints only when something asks, and this is the asking.
-async fn drawn(widget: &gtk::Widget) {
+///
+/// Shared with the divider's drag (`outline.rs`), which needs the other half of the same
+/// promise: a widget whose *place* has just changed is where the last frame put it until
+/// the next one lands, and a drag simulated against stale places would be simulating a
+/// window that never relayouts (issue #53).
+pub(crate) async fn drawn(widget: &gtk::Widget) {
     let Some(clock) = widget.frame_clock() else {
         return;
     };
