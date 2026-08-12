@@ -1,20 +1,34 @@
-//! Telling the desktop that the reader opened a document (issue #52).
+//! The reader's recent documents: told to the desktop (issue #52), and offered back to
+//! them inside axiomd (issue #54).
 //!
 //! Every document application on this desktop feeds one list: the reader opens a file,
 //! and it turns up in Files → Recent, in the file chooser's Recent view and in Shell
 //! search, whichever application it was opened in. axiomd fed nothing into it, so a
-//! document read here was a document the desktop had never heard of. This module is the
+//! document read here was a document the desktop had never heard of. [`opened`] is the
 //! whole of the fix, and it is one call wide: a window says a document was opened, and
 //! this writes it down where the desktop keeps such things.
 //!
-//! # There is no recent list of our own
+//! [`offer`] is the way back. The primary menu's *Open Recent* is a view of that same
+//! list, filtered to the documents axiomd registered — the convenient one, two presses
+//! from any window, for the reader who does not want to go out to Files to come back to
+//! the note they were reading this morning.
+//!
+//! # There is one list, and it is the desktop's
 //!
 //! `GtkRecentManager` *is* the store — `recently-used.xbel` under the data directory,
 //! shared by every application on the desktop, aged and capped by the desktop itself.
-//! axiomd writes entries into it and nothing else: it does not read it back, does not
-//! prune it, and has no list of its own to keep in step with it. There is no in-app
-//! recent surface in this tier (owner decision, issue #52), which is what makes that
-//! possible.
+//! axiomd writes entries into it and reads them back out; it keeps no list of its own,
+//! prunes nothing, and has nothing to hold in step with anything (owner ruling, issue
+//! #54: one store, not two — a private list would start disagreeing with the desktop's
+//! the first time another application touched a document).
+//!
+//! What is read back is what [`opened`] wrote and nothing else: entries this
+//! application registered (`has_application`), most recently used first, of documents
+//! that are still there. It is the same shape GNOME's own document viewer reads that
+//! list in — `gtk_recent_manager_get_items`, `gtk_recent_info_has_application`,
+//! `gtk_recent_info_get_modified`, `gtk_recent_info_is_local`, `gtk_recent_info_exists`
+//! are all in `/usr/bin/evince` on this machine, which is the reference implementation
+//! for every choice in [`latest`].
 //!
 //! # Privacy is the desktop's, and there is no knob here
 //!
@@ -39,14 +53,21 @@
 //! added to — every entry of it, of every application on the machine — so the whole of
 //! this is left for the loop to do when it has nothing better on (invariant 4). What
 //! the reader gets is their document; what the desktop gets, it gets a moment later.
+//!
+//! Reading it back is the other way round: it happens because the reader has just asked
+//! for the menu, and what it costs is the list the manager already holds in memory plus
+//! one `stat` per document until [`OFFERED`] of them are found. Nothing is read from
+//! disk that the toolkit has not read already, and no document is looked at that the
+//! reader is not about to be shown.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axiomd_doc::Home;
+use axiomd_i18n::gettext;
 use gtk::gio;
 use gtk::prelude::*;
 
-use crate::shell::APP_ID;
+use crate::shell::{APP_ID, OPEN_RECENT};
 
 /// What axiomd tells the desktop one of its documents is.
 ///
@@ -212,4 +233,255 @@ fn only_axiomd(entry: &gtk::RecentInfo) -> bool {
         .applications()
         .iter()
         .all(|name| name.as_str() == APP_ID || *name == toolkit)
+}
+
+/// How many documents the reader is offered a way back to (issue #54, owner's range of
+/// five to ten).
+///
+/// Ten, the whole of it. The list is a popover of its own, so its length costs the menu
+/// it hangs off nothing, and the reader opening it is looking for a document they had
+/// open earlier — a session of reading is easily eight or nine documents, and the one
+/// they want is the one a shorter list would have just dropped. Ten is still a glance
+/// rather than a search, which is what keeps the search box the issue rules out from
+/// being missed.
+const OFFERED: usize = 10;
+
+/// Offers the reader the documents they have been reading, as a submenu of `into` —
+/// and offers nothing at all when there are none (issue #54).
+///
+/// `into` is the menu's documents section, so this lands directly under *Open…*: the
+/// way back to a document the reader has read belongs beside the two ways to one they
+/// have not.
+///
+/// # Nothing to offer is nothing shown
+///
+/// A reader with no recent documents — a first run, a desktop with *File History*
+/// turned off, a list whose documents have all been moved away — gets a menu without an
+/// *Open Recent* in it, never an error and never a dead end. An item that is there and
+/// can never be pressed is an affordance that does nothing, which is the defect this
+/// project treats as a defect; and the menu already has a section that is there only
+/// when it has something in it, the history a narrow window takes out of the header bar
+/// (issue #30). Recorded in `ux_decisions.md`.
+pub(crate) fn offer(into: &gio::Menu) {
+    let documents = latest(OFFERED);
+    if documents.is_empty() {
+        return;
+    }
+    let entries = gio::Menu::new();
+    for (label, uri) in told_apart(&documents).into_iter().zip(documents) {
+        let item = gio::MenuItem::new(Some(&label), None);
+        // The `file:` URI the desktop keys the entry on, never the path spelled out as
+        // text: an action's target is text and a path is bytes, so a document whose name
+        // this machine's encoding cannot spell would arrive as something else and open
+        // something else or nothing.
+        item.set_action_and_target_value(Some(OPEN_RECENT), Some(&uri.to_variant()));
+        entries.append_item(&item);
+    }
+    into.append_submenu(Some(&gettext("Open _Recent")), &entries);
+}
+
+/// The `most` documents this reader last read in axiomd, newest first, as the `file:`
+/// URIs the desktop knows them by.
+///
+/// Four rules, and every one of them is the one GNOME's own document viewer reads this
+/// list by (see the module header):
+///
+/// * **axiomd's own.** `has_application` — the reader's list holds every document every
+///   application on the machine has opened, and a Markdown viewer offering to open the
+///   spreadsheet they had in another application would be offering to fail.
+/// * **Most recently used first.** `modified` and not `visited` or `added`: probed on
+///   GTK 4.20.4, re-registering a document already in the list moves `modified` and
+///   leaves the other two at the moment it was first added — so `modified` is the only
+///   one of the three that answers "when did the reader last read this".
+/// * **Still there.** `exists` — an entry that cannot be opened is worse than no entry,
+///   and it is a `stat` of documents the reader is about to be shown rather than of the
+///   list. (Non-local entries answer `false` here as well, which is the same rule: a
+///   document on a mount this session cannot reach is not one to offer.)
+/// * **Bounded.** The walk stops at `most`, so a healthy list costs `most` calls.
+fn latest(most: usize) -> Vec<String> {
+    let mut listed: Vec<gtk::RecentInfo> = gtk::RecentManager::default()
+        .items()
+        .into_iter()
+        .filter(|entry| entry.has_application(APP_ID))
+        .collect();
+    listed.sort_by_key(|entry| std::cmp::Reverse(entry.modified()));
+    listed
+        .into_iter()
+        .filter(gtk::RecentInfo::exists)
+        .map(|entry| entry.uri().to_string())
+        .take(most)
+        .collect()
+}
+
+/// What each of `documents` is called in the menu: the name the reader gave it, and as
+/// much of the folder it is in as it takes to tell it from the others on the list.
+///
+/// A reader with `notes.md` in three projects would otherwise be reading one word three
+/// times and choosing at random. The folder is added only where it settles something —
+/// naming every entry twice over would cost every reader something to spare that one —
+/// and it grows a component at a time until the list has no two entries that read the
+/// same, which is a thing that terminates because a path has an end.
+fn told_apart(documents: &[String]) -> Vec<String> {
+    let paths: Vec<PathBuf> = documents
+        .iter()
+        .map(|uri| gio::File::for_uri(uri).path().unwrap_or_else(|| uri.into()))
+        .collect();
+    let mut depth = vec![0usize; paths.len()];
+    loop {
+        let shown: Vec<String> = paths
+            .iter()
+            .zip(&depth)
+            .map(|(path, folders)| named(path, *folders))
+            .collect();
+        let mut deepened = false;
+        for (at, path) in paths.iter().enumerate() {
+            let shares_a_name = shown
+                .iter()
+                .enumerate()
+                .any(|(other, name)| other != at && *name == shown[at]);
+            if shares_a_name && depth[at] < folders_of(path) {
+                depth[at] += 1;
+                deepened = true;
+            }
+        }
+        if !deepened {
+            // Mnemonics last, over the finished words: GTK reads an underscore in a menu
+            // label as "underline the next letter", so a document called `release_notes`
+            // would be drawn as `releasenotes` with an N underlined (probed on GTK
+            // 4.20.4). Doubling it is how a label says the character itself.
+            return shown.iter().map(|name| name.replace('_', "__")).collect();
+        }
+    }
+}
+
+/// One document's name, with the innermost `folders` of the folder it is in beside it.
+fn named(path: &Path, folders: usize) -> String {
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned();
+    if folders == 0 {
+        return name;
+    }
+    let parent = path.parent().unwrap_or(Path::new(""));
+    let whole = folders >= folders_of(path);
+    let folder = match whole {
+        // Everything short of the whole path is a folder or two of it; the last step is
+        // the path itself, which is the one form that cannot be shared by two documents.
+        true => parent.to_string_lossy().into_owned(),
+        false => parent
+            .iter()
+            .rev()
+            .take(folders)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .into_owned(),
+    };
+    // Two names on one line, the second of them a place. Written out rather than
+    // formatted in so that a language that puts them the other way round can.
+    filled(&gettext("{document} ({folder})"), &name, &folder)
+}
+
+/// How many folders `path` has above it — how far [`named`] can go.
+fn folders_of(path: &Path) -> usize {
+    path.parent().map_or(0, |parent| parent.iter().count())
+}
+
+/// `template` with its two placeholders filled in, and nothing else read as one — a
+/// document called `{folder}.md` is a document, not a placeholder.
+fn filled(template: &str, document: &str, folder: &str) -> String {
+    template
+        .split("{document}")
+        .map(|part| part.replace("{folder}", folder))
+        .collect::<Vec<_>>()
+        .join(document)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(documents: &[&str]) -> Vec<String> {
+        told_apart(
+            &documents
+                .iter()
+                .map(|path| gio::File::for_path(path).uri().to_string())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// What the reader reads: the document's own name, and nothing else to read past.
+    #[test]
+    fn a_document_is_offered_under_the_name_the_reader_gave_it() {
+        assert_eq!(
+            names(&["/home/reader/Notes/chapter 3.md", "/home/reader/guide.md"]),
+            ["chapter 3.md", "guide.md"],
+        );
+    }
+
+    /// The defect this exists for: a reader who keeps a `notes.md` in every project
+    /// would be offered the same word twice and have to guess which was which.
+    #[test]
+    fn documents_sharing_a_name_are_told_apart_by_the_folder_they_are_in() {
+        assert_eq!(
+            names(&[
+                "/home/reader/wayfinder/notes.md",
+                "/home/reader/atlas/notes.md",
+                "/home/reader/atlas/guide.md",
+            ]),
+            [
+                "notes.md (wayfinder)",
+                "notes.md (atlas)",
+                // Untouched: it shares its name with nothing, so nothing is added to it.
+                "guide.md",
+            ],
+        );
+    }
+
+    /// And when the folders are the same word too, which is what a reader with a
+    /// `docs/notes.md` in two projects has. The list keeps growing the place until no
+    /// two entries read the same — the whole path, if that is what it takes.
+    #[test]
+    fn documents_whose_folders_share_a_name_are_told_apart_too() {
+        assert_eq!(
+            names(&[
+                "/home/reader/wayfinder/docs/notes.md",
+                "/home/reader/atlas/docs/notes.md",
+            ]),
+            ["notes.md (wayfinder/docs)", "notes.md (atlas/docs)"],
+        );
+
+        // And a folder with nothing left above it: the whole path is the last thing a
+        // name can grow into, and two documents cannot share one.
+        assert_eq!(
+            names(&["/srv/docs/notes.md", "/docs/notes.md"]),
+            ["notes.md (srv/docs)", "notes.md (/docs)"],
+        );
+    }
+
+    /// A menu label is read for mnemonics, so a name with an underscore in it has to
+    /// say so or the reader is shown a different name from the one on their disk.
+    #[test]
+    fn an_underscore_in_a_documents_name_reaches_the_reader() {
+        assert_eq!(
+            names(&["/home/reader/release_notes.md"]),
+            ["release__notes.md"],
+            "the label GTK draws as `release_notes.md` is spelled with the underscore \
+             doubled",
+        );
+    }
+
+    /// The words the folder is put beside the name with are a sentence to be
+    /// translated, not a format to be trusted with the reader's own file names.
+    #[test]
+    fn a_document_named_after_the_placeholder_is_still_named_after_itself() {
+        assert_eq!(
+            filled("{document} ({folder})", "{folder}.md", "notes"),
+            "{folder}.md (notes)",
+        );
+    }
 }

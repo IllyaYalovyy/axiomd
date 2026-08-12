@@ -35,6 +35,14 @@ use crate::window::DocumentWindow;
 /// it cannot change casually.
 pub(crate) const APP_ID: &str = "io.github.etf.axiomd";
 
+/// What a document in the primary menu's *Open Recent* fires, carrying that document's
+/// `file:` URI as its target (issue #54).
+///
+/// Named in full here because a menu item addresses an action in full and an
+/// application registers it bare — one name, spelled once, so the two cannot come
+/// apart.
+pub(crate) const OPEN_RECENT: &str = "app.open-recent";
+
 /// The command line's name for the engine documents are read with — a testing flag,
 /// so that a suite can drive the real application on an engine other than the reader's
 /// preference without writing to their settings (issue #17).
@@ -322,6 +330,13 @@ fn build_application(shell: Rc<Shell>) -> adw::Application {
         let shell = shell.clone();
         move |app| ask_for_a_document(&shell, app)
     });
+    // A document out of the reader's recent documents (issue #54). It carries the
+    // document rather than being one action per document, and it lands in the very call
+    // the file chooser's own answer lands in — the window the reader is in takes the
+    // document, exactly as it does for `Ctrl+O`. A document that is no longer there is
+    // handled the way `axiomd <a path that is not there>` already handles one: a page
+    // inside the window saying so, and no question asked of anybody (invariant 12).
+    open_recent(&app, &shell);
     // Ctrl+comma. A dialog the reader asked for, which is the only kind axiomd has
     // (`ux_decisions.md`): every row in it applies as it is turned, so there is
     // nothing to confirm and nothing to restart.
@@ -360,6 +375,36 @@ fn markdown_filter() -> gtk::FileFilter {
         markdown.add_pattern(&format!("*.{extension}"));
     }
     markdown
+}
+
+/// Adds the action a document in *Open Recent* fires.
+///
+/// Apart from the action itself this is [`add_action`]: the difference is that this one
+/// is given the document, as the `file:` URI the desktop keys its recent entries on. A
+/// URI rather than a path because an action's target is text and a path is bytes — a
+/// document whose name this machine's encoding cannot spell would arrive as something
+/// else and open something else.
+fn open_recent(app: &adw::Application, shell: &Rc<Shell>) {
+    let action = gio::SimpleAction::new(
+        OPEN_RECENT.strip_prefix("app.").unwrap_or(OPEN_RECENT),
+        Some(&String::static_variant_type()),
+    );
+    let shell = shell.clone();
+    let weak = app.downgrade();
+    action.connect_activate(move |_, document| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let Some(path) = document
+            .and_then(|document| document.get::<String>())
+            .and_then(|uri| gio::File::for_uri(&uri).path())
+        else {
+            return;
+        };
+        let into = shell.active_window(&app);
+        shell.show(&app, &path, into.as_ref());
+    });
+    app.add_action(&action);
 }
 
 /// Adds an application action that acts on the running application.
