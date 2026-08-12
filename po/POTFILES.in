@@ -17,6 +17,7 @@ crates/axiomd-app/src/chrome.rs
 crates/axiomd-app/src/export.rs
 crates/axiomd-app/src/find.rs
 crates/axiomd-app/src/outline.rs
+crates/axiomd-app/src/recent.rs
 crates/axiomd-app/src/remote.rs
 crates/axiomd-app/src/settings/dialog.rs
 crates/axiomd-app/src/shell.rs

@@ -222,9 +222,63 @@ What is registered is the path the reader keeps the document at, never the
 that afresh for every open, so an entry spelled with it would name nothing
 at all by the time the reader pressed it.
 
-**An in-app recent surface is deliberately not in this tier** — an empty
-state listing recent documents, a split open button — and is a later owner
-decision. Tier 1 feeds the desktop and keeps no list of its own.
+**An in-app recent surface was deliberately not in that tier** — it was a
+later owner decision, taken in issue #54 and recorded in the entry below.
+Tier 1 feeds the desktop and keeps no list of its own; tier 2 reads that
+same list back and still keeps none.
+
+## How does the reader get back to a document they were reading?
+
+Owner ruling (2026-08-11, issue #54): from the primary menu, under
+**Open Recent**, directly below *Open…* — the last **ten** documents they
+read in axiomd, most recently read first, each opening where they are.
+
+**Why the menu and not a split Open button.** The header bar's Open button
+is one of the three controls a narrow window gives up to keep the
+document's name readable (issue #30), so a recent list hanging off it
+would be a way back that disappears exactly when the window is small. The
+primary menu is in every window at every width, it is on `F10` for a
+reader with no pointer, and it leaves the frozen chrome of #29/#30 exactly
+as it was. GNOME Text Editor's header surface — the precedent the issue
+named — is a popover with a search entry, a list view and an empty state
+of its own (read out of `/usr/bin/gnome-text-editor` on this machine:
+`EditorOpenPopover`, "Search documents", "No Recent Documents"), which is
+most of what #54 rules out of scope; a `GMenu` submenu is the same idea in
+the form this application already builds menus in.
+
+**Why ten.** The list is a popover of its own, so its length costs the
+menu it hangs off nothing. A reader opening it is looking for a document
+they had open earlier in the day, and a session of reading is easily eight
+or nine documents — a shorter list would drop exactly the one they are
+looking for. Ten is still a glance rather than a search, which is what
+keeps the search box (out of scope) from being missed.
+
+**What is in it.** Every document axiomd registered with the desktop
+(issue #52) that is still on the disk, newest first, **including the one
+the window is showing**: it is one rule rather than one rule per window,
+the entry is a real way back for the reader who has that document open in
+*another* window, and a reader who presses it where they already are is
+simply shown the window they are already in.
+
+**What it says.** The document's own name. Two documents on the list that
+share a name are told apart by the folder they are in — `notes.md
+(wayfinder)` — and, when the folders share a name too, by as much of the
+path as it takes; nothing is added to a name that is already unlike every
+other on the list.
+
+**Empty is empty.** A reader with nothing to come back to — a first run,
+a desktop with *File History* off, a list whose documents have all been
+moved away — gets no *Open Recent* in their menu at all: never an error,
+never a dialog, and never an item that is there and can never be pressed.
+The menu already has a section that appears only when it has something in
+it — the history a narrow window takes out of the header bar (issue #30) —
+so this is that idiom and not a new one.
+
+**Still one store.** There is no axiomd recent list. The menu is a view of
+`GtkRecentManager`'s own, filtered to what axiomd registered, worked out at
+the moment the menu opens — which is the only moment at which it can be
+right, since a document deleted behind the desktop's back changes nothing
+the recent manager would announce.
 
 ## Why is there no File History switch in axiomd's preferences?
 

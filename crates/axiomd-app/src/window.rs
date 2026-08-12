@@ -2621,19 +2621,53 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
                 gio::Action::print_detailed_name(&action, target.as_ref()).to_string()
             })
             .unwrap_or_default();
-        // Without the mnemonic marks: the reader sees "New Document", not
-        // "_New Document".
-        said.push(format!("item\t{}\t{action}", label.replace('_', "")));
+        said.push(format!("item\t{}\t{action}", as_it_is_drawn(&label)));
         if let Some(submenu) = submenu {
             offered(&submenu, said);
         }
     }
 }
 
+/// The two ways to a document, which is what the documents section of the primary menu
+/// holds while nobody is looking at it.
+///
+/// Filled rather than built, so that the menu the reader opens is the one they were
+/// already looking at with this section brought up to date — the popover's own zoom row
+/// is a child of the popover rather than of the model, and rebuilding the model from
+/// scratch would leave a gap where it sits.
+fn documents_offered(into: &gio::Menu) {
+    into.remove_all();
+    into.append(Some(&gettext("_New Document")), Some("app.new"));
+    into.append(Some(&gettext("_Open…")), Some("app.open"));
+}
+
+/// A menu label as the reader reads it off the screen: "New Document" for
+/// `_New Document`, and `release_notes.md` for the `release__notes.md` a document of
+/// that name is labelled with.
+///
+/// GTK's own rule for a label with mnemonics on (probed on GTK 4.20.4: a menu item
+/// labelled `release__notes.md` draws `release_notes.md`, and one labelled
+/// `_New Document` draws `New Document` with the N underlined). Taking every underscore
+/// out instead would report a document called `release_notes.md` as `releasenotes.md` —
+/// a name nobody has, agreed on by the test and the thing it was testing.
+fn as_it_is_drawn(label: &str) -> String {
+    let mut drawn = String::with_capacity(label.len());
+    let mut rest = label.chars();
+    while let Some(character) = rest.next() {
+        match character {
+            // The mark itself, and then whatever it was marking: a doubled one is the
+            // character, a single one is the underline under the letter after it, and a
+            // trailing one marks nothing at all.
+            '_' => drawn.extend(rest.next()),
+            other => drawn.push(other),
+        }
+    }
+    drawn
+}
+
 fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuButton {
     let documents = gio::Menu::new();
-    documents.append(Some(&gettext("_New Document")), Some("app.new"));
-    documents.append(Some(&gettext("_Open…")), Some("app.open"));
+    documents_offered(&documents);
 
     // How big the document is, shown the way every GNOME application shows it: a row
     // of its own rather than menu items, because the reader steps it several times in
@@ -2725,6 +2759,24 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     if let Some(popover) = button.popover().and_downcast::<gtk::PopoverMenu>() {
         popover.add_child(zoom.indicator(), ZOOM_SLOT);
     }
+    // The reader's recent documents, worked out at the moment the menu is opened and
+    // not before (issue #54). This is the hook GTK has for exactly that — "called when
+    // a popup is about to be shown" — and it is the only moment at which the list can
+    // be *right*: a document deleted, moved or renamed behind the desktop's back
+    // changes nothing the recent manager would announce, so a list built when the
+    // manager last said something would go on offering a document that is not there.
+    // Probed on GTK 4.20.4: it runs inside `gtk_menu_button_popup`, which is what the
+    // button's own press and its `F10` shortcut both end in, and the popover's zoom row
+    // survives the section being refilled under it.
+    //
+    // It is also the first time this window asks about the reader's recent documents at
+    // all, which matters: the recent manager reads every entry of that list off the disk
+    // the first time anything asks it for one, and a window under construction is a
+    // reader waiting for their document (invariant 4).
+    button.set_create_popup_func(move |_| {
+        documents_offered(&documents);
+        crate::recent::offer(&documents);
+    });
     // No key in brackets: the button fires no action, so `F10` is GTK's rather than
     // one of ours to name, and this is the name GNOME's own applications give it.
     crate::chrome::name(&button, &gettext("Main Menu"));
@@ -2859,6 +2911,18 @@ mod tests {
         assert_eq!(ticked(source, source.len() + 100), None);
         // A bracketed thing that is not a checkbox is not one.
         assert_eq!(ticked("- [-] partly\n", 3), None);
+    }
+
+    /// What a menu item says, as the reader reads it off the screen. The second case is
+    /// the one that matters: a document called `release_notes.md` is labelled with the
+    /// underscore doubled, and a test that took every underscore out would report a name
+    /// nobody has — and agree with itself about it (issue #54).
+    #[test]
+    fn a_menu_item_is_read_the_way_gtk_draws_it() {
+        assert_eq!(as_it_is_drawn("_New Document"), "New Document");
+        assert_eq!(as_it_is_drawn("release__notes.md"), "release_notes.md");
+        assert_eq!(as_it_is_drawn("Save _As…"), "Save As…");
+        assert_eq!(as_it_is_drawn("notes.md"), "notes.md");
     }
 
     /// An action is named once, in full, and registered by its bare name. A window

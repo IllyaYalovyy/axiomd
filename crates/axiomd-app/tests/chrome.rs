@@ -47,17 +47,35 @@ const LISTED: &[(&str, &str)] = &[
 /// The primary menu ends the way the HIG asks every GNOME primary menu to end, and it
 /// offers no way out of the application: closing a window and quitting are keys and the
 /// window's own controls, and the shortcuts dialog above About is where they are found.
+///
+/// Read with the menu open, because that is when the reader reads it — and because the
+/// documents they can come back to are worked out as it opens (issue #54).
 #[test]
 fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
     let fixture = Fixture::new("chrome-menu");
-    let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
+    let notes = fixture.write("notes.md", NOTES);
+    let app = axiomd_e2e::launch(&notes);
+
+    assert!(!app.menu().open, "the menu opened itself");
+    // Waited for, so the menu below is opened on a desktop that has been told about the
+    // document the reader is in rather than one that is about to be.
+    app.wait_until_recent(&notes);
+    assert!(app.press_key("F10"), "F10 is on nothing in this window");
+    app.wait_for("the main menu to open", || app.menu().open);
 
     let menu = app.menu();
+    let back_to_notes = format!("app.open-recent('file://{}')", notes.display());
     assert_eq!(
         menu.offers(),
         [
             ("New Document", "app.new"),
             ("Open…", "app.open"),
+            // The way back to what the reader has been reading, directly under the two
+            // ways to something they have not (issue #54): the submenu's own words, and
+            // then what is behind it — one document, because one is what this reader has
+            // read.
+            ("Open Recent", ""),
+            ("notes.md", back_to_notes.as_str()),
             ("Find…", "win.find"),
             // The submenu of engines, and what a reader who points at it reads: every
             // engine this build has, each named for them, each carrying the identifier
@@ -75,7 +93,6 @@ fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
             ("About axiomd", "app.about"),
         ],
     );
-    assert!(!menu.open, "the menu opened itself");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
