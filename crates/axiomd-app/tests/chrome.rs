@@ -144,6 +144,16 @@ fn about_says_what_this_build_is() {
             "https://github.com/IllyaYalovyy/axiomd/issues",
         ),
     );
+    // And the one extra link the dialog offers: where a reader who wants to support
+    // the work goes (issue #55). One row, libadwaita's own, read back off the row
+    // itself — nothing else was added to the dialog.
+    assert_eq!(
+        about.links,
+        [(
+            "Support axiomd".to_owned(),
+            "https://github.com/sponsors/IllyaYalovyy".to_owned(),
+        )],
+    );
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
