@@ -456,6 +456,60 @@ fn the_metainfo_is_valid_appstream() {
     );
 }
 
+/// Sponsorship is one address, and everything that names it says the same one
+/// (issue #55).
+///
+/// The metainfo's `<url type="donation">` is the source of truth: a software centre
+/// draws its Donate button from it and the About dialog reads its link row out of it,
+/// both from the file itself. The two surfaces that cannot read it — the file GitHub
+/// puts its own Sponsor button up from, and the badge at the top of the README — are
+/// held to it here, because the only thing that keeps a hand-written copy honest is a
+/// test that reads both.
+#[test]
+fn every_surface_that_asks_for_sponsorship_names_the_same_account() {
+    let donation = between(&metainfo(), "<url type=\"donation\">", "</url>")
+        .trim()
+        .to_owned();
+    let account = donation
+        .rsplit('/')
+        .next()
+        .expect("the donation url names an account");
+
+    // Exactly this, to the byte: GitHub reads the file itself, and a second key, a
+    // comment or a missing newline is a Sponsor button that does not appear.
+    let funding = std::fs::read_to_string(repository().join(".github/FUNDING.yml"))
+        .expect("read .github/FUNDING.yml");
+    assert_eq!(funding, "github: IllyaYalovyy\n");
+    assert_eq!(
+        funding,
+        format!("github: {account}\n"),
+        "the repository asks for sponsorship of somebody other than the account the \
+         metainfo's donation url names",
+    );
+
+    // One badge, and it is the first thing under the title — where the issue asks for
+    // it, and the only place in the README that names the address at all.
+    let readme = std::fs::read_to_string(repository().join("README.md")).expect("read README.md");
+    let named = readme.matches(&donation).count();
+    assert_eq!(
+        named, 1,
+        "the README names the donation url {named} times; it carries the one badge \
+         and nothing else",
+    );
+    let lines: Vec<&str> = readme.lines().collect();
+    assert_eq!(lines.first().copied(), Some("# axiomd"));
+    assert_eq!(
+        lines.get(2).copied(),
+        Some(
+            format!(
+                "[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa)]({donation})"
+            )
+            .as_str()
+        ),
+        "the sponsor badge is not the line under the README's title",
+    );
+}
+
 /// The pictures a software centre shows are fetched from this repository over the
 /// network, so nothing but this says whether they are there (issue #33).
 ///

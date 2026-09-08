@@ -1,5 +1,7 @@
 # axiomd
 
+[![Sponsor](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa)](https://github.com/sponsors/IllyaYalovyy)
+
 A fast, beautiful Markdown viewer for modern GNOME, written in Rust.
 
 axiomd opens `.md` files instantly, renders them with best-in-class

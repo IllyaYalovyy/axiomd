@@ -65,6 +65,7 @@
   <url type="homepage">https://github.com/IllyaYalovyy/axiomd</url>
   <url type="bugtracker">https://github.com/IllyaYalovyy/axiomd/issues</url>
   <url type="vcs-browser">https://github.com/IllyaYalovyy/axiomd</url>
+  <url type="donation">https://github.com/sponsors/IllyaYalovyy</url>
 
   <!--
     Taken from the running application by `crates/axiomd-app/tests/screenshots.rs`

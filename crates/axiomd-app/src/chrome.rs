@@ -395,6 +395,11 @@ fn about() -> adw::AboutDialog {
     dialog.set_license_type(license(text("project_license")));
     dialog.set_website(link("homepage"));
     dialog.set_issue_url(link("bugtracker"));
+    // Where a reader who wants to support the work goes (issue #55), as a link row of
+    // libadwaita's own among the dialog's others — its glyph, its styling, its way of
+    // opening a URI, and nowhere else in the application: a reader who never opens
+    // About is never asked for anything.
+    dialog.add_link(&gettext("Support axiomd"), link("donation"));
     dialog
 }
 
@@ -450,9 +455,10 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     Some(found.trim())
 }
 
-/// What the About dialog on screen says, a field to a line.
+/// What the About dialog on screen says, a field to a line, and every extra link it
+/// offers under `link title<TAB>address`.
 fn said_by(about: &adw::AboutDialog) -> String {
-    [
+    let fields = [
         ("name", about.application_name().to_string()),
         ("developer", about.developer_name().to_string()),
         ("version", about.version().to_string()),
@@ -462,8 +468,35 @@ fn said_by(about: &adw::AboutDialog) -> String {
         ("website", about.website().to_string()),
         ("issues", about.issue_url().to_string()),
     ]
-    .map(|(field, said)| format!("{field} {said}"))
-    .join("\n")
+    .map(|(field, said)| format!("{field} {said}"));
+
+    let mut said: Vec<String> = fields.into();
+    rows(about.upcast_ref::<gtk::Widget>(), &offered_link, &mut said);
+    said.join("\n")
+}
+
+/// Every extra link the dialog offers, as `link title<TAB>address` — read off the rows
+/// the reader activates, because there is nothing else to read.
+///
+/// libadwaita keeps no getter for a link added with `add_link` (`Adw-1.gir`, 1.8.7),
+/// and a test asserting on the string we handed it would be asserting on our own
+/// argument. So the row itself is the answer: a link added this way is an
+/// `AdwActionRow` on the dialog's own `about.show-url` action, carrying the address as
+/// that action's target, while the built-in Website and Report an Issue rows are on
+/// `about.show-url-property` and carry the name of a property instead — so this finds
+/// the extra links and only those (probed on libadwaita 1.8.7 by walking a dialog with
+/// one link added).
+fn offered_link(widget: &gtk::Widget) -> Option<String> {
+    let row = widget.downcast_ref::<adw::ActionRow>()?;
+    let activates = widget.dynamic_cast_ref::<gtk::Actionable>()?;
+    if activates.action_name().as_deref() != Some("about.show-url") {
+        return None;
+    }
+    let address = activates
+        .action_target_value()
+        .and_then(|target| target.str().map(ToOwned::to_owned))
+        .unwrap_or_default();
+    Some(format!("link {}\t{address}", row.title()))
 }
 
 /// What the keyboard-shortcuts dialog on screen lists: every row the reader is looking
@@ -481,29 +514,44 @@ fn listed_by(dialog: &adw::ShortcutsDialog) -> String {
     .and_then(|stack| stack.visible_child())
     .unwrap_or_else(|| dialog.clone().upcast());
 
-    let mut rows = Vec::new();
-    collect(&page, &mut rows);
-    rows.join("\n")
+    let mut listed = Vec::new();
+    rows(&page, &listed_shortcut, &mut listed);
+    listed.join("\n")
 }
 
-/// Every shortcut row under `widget`, in the order the reader reads them.
+/// One shortcut row, as `title<TAB>keys`, or nothing for a widget that is not one.
 ///
 /// A row is found by the `AdwShortcutLabel` that draws its keys; its title is the
 /// first label beside that one (probed on libadwaita 1.8.6: an `AdwShortcutRow` holds
 /// a box of title and subtitle next to the shortcut label, and the labels *inside* the
 /// shortcut label are the individual keys).
-fn collect(widget: &gtk::Widget, rows: &mut Vec<String>) {
-    if let Some(keys) = widget.downcast_ref::<adw::ShortcutLabel>() {
-        let title = widget
-            .parent()
-            .and_then(|row| beside(&row, widget))
-            .unwrap_or_default();
-        rows.push(format!("{title}\t{}", keys.accelerator()));
+fn listed_shortcut(widget: &gtk::Widget) -> Option<String> {
+    let keys = widget.downcast_ref::<adw::ShortcutLabel>()?;
+    let title = widget
+        .parent()
+        .and_then(|row| beside(&row, widget))
+        .unwrap_or_default();
+    Some(format!("{title}\t{}", keys.accelerator()))
+}
+
+/// Every line `read` makes of the widgets under `widget` and of `widget` itself, in
+/// the order the reader reads them.
+///
+/// A widget `read` answers for is a row, and a row is not looked inside: what draws a
+/// row's own parts is never a second row, and descending into one is how a dialog's
+/// rows come back doubled.
+fn rows(
+    widget: &gtk::Widget,
+    read: &dyn Fn(&gtk::Widget) -> Option<String>,
+    into: &mut Vec<String>,
+) {
+    if let Some(row) = read(widget) {
+        into.push(row);
         return;
     }
     let mut child = widget.first_child();
     while let Some(candidate) = child {
-        collect(&candidate, rows);
+        rows(&candidate, read, into);
         child = candidate.next_sibling();
     }
 }
@@ -561,6 +609,9 @@ mod tests {
             link("bugtracker"),
             "https://github.com/IllyaYalovyy/axiomd/issues",
         );
+        // Where the reader can support the work, read from the same file a software
+        // centre draws its Donate button from (issue #55).
+        assert_eq!(link("donation"), "https://github.com/sponsors/IllyaYalovyy");
         assert_eq!(license(text("project_license")), gtk::License::Gpl30);
     }
 

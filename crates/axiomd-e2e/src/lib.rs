@@ -309,6 +309,9 @@ pub struct About {
     pub website: String,
     /// Where its "Report an Issue" link goes.
     pub issues: String,
+    /// Every extra link row the dialog offers beside those, as the reader reads them:
+    /// what each is titled, and where activating it goes.
+    pub links: Vec<(String, String)>,
 }
 
 /// Where one part of a window is drawn, in window coordinates.
@@ -1566,6 +1569,12 @@ impl App {
             license: field("license"),
             website: field("website"),
             issues: field("issues"),
+            links: said
+                .lines()
+                .filter_map(|line| line.strip_prefix("link "))
+                .filter_map(|link| link.split_once('\t'))
+                .map(|(title, address)| (title.to_owned(), address.to_owned()))
+                .collect(),
         }
     }
 
