@@ -374,6 +374,9 @@ pub struct Preferences {
     /// Whether the desktop this store belongs to animates. Off for every launch here
     /// unless a test says otherwise ([`Preferences::animating`]).
     animations: bool,
+    /// Whether the desktop this store belongs to publishes its style the way a real one
+    /// does ([`Preferences::with_a_settings_portal`]).
+    settings_portal: bool,
 }
 
 impl Preferences {
@@ -382,7 +385,28 @@ impl Preferences {
         Preferences {
             scratch: Scratch::new(label),
             animations: false,
+            settings_portal: false,
         }
+    }
+
+    /// Says this store's desktop publishes its style the way a real desktop publishes
+    /// it: through `org.freedesktop.portal.Settings`, on the session a launch over this
+    /// store is given.
+    ///
+    /// It is the only route there is for a *sandboxed* launch. Inside a flatpak,
+    /// `org.gnome.desktop.interface` is the application's own settings rather than the
+    /// desktop's — the reader's dconf is not in the sandbox, and none of the permissions
+    /// axiomd holds would put it there — so an application that had only GSettings to
+    /// read would see a desktop that is forever light. [`Preferences::set_dark`] is what
+    /// the desktop then says through it.
+    ///
+    /// Off for every other launch, and deliberately: a portal is a service the bus has
+    /// to start before the application can ask it anything, and every probe that is not
+    /// about the desktop's style — the budgets among them — should meet the same
+    /// session it always did.
+    pub fn with_a_settings_portal(mut self) -> Preferences {
+        self.settings_portal = true;
+        self
     }
 
     /// Says this store's desktop animates.
@@ -425,8 +449,65 @@ impl Preferences {
         display::pin_setting(
             self.scratch.path(),
             display::A11Y_GROUP,
-            &format!("high-contrast={high_contrast}"),
+            "high-contrast",
+            &high_contrast.to_string(),
         );
+    }
+
+    /// Puts the desktop this store belongs to into dark, or back into light — before a
+    /// launch, or while one is reading.
+    ///
+    /// The desktop's own setting, exactly where a desktop keeps it, and never axiomd's
+    /// `theme` preference: what a probe over this asserts is that the application
+    /// *followed* the desktop, which an in-app override would prove nothing about.
+    ///
+    /// A launch of the binary reads it straight out of this store. A sandboxed launch
+    /// reads it through the settings portal, which reads it out of this store — so a
+    /// store a sandboxed probe flips has to have been built with
+    /// [`Preferences::with_a_settings_portal`].
+    pub fn set_dark(&self, dark: bool) {
+        display::pin_setting(
+            self.scratch.path(),
+            display::DESKTOP_GROUP,
+            "color-scheme",
+            match dark {
+                true => "'prefer-dark'",
+                false => "'default'",
+            },
+        );
+    }
+
+    /// Keeps `font` among the fonts of the reader whose desktop this store is, under
+    /// `name`.
+    ///
+    /// The reader's own font directory on the *host*, which is the point: a sandbox has
+    /// none of it unless flatpak binds the host's font directories into it, and that
+    /// binding — flatpak's own, granted by no permission axiomd asks for — is what a
+    /// probe over this is about. Nothing else in this harness makes the file reachable:
+    /// it is inside the store's directory, which a sandbox reaches only as the home
+    /// flatpak was told to build the launch's world under.
+    pub fn install_font(&self, name: &str, font: &[u8]) {
+        let fonts = self.the_readers_home().join(".local/share/fonts");
+        std::fs::create_dir_all(&fonts).unwrap_or_else(|error| panic!("create {fonts:?}: {error}"));
+        let path = fonts.join(name);
+        std::fs::write(&path, font).unwrap_or_else(|error| panic!("write {path:?}: {error}"));
+    }
+
+    /// The font family the packaged application's own fontconfig really resolves
+    /// `pattern` to, asked inside the installed sandbox of this store's world.
+    ///
+    /// The answer a sandboxed WebKit lays text out with, read from the package rather
+    /// than from what flatpak's documentation says it binds. A family this store has
+    /// never [`installed`](Preferences::install_font) comes back as whatever the runtime
+    /// falls back to, which is what makes an answer naming it worth something.
+    pub fn font_resolved_in_the_sandbox(&self, pattern: &str) -> String {
+        containment::font_resolved_in_the_installed_sandbox(&self.the_readers_home(), pattern)
+    }
+
+    /// The home the reader whose desktop this store is has — the one flatpak builds a
+    /// sandboxed launch's world under, and so the one whose fonts a sandbox can see.
+    fn the_readers_home(&self) -> PathBuf {
+        display::sandbox_home(self.scratch.path(), Some(self.scratch.path()))
     }
 
     /// What the store holds for `key` now, as it is written down, or `None` while the
@@ -514,7 +595,7 @@ impl Desktop {
     /// A desktop with `document` open in axiomd, as the developer's own has.
     pub fn with_axiomd_open(document: &Path) -> Desktop {
         let scratch = Scratch::new("desktop");
-        let bus = Session::start(scratch.path(), scratch.path());
+        let bus = Session::start(scratch.path(), scratch.path(), None);
         let axiomd = App::start_under(
             Under::BesideThisTest,
             Some(document),
@@ -651,6 +732,33 @@ pub fn launch_installed_flatpak_from_the_desktop(document: &Path) -> App {
     app
 }
 
+/// Starts the installed flatpak the way a reader in a terminal starts it: `flatpak run
+/// io.github.etf.axiomd <named>`, typed in `folder`.
+///
+/// The difference from [`launch_installed_flatpak`] is what is *not* arranged. That one
+/// hands the sandbox the folder the document is in; this one hands it nothing at all, so
+/// the only reason the package can read the document is `--filesystem=host:ro` (issue
+/// #23) — and `named` is passed through exactly as typed, so a relative name is resolved
+/// against the working directory the reader was in when they typed it and a name with
+/// spaces in it is one argument or the launch fails.
+///
+/// `folder` therefore has to be somewhere `host` carries: the reader's own files, not
+/// the machine's `/tmp`, which a sandbox has its own of.
+pub fn launch_installed_flatpak_from_a_terminal(folder: &Path, named: &str) -> App {
+    let app = App::start_under(
+        Under::FlatpakFromATerminal {
+            folder: folder.to_path_buf(),
+            named: named.to_owned(),
+        },
+        None,
+        None,
+        None,
+        None,
+    );
+    app.wait_for_a_rendered_document();
+    app
+}
+
 /// Starts the axiomd **installed into `prefix`** by `scripts/install.sh` showing
 /// `document` — the copy a reader who ran `install.sh --user` has, run from where it
 /// was installed (issue #25).
@@ -761,11 +869,27 @@ impl App {
         let log = scratch.path().join("axiomd.log");
 
         let control_variable = [("AXIOMD_TEST_CONTROL".to_owned(), socket.clone())];
+        // Every way of driving the package, and the one thing they have in common: the
+        // application runs in its own sandbox rather than in the developer's filesystem.
+        let sandboxed = matches!(
+            under,
+            Under::InstalledFlatpak | Under::PortalFlatpak | Under::FlatpakFromATerminal { .. }
+        );
         // A sandbox cannot be left without a bus — flatpak proxies whatever session bus
         // is there and overrides the pin that would have taken it away — so it is given
         // one of its own instead. See `containment`.
-        let bus = matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak)
-            .then(|| Session::start(scratch.path(), display.runtime_dir()));
+        let bus = sandboxed.then(|| {
+            Session::start(
+                scratch.path(),
+                display.runtime_dir(),
+                preferences
+                    .filter(|preferences| preferences.settings_portal)
+                    .map(|preferences| containment::DesktopStyle {
+                        settings: preferences.scratch.path(),
+                        display: display.socket_name(),
+                    }),
+            )
+        });
         // What this launch may register on: the bus it was handed, or the one built for
         // its sandbox, and otherwise nothing at all.
         let on_a_bus = on.or(bus.as_ref());
@@ -773,7 +897,6 @@ impl App {
         // pinned `XDG_DATA_HOME` — flatpak makes the application's directories itself,
         // under the home it is looking at, and that home is this launch's own
         // (`containment::sandboxed`).
-        let sandboxed = matches!(under, Under::InstalledFlatpak | Under::PortalFlatpak);
         let sandbox_home = display::sandbox_home(
             scratch.path(),
             preferences.map(|preferences| preferences.scratch.path()),
@@ -830,7 +953,7 @@ impl App {
                 );
                 command
             }
-            Under::InstalledFlatpak | Under::PortalFlatpak => {
+            Under::InstalledFlatpak | Under::PortalFlatpak | Under::FlatpakFromATerminal { .. } => {
                 // The launch's own runtime directory, inside the sandbox as well as
                 // outside it — which `Display::wayland` is, and which is also where this
                 // launch's document portal mounts. `axiomd-doc` reads
@@ -855,7 +978,7 @@ impl App {
                     preferences.map(|preferences| preferences.scratch.path()),
                     document.filter(|_| !through_the_portal),
                 ];
-                sandboxed_command(
+                let mut command = sandboxed_command(
                     bus.as_ref()
                         .expect("a sandboxed launch has a bus of its own"),
                     display.runtime_dir(),
@@ -864,11 +987,22 @@ impl App {
                     sandbox,
                     visible.into_iter().flatten(),
                     through_the_portal,
-                )
+                );
+                // A launch from a terminal starts where the reader was standing, and
+                // nowhere else is granted: `flatpak run` carries its own working
+                // directory into the sandbox (probed on flatpak 1.16.6, 2026-09-07), so
+                // a relative name means what the reader meant by it.
+                if let Under::FlatpakFromATerminal { folder, .. } = &under {
+                    command.current_dir(folder);
+                }
+                command
             }
         };
         if let Some(engine) = engine {
             command.arg(format!("--engine={engine}"));
+        }
+        if let Under::FlatpakFromATerminal { named, .. } = &under {
+            command.arg(named);
         }
         if let Some(document) = document {
             // `@@ … @@` is how a `--file-forwarding` launch says "these arguments are
@@ -2276,6 +2410,9 @@ enum Under {
     /// The same, given its document through the document portal instead of through a
     /// filesystem grant — the route a double-click in Files takes (issue #22).
     PortalFlatpak,
+    /// The same, started from a shell in `folder` with `named` as its one argument —
+    /// the route a reader who types `flatpak run io.github.etf.axiomd notes.md` takes.
+    FlatpakFromATerminal { folder: PathBuf, named: String },
 }
 
 impl std::fmt::Display for Under {
@@ -2289,6 +2426,11 @@ impl std::fmt::Display for Under {
             Under::PortalFlatpak => {
                 write!(out, "the installed flatpak {APP_ID}, through the portal")
             }
+            Under::FlatpakFromATerminal { folder, named } => write!(
+                out,
+                "the installed flatpak {APP_ID}, started as `{named}` in {}",
+                folder.display(),
+            ),
         }
     }
 }

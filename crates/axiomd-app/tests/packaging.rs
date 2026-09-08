@@ -2280,6 +2280,483 @@ fn dirs_flatpak_exports() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// The papercuts a flatpak is expected to have, proven absent (issue #57).
+//
+// The reader's fonts, the desktop's light and dark, and a command line typed in a
+// terminal: three things that work without anybody arranging them on a native build and
+// that a sandbox is where they quietly stop working. Each is asked of the *installed*
+// package, in the same `#[ignore]` + `40-flatpak.sh` pattern as the probes above, and
+// each is arranged so that the sandbox is the only thing that could make it work.
+//
+// What the sandbox is proven to do — these and everything above — is written down for
+// the Flathub review in `docs/RELEASE.md`.
+// ---------------------------------------------------------------------------
+
+/// A font family no runtime has, because this suite invents it: the face planted among
+/// the reader's own fonts is a copy of one the host has, renamed to this.
+///
+/// Invented rather than borrowed so that an answer naming it can only have come from the
+/// planted file. A family the runtime happens to carry would leave a probe passing
+/// whether or not a single host font reached the sandbox.
+const PROBE_FACE: &str = "Axiomd Probe Face";
+
+/// A real, working font under the name above — one of the host's own, with its name
+/// table rewritten.
+///
+/// Cut from a font rather than built from nothing because it has to be a font the
+/// sandbox can *lay text out with*, not merely one fontconfig will list: the second
+/// probe below measures text in it.
+fn probe_face() -> Vec<u8> {
+    let base = a_scalable_font_the_host_has();
+    let font =
+        std::fs::read(&base).unwrap_or_else(|error| panic!("read {}: {error}", base.display()));
+    renamed(&font, PROBE_FACE)
+}
+
+/// A font file on this machine that can be renamed: an sfnt with outlines and one set of
+/// names, rather than a collection or a variable font whose named instances live in the
+/// name table this rewrites.
+fn a_scalable_font_the_host_has() -> PathBuf {
+    let mut tried = Vec::new();
+    for pattern in ["sans-serif", "serif", "DejaVu Sans", "Liberation Sans"] {
+        let found = tool("fc-match", "sudo dnf install fontconfig")
+            .args(["--format=%{file}", pattern])
+            .output()
+            .expect("run fc-match");
+        let path = PathBuf::from(String::from_utf8_lossy(&found.stdout).trim().to_owned());
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        let font = std::fs::read(&path).unwrap_or_default();
+        match unsuitable(&font) {
+            None => return path,
+            Some(why) => tried.push(format!("{} ({why})", path.display())),
+        }
+    }
+    panic!(
+        "this machine has no font this probe can cut a face from; it tried:\n  {}",
+        tried.join("\n  "),
+    );
+}
+
+/// Why `font` cannot have its names rewritten, or `None` when it can.
+fn unsuitable(font: &[u8]) -> Option<String> {
+    if font.len() < 12 {
+        return Some("not a font".to_owned());
+    }
+    let kind = &font[..4];
+    if kind != b"\x00\x01\x00\x00" && kind != b"OTTO" {
+        return Some(format!(
+            "{} is not a single sfnt",
+            String::from_utf8_lossy(kind)
+        ));
+    }
+    let tables = read_u16(font, 4) as usize;
+    if 12 + tables * 16 > font.len() {
+        return Some("a truncated table directory".to_owned());
+    }
+    let named =
+        |tag: &[u8]| (0..tables).any(|index| &font[12 + index * 16..16 + index * 16] == tag);
+    if named(b"fvar") {
+        return Some(
+            "a variable font, whose instances are named in the table this rewrites".to_owned(),
+        );
+    }
+    (!named(b"name")).then(|| "no name table".to_owned())
+}
+
+fn read_u16(bytes: &[u8], at: usize) -> u16 {
+    u16::from_be_bytes([bytes[at], bytes[at + 1]])
+}
+
+fn read_u32(bytes: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+}
+
+/// `font` with every name in it replaced by `family` — the same outlines, the same
+/// metrics, under a name nothing else on the machine answers to.
+///
+/// The whole of the edit is the `name` table, which is where fontconfig and FreeType read
+/// a family from (`FcFreeTypeQuery`). The file is written out afresh around it because
+/// the new table is a different size: every other table's bytes are copied unchanged, the
+/// directory is rewritten with the offsets they landed at, and each entry's checksum is
+/// recomputed. `head`'s `checkSumAdjustment` is left as it was — FreeType does not verify
+/// it, and the probes below are what say whether this font really loads.
+fn renamed(font: &[u8], family: &str) -> Vec<u8> {
+    assert!(unsuitable(font).is_none(), "this font cannot be renamed");
+    let tables = read_u16(font, 4) as usize;
+    let names = name_table(family);
+
+    // Every table, in the order the file already keeps them, so the copy is laid out
+    // like the original.
+    let mut entries: Vec<(usize, [u8; 4], usize, usize)> = (0..tables)
+        .map(|index| {
+            let at = 12 + index * 16;
+            let mut tag = [0u8; 4];
+            tag.copy_from_slice(&font[at..at + 4]);
+            (
+                index,
+                tag,
+                read_u32(font, at + 8) as usize,
+                read_u32(font, at + 12) as usize,
+            )
+        })
+        .collect();
+    entries.sort_by_key(|(_, _, offset, _)| *offset);
+
+    let start = 12 + tables * 16;
+    let mut body: Vec<u8> = Vec::new();
+    let mut placed = vec![(0usize, 0usize); tables];
+    for (index, tag, offset, length) in &entries {
+        while !(start + body.len()).is_multiple_of(4) {
+            body.push(0);
+        }
+        let data: &[u8] = match tag {
+            b"name" => &names,
+            _ => font.get(*offset..*offset + *length).unwrap_or_else(|| {
+                panic!(
+                    "the font's {} table runs past its end",
+                    String::from_utf8_lossy(tag)
+                )
+            }),
+        };
+        placed[*index] = (start + body.len(), data.len());
+        body.extend_from_slice(data);
+    }
+
+    let mut out = font[..start].to_vec();
+    for (index, (offset, length)) in placed.iter().enumerate() {
+        let at = 12 + index * 16;
+        let data = &body[offset - start..offset - start + length];
+        out[at + 4..at + 8].copy_from_slice(&checksum(data).to_be_bytes());
+        out[at + 8..at + 12].copy_from_slice(&(*offset as u32).to_be_bytes());
+        out[at + 12..at + 16].copy_from_slice(&(*length as u32).to_be_bytes());
+    }
+    out.extend_from_slice(&body);
+    out
+}
+
+/// An sfnt table checksum: the table's bytes read as big-endian words, zero-padded to a
+/// whole number of them, added up and allowed to wrap.
+fn checksum(data: &[u8]) -> u32 {
+    let mut padded = data.to_vec();
+    while !padded.len().is_multiple_of(4) {
+        padded.push(0);
+    }
+    padded
+        .chunks_exact(4)
+        .fold(0u32, |total, word| total.wrapping_add(read_u32(word, 0)))
+}
+
+/// A format-0 `name` table saying `family` and nothing else, in both encodings a font is
+/// read by: Macintosh Roman and Windows Unicode.
+fn name_table(family: &str) -> Vec<u8> {
+    let postscript: String = family
+        .chars()
+        .filter(|letter| !letter.is_whitespace())
+        .collect();
+    // Family, subfamily, unique identifier, full name, PostScript name — the five a
+    // font is identified by, and the set FreeType reads a family out of.
+    let said = |id: u16| match id {
+        2 => "Regular".to_owned(),
+        6 => postscript.clone(),
+        _ => family.to_owned(),
+    };
+
+    // Sorted by platform, encoding, language and name, which is what the format asks for.
+    let mut records: Vec<(u16, u16, u16, u16, Vec<u8>)> = Vec::new();
+    for id in [1u16, 2, 3, 4, 6] {
+        records.push((1, 0, 0, id, said(id).into_bytes()));
+    }
+    for id in [1u16, 2, 3, 4, 6] {
+        records.push((
+            3,
+            1,
+            0x0409,
+            id,
+            said(id).encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        ));
+    }
+
+    let count = records.len();
+    let strings_at = 6 + count * 12;
+    let mut table: Vec<u8> = Vec::new();
+    table.extend_from_slice(&0u16.to_be_bytes());
+    table.extend_from_slice(&(count as u16).to_be_bytes());
+    table.extend_from_slice(&(strings_at as u16).to_be_bytes());
+    let mut strings: Vec<u8> = Vec::new();
+    for (platform, encoding, language, id, text) in &records {
+        for value in [
+            *platform,
+            *encoding,
+            *language,
+            *id,
+            text.len() as u16,
+            strings.len() as u16,
+        ] {
+            table.extend_from_slice(&value.to_be_bytes());
+        }
+        strings.extend_from_slice(text);
+    }
+    table.extend_from_slice(&strings);
+    table
+}
+
+/// Fonts (1 of 2): a font the reader keeps in their own home is a font the packaged
+/// application's fontconfig finds — through flatpak's own binding of the host's font
+/// directories, which no permission in `permissions.pinned` grants and which this suite
+/// exists not to take on trust.
+///
+/// The face is planted where a reader's fonts live and nowhere else: inside the world
+/// this launch's home is, which the sandbox reaches by no filesystem grant at all. The
+/// only route from there to `fc-match` inside the package is `/run/host/user-fonts`,
+/// which flatpak binds by itself (probed 2026-09-07: `/run/host/font-dirs.xml` remaps
+/// the user font directory of the home flatpak was started with).
+///
+/// Red before green, in the test: the runtime is asked about the face before there is
+/// one, and has to answer with something else.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_sandbox_finds_the_fonts_the_reader_keeps_on_the_host() {
+    installed_flatpak();
+
+    let desktop = Preferences::new("flatpak-fonts");
+
+    let without = desktop.font_resolved_in_the_sandbox(PROBE_FACE);
+    assert_ne!(
+        without, PROBE_FACE,
+        "the runtime already answers to {PROBE_FACE:?}, so finding it later would \
+         prove nothing about the reader's own fonts",
+    );
+
+    desktop.install_font("axiomd-probe-face.ttf", &probe_face());
+
+    assert_eq!(
+        desktop.font_resolved_in_the_sandbox(PROBE_FACE),
+        PROBE_FACE,
+        "the packaged application cannot see the fonts the reader installed: fontconfig \
+         inside the sandbox falls back to {without:?}",
+    );
+}
+
+/// Fonts (2 of 2): and the webview lays a document out in it.
+///
+/// fontconfig listing a file is not the same as the reader seeing their font. What is
+/// asserted here is the width of text the *packaged WebKit* laid out: sixteen `i`s and
+/// sixteen `M`s, in the planted face with `monospace` behind it. A family the sandbox
+/// cannot find falls back to `monospace`, where both strings are exactly as wide as each
+/// other — so the two widths being different is the planted face being used, and the
+/// same measurement over a face nobody ever installed is the control that says so.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_packaged_webview_lays_a_document_out_in_the_readers_own_font() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-webfonts");
+    let desktop = Preferences::new("flatpak-webfonts");
+    desktop.install_font("axiomd-probe-face.ttf", &probe_face());
+    let document = fixture.write("notes.md", "# Fonts\n\nA paragraph.\n");
+
+    let app = axiomd_e2e::launch_installed_flatpak_with(&document, &desktop);
+
+    let width = |family: &str, text: &str| {
+        app.dom(&format!(
+            "(() => {{ const span = document.createElement('span'); \
+               span.style.cssText = 'position:absolute;visibility:hidden;\
+               white-space:pre;font-size:64px'; \
+               span.style.fontFamily = {family:?}; \
+               span.textContent = {text:?}; \
+               document.body.appendChild(span); \
+               const width = span.getBoundingClientRect().width; \
+               span.remove(); \
+               return Math.round(width); }})()"
+        ))
+        .parse::<i32>()
+        .expect("a width in pixels")
+    };
+    let narrow = "iiiiiiiiiiiiiiii";
+    let wide = "MMMMMMMMMMMMMMMM";
+
+    // The control: a family nothing has, so the runtime's own monospace lays both out.
+    let absent = "'Axiomd Absent Face', monospace";
+    assert_eq!(
+        width(absent, narrow),
+        width(absent, wide),
+        "a family the sandbox cannot find did not fall back to monospace, so the \
+         measurement below would not say which face was used",
+    );
+
+    let planted = format!("'{PROBE_FACE}', monospace");
+    assert_ne!(
+        width(&planted, narrow),
+        width(&planted, wide),
+        "the packaged webview laid the document out in monospace: the font the reader \
+         installed never reached WebKit",
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
+/// Style: the installed flatpak follows the desktop from light to dark and back, while
+/// the reader is reading — the window's own chrome and the document in it together.
+///
+/// The route is the real one and the only one there is. Inside a sandbox
+/// `org.gnome.desktop.interface` is the *application's* settings, not the desktop's: the
+/// reader's dconf is not in there and nothing axiomd is granted would put it there. A
+/// desktop publishes its style to a sandbox through `org.freedesktop.portal.Settings`,
+/// so this launch's own session carries that portal, reading the store this test writes
+/// (`Preferences::with_a_settings_portal`). Nothing in axiomd is told anything: the
+/// `theme` preference is left at `system`, which is what makes this a test of following.
+///
+/// Both halves are asserted because a reader sees both: the page colour WebKit resolves
+/// `prefers-color-scheme` to, and how bright the whole window is — the same weighting
+/// the metainfo screenshots are told apart by, and no new imaging.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_follows_the_desktop_from_light_to_dark_and_back() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-style");
+    let desktop = Preferences::new("flatpak-style").with_a_settings_portal();
+    desktop.set_dark(false);
+    let document = fixture.write(
+        "notes.md",
+        "# Style\n\nA paragraph, and enough of one to colour a window with.\n",
+    );
+
+    /// The window as it is now, written out as a PNG the way a person taking a picture
+    /// of the application would, and answered with where it was left.
+    fn published(app: &axiomd_e2e::App, pictures: &Scratch, moment: &str) -> PathBuf {
+        let path = pictures.path.join(format!("{moment}.png"));
+        app.capture_window(&path);
+        path
+    }
+
+    let page_colour = "getComputedStyle(document.body).backgroundColor";
+    let app = axiomd_e2e::launch_installed_flatpak_with(&document, &desktop);
+    let pictures = Scratch::new("flatpak-style");
+
+    assert_eq!(
+        app.dom(page_colour),
+        "rgb(255, 255, 255)",
+        "the desktop is a light one and the packaged application did not open on it",
+    );
+    let in_the_light = brightness(&published(&app, &pictures, "light"));
+    assert!(
+        in_the_light > 0.5,
+        "the packaged window is not a light one on a light desktop: {in_the_light}",
+    );
+
+    desktop.set_dark(true);
+    app.wait_until(&format!("{page_colour} === 'rgb(29, 29, 32)'"));
+    let in_the_dark = brightness(&published(&app, &pictures, "dark"));
+    assert!(
+        in_the_dark < 0.5,
+        "the reader's desktop went dark and the packaged window stayed light: \
+         {in_the_dark}",
+    );
+
+    // And back, because a window that can only go one way has not followed anything.
+    desktop.set_dark(false);
+    app.wait_until(&format!("{page_colour} === 'rgb(255, 255, 255)'"));
+    let light_again = brightness(&published(&app, &pictures, "light-again"));
+    assert!(
+        light_again > 0.5,
+        "the reader's desktop came back to light and the packaged window stayed dark: \
+         {light_again}",
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
+/// CLI (1 of 2): `flatpak run io.github.etf.axiomd notes.md`, typed in the folder the
+/// document is in.
+///
+/// Two things could go wrong and neither is arranged away. `flatpak run` has to carry the
+/// reader's working directory into the sandbox, or a relative name means a different file
+/// or no file at all; and the folder is granted to this launch by nobody, so the only
+/// reason the package can read it is `--filesystem=host:ro` (issue #23). The document is
+/// among the reader's own files for that reason — `host` does not carry the machine's
+/// `/tmp`.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_opens_the_relative_name_typed_in_the_readers_folder() {
+    installed_flatpak();
+
+    let kept = Scratch::in_the_readers_own_files("flatpak-relative");
+    let folder = kept.path.join("notes");
+    let document = kept.write("notes/todo.md", "# From a terminal\n\nA paragraph.\n");
+    // Named so that a launch resolving the name against anything but the reader's own
+    // working directory finds the wrong document, rather than none.
+    kept.write("todo.md", "# The wrong one\n\nA paragraph.\n");
+
+    let app = axiomd_e2e::launch_installed_flatpak_from_a_terminal(&folder, "todo.md");
+
+    assert_eq!(
+        app.dom_text("h1"),
+        "From a terminal",
+        "the packaged application resolved a relative name against something other than \
+         the folder the reader typed it in",
+    );
+    assert_eq!(
+        app.header().in_full,
+        document.display().to_string(),
+        "the window is not naming the document the reader asked for",
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
+/// CLI (2 of 2): and a path with spaces in it, relative and in full.
+///
+/// One argument, whatever is in it. A launch that let a shell or the exported command
+/// split it would open `todo` and complain about `list.md`, which is the classic shape
+/// of this papercut.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_opens_a_path_with_spaces_in_it() {
+    installed_flatpak();
+
+    let kept = Scratch::in_the_readers_own_files("flatpak-spaces");
+    let folder = kept.path.join("my notes");
+    let document = kept.write("my notes/todo list.md", "# Spaces\n\nA paragraph.\n");
+
+    for named in ["todo list.md", &document.display().to_string()] {
+        let app = axiomd_e2e::launch_installed_flatpak_from_a_terminal(&folder, named);
+
+        assert_eq!(
+            app.dom_text("h1"),
+            "Spaces",
+            "the packaged application did not open {named:?}",
+        );
+        assert_eq!(
+            app.window_title(),
+            "todo list.md",
+            "the window is not naming the document the reader asked for",
+        );
+        assert_eq!(
+            app.header().where_it_lives,
+            folder.display().to_string(),
+            "the window is not saying the folder the document is really in",
+        );
+
+        assert!(
+            app.close().is_empty(),
+            "the sandboxed launch left something running",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Translations (issue #34).
 //
 // axiomd ships none today; what has to work is that installing a repository which has

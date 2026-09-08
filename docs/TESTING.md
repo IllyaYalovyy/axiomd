@@ -65,9 +65,16 @@ decision. Everything on it has a defined partial check:
    pressed, a picture the author kept beside the document arrives while one a
    folder above it does not, the sandbox writes nothing but the document the
    portal granted, and the sandbox's own permissions are compared with the
-   pinned `build-aux/flatpak/permissions.pinned`. They are the `#[ignore]`d
+   pinned `build-aux/flatpak/permissions.pinned`. The papercuts of issue #57 are
+   probed the same way: a font the reader keeps on the host is found by the
+   package's own fontconfig and laid out by the packaged WebKit, the installed
+   application follows the desktop from light to dark and back through the
+   settings portal, and a relative name typed in a folder — or one with spaces
+   in it — opens the document the reader meant. They are the `#[ignore]`d
    tests in `crates/axiomd-app/tests/packaging.rs`, built, installed and run by
-   `scripts/quality.d/40-flatpak.sh`. The store-side install flow is not ours.
+   `scripts/quality.d/40-flatpak.sh`, which fails if fewer of them run than
+   there are. What they add up to is written down for the Flathub review in
+   `docs/RELEASE.md`. The store-side install flow is not ours.
 
 If work surfaces a fourth category, it goes to the human before the task
 closes.

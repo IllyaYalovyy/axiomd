@@ -261,6 +261,30 @@ pub(crate) fn which_socket(path: &Path) -> String {
     )
 }
 
+/// How long the settings portal is given to activate and answer. It is a service the
+/// bus starts on demand — a process, a GTK backend and a GSettings read — so the wait is
+/// generous; it is a deadline rather than a sleep, and a portal that is there answers
+/// long before it.
+const PORTAL_ANSWERS_WITHIN: Duration = Duration::from_secs(30);
+
+/// The desktop a launch is to believe it is running on, for the one thing a *sandboxed*
+/// application cannot read for itself: whether the desktop is light or dark.
+///
+/// Inside a flatpak, `org.gnome.desktop.interface` is the application's own settings and
+/// not the desktop's — the reader's dconf is not in the sandbox and no permission axiomd
+/// holds would put it there. The desktop publishes its style through
+/// `org.freedesktop.portal.Settings` instead, and this is that portal, on the launch's
+/// own bus, reading the store the test writes to.
+#[derive(Clone, Copy)]
+pub(crate) struct DesktopStyle<'a> {
+    /// The configuration directory holding the desktop's own GSettings — the store a
+    /// test says light or dark in.
+    pub(crate) settings: &'a Path,
+    /// The compositor the backend reading them draws on. It is a GTK application and
+    /// will not start without one.
+    pub(crate) display: &'a str,
+}
+
 /// A session bus of one launch's own: a real `dbus-daemon`, and nothing else on it.
 ///
 /// Private for two reasons at once. The name `io.github.etf.axiomd` is free here, so a
@@ -281,10 +305,21 @@ impl Session {
     /// portal (probed: a second one there fails with `fusermount3: … Permission
     /// denied`). Inside this launch's scratch it mounts, serves, and goes away with the
     /// bus.
-    pub(crate) fn start(scratch: &Path, runtime_dir: &Path) -> Session {
+    ///
+    /// `style` puts a **settings portal** on this bus as well, for a launch that is
+    /// about the desktop's own light or dark ([`DesktopStyle`]). Off by default and for
+    /// every other launch: a portal that is not there is one less thing between a probe
+    /// and what it is probing, and one less service to activate before the application
+    /// the budgets are measured on has drawn anything.
+    pub(crate) fn start(
+        scratch: &Path,
+        runtime_dir: &Path,
+        style: Option<DesktopStyle<'_>>,
+    ) -> Session {
         let socket = scratch.join("bus");
-        let configuration = configure(scratch, &socket);
-        let mut daemon = Command::new("dbus-daemon")
+        let configuration = configure(scratch, &socket, style.is_some());
+        let mut daemon = Command::new("dbus-daemon");
+        daemon
             .args([
                 "--nofork",
                 "--nopidfile",
@@ -296,14 +331,27 @@ impl Session {
             .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|error| {
-                panic!(
-                    "a sandboxed launch needs a session bus of its own and one could not \
-                     be started: {error}. Install dbus-daemon (`sudo dnf install dbus-daemon`)."
-                )
-            });
+            .stderr(Stdio::null());
+        if let Some(style) = style {
+            // What the settings backend this bus will start needs to answer at all. It
+            // reads the desktop's colour scheme out of GSettings, so it is pointed at
+            // the store the test writes; and it is a GTK application, so it is pointed
+            // at this launch's compositor — probed 2026-09-07: with no display it never
+            // registers and the portal answers `NotFound` to every setting.
+            daemon
+                .env("XDG_CONFIG_HOME", style.settings)
+                .env("GSETTINGS_BACKEND", "keyfile")
+                .env("XDG_CURRENT_DESKTOP", "GNOME")
+                .env("WAYLAND_DISPLAY", style.display)
+                .env("GDK_BACKEND", "wayland")
+                .env_remove("DISPLAY");
+        }
+        let mut daemon = daemon.spawn().unwrap_or_else(|error| {
+            panic!(
+                "a sandboxed launch needs a session bus of its own and one could not \
+                 be started: {error}. Install dbus-daemon (`sudo dnf install dbus-daemon`)."
+            )
+        });
 
         // The daemon prints its address once it is listening, so reading that line is
         // how a launch waits for it — no sleep, and no race with the first client.
@@ -318,7 +366,61 @@ impl Session {
             "the private bus did not say where it is listening: {address:?}",
         );
 
-        Session { daemon, address }
+        let session = Session { daemon, address };
+        if style.is_some() {
+            session.confirm_it_says_the_desktops_style();
+        }
+        session
+    }
+
+    /// Asks the settings portal on this bus what the desktop's colour scheme is, so
+    /// that a launch is never handed a session whose portal is missing or silent.
+    ///
+    /// Without this, a machine with no `xdg-desktop-portal` backend installed would run
+    /// the style probe against an application that has nothing to follow — and a probe
+    /// that cannot see the thing it is probing must fail saying so, not pass.
+    /// `org.freedesktop.appearance` is the setting every sandboxed toolkit reads.
+    fn confirm_it_says_the_desktops_style(&self) {
+        use gtk::gio;
+        use gtk::prelude::*;
+
+        let said = gio::DBusConnection::for_address_sync(
+            &self.address,
+            gio::DBusConnectionFlags::AUTHENTICATION_CLIENT
+                | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+            None,
+            gio::Cancellable::NONE,
+        )
+        .map_err(|error| format!("this launch's bus refused a connection: {error}"))
+        .and_then(|connection| {
+            connection
+                .call_sync(
+                    Some("org.freedesktop.portal.Desktop"),
+                    "/org/freedesktop/portal/desktop",
+                    "org.freedesktop.portal.Settings",
+                    "ReadOne",
+                    Some(&("org.freedesktop.appearance", "color-scheme").to_variant()),
+                    None,
+                    gio::DBusCallFlags::NONE,
+                    PORTAL_ANSWERS_WITHIN.as_millis() as i32,
+                    gio::Cancellable::NONE,
+                )
+                .map_err(|error| format!("the settings portal did not answer: {error}"))
+        })
+        .and_then(|answer| {
+            answer
+                .child_value(0)
+                .as_variant()
+                .and_then(|scheme| scheme.get::<u32>())
+                .ok_or_else(|| format!("the settings portal answered {answer:?}"))
+        });
+        assert!(
+            said.is_ok(),
+            "this launch's session has no settings portal, so an application on it has \
+             no way to know whether the desktop is light or dark: {}\n  \
+             Install one with: sudo dnf install xdg-desktop-portal xdg-desktop-portal-gtk",
+            said.unwrap_err(),
+        );
     }
 
     /// What to put in `DBUS_SESSION_BUS_ADDRESS` to reach it.
@@ -344,15 +446,26 @@ impl Session {
 /// document portal the packaged probes reach their document through (issue #22, #24).
 ///
 /// The policy is the standard session one. What is narrowed is what may be *started*.
-fn configure(scratch: &Path, socket: &Path) -> PathBuf {
+fn configure(scratch: &Path, socket: &Path, settings_portal: bool) -> PathBuf {
     let services = scratch.join("bus-services");
     std::fs::create_dir_all(&services).expect("make this launch's service directory");
     // The document portal, and nothing else on the machine. Copied rather than named in
     // a service directory of the system's, because a directory is all-or-nothing.
-    let service = "org.freedesktop.portal.Documents.service";
-    let from = PathBuf::from("/usr/share/dbus-1/services").join(service);
-    if from.is_file() {
-        let _ = std::fs::copy(&from, services.join(service));
+    //
+    // The desktop portal and one backend for it join the list only for a launch that
+    // asked for a style to follow, which is the whole of what a settings portal is here
+    // for: the desktop's light or dark, published the way a real desktop publishes it
+    // to a sandbox.
+    let mut wanted = vec!["org.freedesktop.portal.Documents.service"];
+    if settings_portal {
+        wanted.push("org.freedesktop.portal.Desktop.service");
+        wanted.push("org.freedesktop.impl.portal.desktop.gtk.service");
+    }
+    for service in wanted {
+        let from = PathBuf::from("/usr/share/dbus-1/services").join(service);
+        if from.is_file() {
+            let _ = std::fs::copy(&from, services.join(service));
+        }
     }
 
     let configuration = scratch.join("bus.conf");
@@ -502,6 +615,40 @@ pub fn in_the_installed_sandbox(script: &str) -> std::process::Output {
             "run a shell inside the installed sandbox — install one with \
              ./scripts/quality.d/40-flatpak.sh",
         )
+}
+
+/// The font family the package's own fontconfig really resolves `pattern` to, asked
+/// inside the installed sandbox of a world whose home is `home`.
+///
+/// This is the question "does a sandboxed axiomd see the reader's fonts?" asked of the
+/// package rather than of flatpak's documentation. Nothing is granted for it: no
+/// `--filesystem`, no font path, no configuration — the only reason a font kept in
+/// `home` could be found is flatpak's own binding of the host's font directories, which
+/// is the mechanism under test.
+///
+/// `home` is the home flatpak itself is looking at, exactly as a launch's is
+/// ([`sandboxed`]): flatpak reads it to decide which directory becomes the sandbox's
+/// `/run/host/user-fonts` (probed on flatpak 1.16.6, 2026-09-07 — `/run/host/font-dirs.xml`
+/// remaps the user font directory of *that* home).
+pub(crate) fn font_resolved_in_the_installed_sandbox(home: &Path, pattern: &str) -> String {
+    let mut command = without_a_session_scope("flatpak");
+    let asked = command
+        .args(["run", "--command=fc-match"])
+        .env("HOME", home)
+        .env("FLATPAK_USER_DIR", user_installation())
+        .arg(APP_ID)
+        .args(["--format=%{family}", pattern])
+        .output()
+        .expect(
+            "ask the installed sandbox's own fontconfig — install one with \
+             ./scripts/quality.d/40-flatpak.sh",
+        );
+    assert!(
+        asked.status.success(),
+        "fc-match failed inside the installed sandbox: {}",
+        String::from_utf8_lossy(&asked.stderr),
+    );
+    String::from_utf8_lossy(&asked.stdout).trim().to_owned()
 }
 
 /// `program`, in a mount namespace where the session's service manager cannot be
