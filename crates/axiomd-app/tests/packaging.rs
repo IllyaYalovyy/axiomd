@@ -743,6 +743,263 @@ fn the_manifest_pins_the_runtime_the_code_is_written_against() {
     );
 }
 
+/// The two manifests, split at the one place they are allowed to differ.
+///
+/// `build-aux/flatpak/io.github.etf.axiomd.json` builds from a directory, which is what
+/// a development machine and the gate want and what Flathub cannot take;
+/// `io.github.etf.axiomd.release.json` is the same package built from a tag of the
+/// public repository, which is what a submission is. Everything else about them — every
+/// module, finish-arg, build-option, cleanup entry, the runtime and its version — has to
+/// be the same package or the thing readers install is not the thing this project tests.
+///
+/// So the release manifest is not maintained; it is *held equal*. This reads both of
+/// them with a real JSON parser rather than the string scanning the rest of this file
+/// uses, because "equal in structure" is a claim about parsed documents and not about
+/// bytes: a reordered key or a rewrapped array must not read as a difference, and a
+/// moved module must. `python3` is the parser because this suite already insists on it
+/// for the offline mirror below, and because a JSON crate would be a dependency the
+/// application itself has no use for.
+struct Split {
+    /// The manifest with the axiomd module's `sources` removed, keys sorted, printed
+    /// one way — so two of these compare as documents.
+    everything_but_the_axiomd_sources: String,
+    /// Those sources, printed the same way.
+    axiomd_sources: String,
+}
+
+/// Where the two halves are cut apart in the reader's output, and in this test's.
+const SPLIT_MARKER: &str = "--- the axiomd module's sources ---";
+
+impl Split {
+    fn of(manifest: &str) -> Split {
+        let script = format!(
+            "import json, sys\n\
+             manifest = json.load(open(sys.argv[1]))\n\
+             modules = [m for m in manifest['modules'] if isinstance(m, dict)]\n\
+             axiomd = [m for m in modules if m.get('name') == 'axiomd']\n\
+             if len(axiomd) != 1:\n\
+             \x20   raise SystemExit('the manifest has no single axiomd module')\n\
+             sources = axiomd[0].pop('sources')\n\
+             print(json.dumps(manifest, sort_keys=True, indent=2))\n\
+             print({SPLIT_MARKER:?})\n\
+             print(json.dumps(sources, sort_keys=True, indent=2))\n"
+        );
+        let path = repository().join("build-aux/flatpak").join(manifest);
+        assert!(
+            path.is_file(),
+            "{manifest} is missing. The submission manifest lives beside the development \
+             one and is held equal to it by this test; see docs/RELEASE.md.",
+        );
+        let read = tool("python3", "sudo dnf install python3")
+            .arg("-c")
+            .arg(&script)
+            .arg(&path)
+            .output()
+            .expect("run the manifest reader");
+        assert!(
+            read.status.success(),
+            "{manifest} could not be read as a flatpak manifest:\n{}",
+            String::from_utf8_lossy(&read.stderr),
+        );
+        let read = String::from_utf8(read.stdout).expect("the manifest reader's output");
+        let (everything_else, sources) = read
+            .split_once(SPLIT_MARKER)
+            .expect("the manifest reader prints both halves");
+        Split {
+            everything_but_the_axiomd_sources: everything_else.trim().to_owned(),
+            axiomd_sources: sources.trim().to_owned(),
+        }
+    }
+}
+
+/// The submission manifest is the development manifest, sources aside (issue #56).
+///
+/// This is the whole mechanism that keeps one manifest from drifting away from the
+/// other: a runtime bump, a new module, a widened permission or a changed build command
+/// lands in one file and fails here until it lands in both. Nothing regenerates the
+/// release manifest — the fix is to make the change twice, which is why the difference
+/// between them is kept to the four lines below and no comment is allowed to grow in
+/// either that the other does not have.
+#[test]
+fn the_release_manifest_is_the_development_manifest_built_from_a_tag() {
+    let development = Split::of("io.github.etf.axiomd.json");
+    let release = Split::of("io.github.etf.axiomd.release.json");
+
+    assert_eq!(
+        release.everything_but_the_axiomd_sources, development.everything_but_the_axiomd_sources,
+        "io.github.etf.axiomd.release.json is no longer the same package as \
+         io.github.etf.axiomd.json. The two differ outside the axiomd module's sources, \
+         which is the only place they may: make the change in both.",
+    );
+    assert_ne!(
+        release.axiomd_sources, development.axiomd_sources,
+        "the release manifest still builds from a directory. Flathub builds from a tag \
+         of the public repository; see docs/RELEASE.md.",
+    );
+}
+
+/// The token standing in for the commit a tag does not have yet.
+///
+/// The tag is derived — `v` and the workspace version — so it can be asserted here; the
+/// commit it will point at cannot exist until the owner cuts the tag, and inventing one
+/// would be worse than saying so. `docs/RELEASE.md` is where it gets filled in.
+const UNRELEASED_COMMIT: &str = "TAG-COMMIT-SHA";
+
+/// The submission manifest builds this repository, at this version's tag (issue #56).
+///
+/// Both halves are derived rather than written twice: the URL is the repository the
+/// metainfo already publishes as its `vcs-browser`, so a project that moves cannot leave
+/// a manifest pointing at where it used to be, and the tag is `v` and the workspace
+/// version, so a version bump that forgot the manifest fails here rather than at
+/// submission.
+#[test]
+fn the_release_manifest_names_this_repository_at_this_versions_tag() {
+    let sources = Split::of("io.github.etf.axiomd.release.json").axiomd_sources;
+
+    let commit = between(&sources, "\"commit\": \"", "\"");
+    assert!(
+        commit == UNRELEASED_COMMIT
+            || (commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit())),
+        "the release manifest's commit is {commit:?}, which is neither a git commit nor \
+         the {UNRELEASED_COMMIT} that stands in for one until the tag is cut.",
+    );
+
+    let repository = between(&metainfo(), "<url type=\"vcs-browser\">", "</url>");
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        sources,
+        format!(
+            "[\n  {{\n    \"commit\": \"{commit}\",\n    \"tag\": \"v{version}\",\n    \"type\": \
+             \"git\",\n    \"url\": \"{repository}.git\"\n  }},\n  \"cargo-sources.json\"\n]"
+        ),
+        "the release manifest does not build {repository} at v{version} with the committed \
+         offline mirror beside it. The URL comes from the metainfo's vcs-browser and the \
+         tag from the workspace version; see docs/RELEASE.md.",
+    );
+}
+
+/// A tag that is already cut and a manifest pinned to something else is the one
+/// mechanical mistake in `docs/RELEASE.md` that a reviewer cannot see: Flathub would
+/// build a commit nobody meant to release, from a manifest that names the right version.
+///
+/// So when this checkout has the tag the release manifest names, the commit beside it has
+/// to be the commit that tag points at. Before the tag is cut the commit is the
+/// placeholder and there is nothing to compare — which is the state this repository is in
+/// until the owner releases, and is why the assertion is written as the pairing rather
+/// than as a demand that a sha be there.
+#[test]
+fn the_release_manifest_is_pinned_to_the_tag_it_names_once_that_tag_exists() {
+    let sources = Split::of("io.github.etf.axiomd.release.json").axiomd_sources;
+    let commit = between(&sources, "\"commit\": \"", "\"");
+    let tag = between(&sources, "\"tag\": \"", "\"");
+    if commit == UNRELEASED_COMMIT {
+        return;
+    }
+
+    let tagged = Command::new("git")
+        .arg("-C")
+        .arg(repository())
+        .args(["rev-parse", "--verify", "--quiet"])
+        .arg(format!("{tag}^{{commit}}"))
+        .output()
+        .expect("ask git what this repository's tags point at");
+    let tagged = String::from_utf8_lossy(&tagged.stdout).trim().to_owned();
+    if tagged.is_empty() {
+        return;
+    }
+
+    assert_eq!(
+        commit, tagged,
+        "the release manifest pins {tag} to {commit}, but {tag} is {tagged} in this \
+         repository. Flathub would build the wrong commit; see docs/RELEASE.md.",
+    );
+}
+
+/// Every package `Cargo.lock` fetches from a registry, as `name version`.
+///
+/// Workspace members have no `source` of their own and are not among them: they arrive
+/// with the repository rather than from crates.io.
+fn locked_registry_packages() -> Vec<String> {
+    let path = repository().join("Cargo.lock");
+    let lock = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    lock.split("[[package]]")
+        .skip(1)
+        .filter(|package| package.contains("\nsource = \""))
+        .map(|package| {
+            format!(
+                "{} {}",
+                between(package, "\nname = \"", "\""),
+                between(package, "\nversion = \"", "\""),
+            )
+        })
+        .collect()
+}
+
+/// Every crate the committed offline mirror carries, as `name version`.
+///
+/// Read out of the download URL each archive entry names — `.../crates/<name>/<name>-<version>.crate`
+/// — because that URL is what the build actually fetches, and a mirror that lists a
+/// crate under one name and downloads another is the failure this is looking for.
+fn mirrored_crates() -> Vec<String> {
+    let path = repository().join("build-aux/flatpak/cargo-sources.json");
+    let sources = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let prefix = "\"url\": \"https://static.crates.io/crates/";
+    sources
+        .split(prefix)
+        .skip(1)
+        .map(|entry| {
+            let crate_path = &entry[..entry.find('"').expect("an unterminated url in the mirror")];
+            let (name, file) = crate_path
+                .split_once('/')
+                .expect("a crate url naming its crate");
+            let version = file
+                .strip_prefix(&format!("{name}-"))
+                .and_then(|version| version.strip_suffix(".crate"))
+                .unwrap_or_else(|| panic!("{crate_path} is not <name>/<name>-<version>.crate"));
+            format!("{name} {version}")
+        })
+        .collect()
+}
+
+/// The offline mirror carries the locked dependencies — all of them, and nothing else
+/// (issue #56).
+///
+/// The build inside a flatpak has no network: every crate comes from
+/// `build-aux/flatpak/cargo-sources.json`, which is generated from `Cargo.lock` and
+/// committed beside it. A dependency change that did not regenerate it is a build that
+/// fails on Flathub's builders, long after the change that caused it and with nothing on
+/// this machine to say so.
+///
+/// The test below the generator (`the_offline_cargo_sources_are_the_lock_file_this_build_uses`)
+/// asks a different question: it regenerates the mirror and compares bytes, so it also
+/// catches a hand-edited one. It cannot catch a generator that drops packages, because
+/// a mirror regenerated by that generator matches it. This one reads the two files
+/// against each other and needs no generator at all.
+#[test]
+fn the_offline_mirror_carries_exactly_the_locked_dependencies() {
+    let mut locked = locked_registry_packages();
+    let mut mirrored = mirrored_crates();
+    assert!(
+        locked.len() > 100,
+        "only {} locked dependencies were read out of Cargo.lock; this workspace has \
+         hundreds, so the lock file was not understood",
+        locked.len(),
+    );
+    locked.sort();
+    mirrored.sort();
+
+    let missing: Vec<&String> = locked.iter().filter(|p| !mirrored.contains(p)).collect();
+    let stale: Vec<&String> = mirrored.iter().filter(|p| !locked.contains(p)).collect();
+    assert!(
+        missing.is_empty() && stale.is_empty(),
+        "build-aux/flatpak/cargo-sources.json is out of step with Cargo.lock.\n  \
+         locked but not mirrored (the build would fail offline): {missing:?}\n  \
+         mirrored but not locked (the mirror is stale): {stale:?}\n  \
+         Regenerate it:\n    build-aux/flatpak/cargo-sources.py Cargo.lock \
+         -o build-aux/flatpak/cargo-sources.json",
+    );
+}
+
 /// A flatpak build has no network, so every crate has to be a source the build
 /// downloads beforehand. That mirror is generated from `Cargo.lock` and committed —
 /// which means it goes stale the moment a dependency moves, and a stale mirror is a
