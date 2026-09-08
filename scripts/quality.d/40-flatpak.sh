@@ -134,7 +134,7 @@ done
 ran=$(printf '%s\n' "${summaries[@]}" |
     sed -n 's/^test result: ok\. \([0-9]*\) passed.*/\1/p' |
     awk '{ total += $1 } END { print total + 0 }')
-[[ "${ran}" -ge 10 ]] ||
+[[ "${ran}" -ge 17 ]] ||
     fail "only ${ran} probe(s) ran against the installed flatpak. Every #[ignore]d test
   in the packaging and containment targets is one of these probes and every one of them
   must run."

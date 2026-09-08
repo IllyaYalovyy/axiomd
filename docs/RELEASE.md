@@ -263,6 +263,76 @@ After acceptance, accept the invite to the new
 with `cargo-sources.json` regenerated alongside if dependencies moved. That is
 the whole of it; an update never goes through the submission process again.
 
+## What the sandbox is proven to do
+
+The papercuts a Markdown viewer picks up when it is packaged as a flatpak — fonts
+that stop being the reader's, a window that no longer follows the desktop, a
+chooser that opens on a portal path, a command line that only takes absolute
+names — are each **proven absent by a probe that drives the installed package**,
+not assumed absent because flatpak documents a default (issue #57). The probes
+are the `#[ignore]`d tests in `crates/axiomd-app/tests/packaging.rs` and
+`crates/axiomd-app/tests/containment.rs`; `scripts/quality.d/40-flatpak.sh`
+builds the package, installs it and runs exactly those, and the gate fails if
+fewer of them run than there are.
+
+This is the map, for a Flathub reviewer and for whoever writes the submission.
+
+| What a reader would notice | Proven by |
+| --- | --- |
+| A document double-clicked in Files renders, rather than showing its own Markdown | `the_installed_flatpak_renders_a_document_opened_through_the_document_portal` |
+| The desktop offers axiomd for Markdown at all | `the_installed_flatpak_is_what_the_desktop_opens_markdown_with` |
+| No window ever shows a `/run/user/…/doc/<id>` path in place of the folder the document is really in (#24, #49) | the same probe's header assertions, and `the_document_portal_says_where_a_forwarded_document_really_lives` |
+| A picture the author kept beside the document arrives; one a folder above it does not (#23) | `the_installed_flatpak_shows_the_picture_kept_beside_the_document` |
+| The sandbox reads the reader's files and writes none of them; a save it cannot make is said inline and costs nothing | `the_sandbox_reads_the_readers_files_and_writes_none_of_them`, `a_save_the_package_cannot_make_is_said_inline_and_costs_the_reader_nothing` |
+| The permissions the installed application really holds are the pinned ones, `flatpak override` included | `the_installed_sandbox_has_exactly_the_pinned_permissions` |
+| A rendered document fetches nothing until the reader presses a placeholder | `the_installed_flatpak_renders_a_document_and_fetches_nothing_until_asked`, counted from the far end |
+| Recent documents carry the reader's own path, not a portal one (#52) | `the_installed_flatpak_registers_the_host_path_with_the_desktop` |
+| Where the reader left off survives closing and reopening (#51) | `the_installed_flatpak_opens_a_document_where_the_reader_left_it` |
+| **The reader's own fonts are the sandbox's fonts** | `the_sandbox_finds_the_fonts_the_reader_keeps_on_the_host`, and `the_packaged_webview_lays_a_document_out_in_the_readers_own_font` for the text WebKit actually laid out |
+| **The window and the document follow the desktop from light to dark and back** | `the_installed_flatpak_follows_the_desktop_from_light_to_dark_and_back` |
+| **A relative name typed in a folder, and a path with spaces in it, both open** | `the_installed_flatpak_opens_the_relative_name_typed_in_the_readers_folder`, `the_installed_flatpak_opens_a_path_with_spaces_in_it` |
+
+Three of those are worth a sentence each, because what makes them work is
+something Flathub's reviewer may reasonably want to hear stated:
+
+- **Fonts.** flatpak binds the host's font directories into the sandbox by
+  itself — `/run/host/fonts` and `/run/host/user-fonts`, remapped by
+  `/run/host/font-dirs.xml`. axiomd asks for no `--filesystem` for fonts and
+  bundles none. The probe plants a face that exists only on the host side of
+  that boundary, under a family name no runtime carries, and then asks the
+  package's own `fc-match` and the packaged WebKit's own text layout about it.
+- **Style.** libadwaita is the style source of truth and axiomd never overrides
+  it (`ux_decisions.md`; the reader's `theme` preference stays at *System*
+  unless they say otherwise). Inside a sandbox the desktop's colour scheme
+  arrives through `org.freedesktop.portal.Settings`, which needs no permission
+  beyond the portal access every flatpak has. The probe puts a real settings
+  portal on the launch's own session, flips it, and asserts both the page colour
+  WebKit resolves `prefers-color-scheme` to and how bright the whole window is.
+- **The command line.** `flatpak run` carries the reader's working directory
+  into the sandbox, and `--filesystem=host:ro` is what makes the folder they
+  are standing in readable — so `flatpak run io.github.etf.axiomd notes.md`
+  opens *that* `notes.md`. Nothing is granted to the launch for the occasion.
+
+### From a terminal
+
+The exported command is the application id:
+
+```bash
+flatpak run io.github.etf.axiomd notes.md
+```
+
+Readers who use it often will want the short form, which is one line in their
+shell's configuration:
+
+```bash
+alias axiomd='flatpak run io.github.etf.axiomd'
+```
+
+That is a note for the reader, not something axiomd installs. This project ships
+no wrapper script and does not rename the exported command: a wrapper on `PATH`
+is one more thing to keep in step with the package, and Flathub's own convention
+is that a flatpak is started by its id.
+
 ## The `host:ro` rationale
 
 Flathub's linter reports `finish-args-host-ro-filesystem-access` on this

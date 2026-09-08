@@ -249,7 +249,8 @@ impl Environment {
         pin_setting(
             &config,
             DESKTOP_GROUP,
-            &format!("enable-animations={animations}"),
+            "enable-animations",
+            &animations.to_string(),
         );
 
         // The same three knobs again for the text WebKit lays out, which asks
@@ -541,30 +542,54 @@ pub(crate) const DESKTOP_GROUP: &str = "org/gnome/desktop/interface";
 /// and reports a change to it while the application is running).
 pub(crate) const A11Y_GROUP: &str = "org/gnome/desktop/a11y/interface";
 
-/// Writes `settings` as the whole of GSettings group `group` in the store under
-/// `config`, keeping every other group already in it.
+/// Says `key` is `value` in GSettings group `group`, in the store under `config`,
+/// keeping everything else already in it.
 ///
 /// The one place a desktop setting is said, whether it is said before a launch or
 /// while one is reading: GLib's keyfile backend is a file, and a test standing in for
 /// the reader's desktop writes to it the way the desktop would.
-pub(crate) fn pin_setting(config: &Path, group: &str, settings: &str) {
+///
+/// One key at a time rather than a whole group, because a group holds settings that
+/// different parts of this harness say: the colour scheme a test flips is in the same
+/// group as the animation setting every launch pins, and a writer that replaced the
+/// group would silently take away whichever was said first.
+pub(crate) fn pin_setting(config: &Path, group: &str, key: &str, value: &str) {
     let keyfile = config.join("glib-2.0/settings/keyfile");
     if let Some(parent) = keyfile.parent() {
         make_private_dir(parent);
     }
-    let existing = std::fs::read_to_string(&keyfile).unwrap_or_default();
-    let mut kept = String::new();
-    let mut inside = false;
-    for line in existing.lines() {
-        if line.starts_with('[') {
-            inside = line.trim() == format!("[{group}]");
+    let heading = format!("[{group}]");
+    let said = format!("{key}={value}");
+
+    let mut lines: Vec<String> = std::fs::read_to_string(&keyfile)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let group_at = lines.iter().position(|line| line.trim() == heading);
+    match group_at {
+        None => {
+            lines.push(heading);
+            lines.push(said);
         }
-        if !inside {
-            kept.push_str(line);
-            kept.push('\n');
+        Some(at) => {
+            // Where this group ends: the next heading, or the end of the file.
+            let ends = lines[at + 1..]
+                .iter()
+                .position(|line| line.trim_start().starts_with('['))
+                .map_or(lines.len(), |offset| at + 1 + offset);
+            match lines[at + 1..ends].iter().position(|line| {
+                line.split('=')
+                    .next()
+                    .is_some_and(|name| name.trim() == key)
+            }) {
+                Some(offset) => lines[at + 1 + offset] = said,
+                None => lines.insert(ends, said),
+            }
         }
     }
-    std::fs::write(&keyfile, format!("{kept}[{group}]\n{settings}\n"))
+    lines.retain(|line| !line.trim().is_empty());
+    std::fs::write(&keyfile, format!("{}\n", lines.join("\n")))
         .unwrap_or_else(|error| panic!("write {keyfile:?}: {error}"));
 }
 
