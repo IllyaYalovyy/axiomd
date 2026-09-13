@@ -85,12 +85,19 @@ fn a_narrow_window_keeps_its_title_whole_and_offers_the_rest_from_the_menu() {
         );
 
         // Nothing the reader could press has gone away: what left the strip is in the
-        // menu, and the menu still shows how big the document is.
+        // menu, and the menu still shows how big the document is. It comes straight
+        // under the one row that is above everything at every width, Support axiomd
+        // (owner ruling 2026-09-13, issue #58).
         let menu = app.menu();
         assert_eq!(
-            menu.offers().into_iter().take(2).collect::<Vec<_>>(),
-            [("Back", "win.back"), ("Forward", "win.forward")],
-            "at {width}px the history the header gave up is not at the top of the menu",
+            menu.offers().into_iter().take(3).collect::<Vec<_>>(),
+            [
+                ("Support axiomd", "app.support"),
+                ("Back", "win.back"),
+                ("Forward", "win.forward"),
+            ],
+            "at {width}px the menu does not open on Support axiomd with the history the \
+             header gave up beneath it",
         );
         assert!(
             menu.offers().contains(&("Open…", "app.open")),

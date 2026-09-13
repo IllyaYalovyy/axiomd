@@ -210,12 +210,15 @@ const SECTIONS: &[(&str, &[Shortcut])] = &[
 /// menu and the actions behind it cannot drift apart.
 pub(crate) const KEYS: &str = "app.shortcuts";
 pub(crate) const ABOUT: &str = "app.about";
+/// The item the primary menu starts with: where a reader who wants to support the work
+/// goes (issue #58). On no key, and so in no row of [`SECTIONS`].
+pub(crate) const SUPPORT: &str = "app.support";
 
 /// What the About dialog says about axiomd, and what the package installs beside it.
 const METAINFO: &str = include_str!("../../../data/io.github.etf.axiomd.metainfo.xml");
 
-/// Installs every keyboard shortcut, and the two dialogs that explain the application
-/// to the reader.
+/// Installs every keyboard shortcut, the two dialogs that explain the application to
+/// the reader, and the way to the page where they can support it.
 pub(crate) fn arm(app: &adw::Application) {
     for shortcut in SECTIONS.iter().flat_map(|(_, shortcuts)| *shortcuts) {
         app.set_accels_for_action(shortcut.action, shortcut.keys);
@@ -225,6 +228,16 @@ pub(crate) fn arm(app: &adw::Application) {
     });
     present(app, ABOUT, |window| {
         about().present(Some(window));
+    });
+    // Handed to the desktop's browser the way every external link is (`window.rs`,
+    // `Follow::External`), and only now: nothing is opened until the reader asks.
+    present(app, SUPPORT, |window| {
+        let launcher = gtk::UriLauncher::new(supported_at());
+        launcher.launch(Some(window), gio::Cancellable::NONE, |opened| {
+            if let Err(error) = opened {
+                eprintln!("axiomd: {} could not be opened: {error}", supported_at());
+            }
+        });
     });
 }
 
@@ -340,9 +353,9 @@ pub(crate) fn showing(window: &adw::ApplicationWindow, of: &str) -> Option<Strin
     }
 }
 
-/// Adds an application action that puts a dialog in front of the window the reader is
-/// in. Nothing happens when there is no window, which is the only state where there is
-/// nowhere to put one.
+/// Adds an application action that raises something from the window the reader is in:
+/// a dialog in front of it, or the browser on its behalf. Nothing happens when there is
+/// no window, which is the only state where there is nothing to raise it from.
 fn present(app: &adw::Application, name: &str, raise: impl Fn(&adw::ApplicationWindow) + 'static) {
     let action = gio::SimpleAction::new(
         name.strip_prefix("app.").expect("an application action"),
@@ -397,10 +410,17 @@ fn about() -> adw::AboutDialog {
     dialog.set_issue_url(link("bugtracker"));
     // Where a reader who wants to support the work goes (issue #55), as a link row of
     // libadwaita's own among the dialog's others — its glyph, its styling, its way of
-    // opening a URI, and nowhere else in the application: a reader who never opens
-    // About is never asked for anything.
-    dialog.add_link(&gettext("Support axiomd"), link("donation"));
+    // opening a URI. One of two doors to it: the other is the primary menu's first row
+    // (owner ruling 2026-09-13, issue #58). Neither is anything but a row the reader
+    // chooses to open; nothing asks.
+    dialog.add_link(&gettext("Support axiomd"), supported_at());
     dialog
+}
+
+/// The page where a reader can support the work: the metainfo's donation url, the one
+/// address both the About link and the menu's Support axiomd open.
+fn supported_at() -> &'static str {
+    link("donation")
 }
 
 /// The licence GTK names, from the one AppStream names.
@@ -613,6 +633,15 @@ mod tests {
         // centre draws its Donate button from (issue #55).
         assert_eq!(link("donation"), "https://github.com/sponsors/IllyaYalovyy");
         assert_eq!(license(text("project_license")), gtk::License::Gpl30);
+    }
+
+    /// Both doors to supporting the work — the primary menu's first row and the About
+    /// dialog's link row — open the one address the metainfo files as its donation url
+    /// (issues #55 and #58), so the menu item cannot quietly point somewhere else.
+    #[test]
+    fn support_opens_the_metainfo_s_donation_address() {
+        assert_eq!(supported_at(), link("donation"));
+        assert_eq!(supported_at(), "https://github.com/sponsors/IllyaYalovyy");
     }
 
     /// The About dialog shows the version of the binary the reader is running, and the

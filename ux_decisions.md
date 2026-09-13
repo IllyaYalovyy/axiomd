@@ -157,6 +157,24 @@ followed; the desktop entry, metainfo, and About dialog all use "axiomd".
 Recorded 2026-08-03 after UX review flagged it — this is a decision, not
 an oversight.
 
+## Where does a reader find how to support axiomd?
+
+In two places, both opening the metainfo's `<url type="donation">` and
+nothing else. Issue #55 put a "Support axiomd" link row in the About
+dialog only, under a "nowhere else in the application" constraint. The
+owner lifted that for the primary menu (owner ruling 2026-09-13, issue
+#58): "The 'donation' option is hidden so DEEP inside the menu tree that
+nobody would ever see it. It has to be at the top of the home menu." So
+"Support axiomd" is the first row of the primary menu, in a section of
+its own, above everything, the narrow-window history included, at every
+width. It is a plain menu row: no icon, no styling. The About link row
+stays as it was.
+
+Still no nagging: no banners, startup prompts, notification dots, toasts,
+first-run screens, preferences rows, header buttons or shortcuts. Nothing
+is fetched until the reader activates the row, and then the address goes
+to the system browser.
+
 ## Do controls reflect state?
 
 A control that toggles state shows where it takes you: the read/edit
