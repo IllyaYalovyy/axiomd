@@ -68,6 +68,10 @@ fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
     assert_eq!(
         menu.offers(),
         [
+            // The first row a reader sees, above everything, in a section of its own
+            // (owner ruling 2026-09-13, issue #58): where a reader who wants to support
+            // the work goes. Everything after it is the menu it was put on top of.
+            ("Support axiomd", "app.support"),
             ("New Document", "app.new"),
             ("Open…", "app.open"),
             // The way back to what the reader has been reading, directly under the two
@@ -93,6 +97,31 @@ fn the_primary_menu_ends_with_the_shortcuts_and_about_and_offers_no_way_out() {
             ("About axiomd", "app.about"),
         ],
     );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The menu's first row does what it says (issue #58): the sponsors page reaches the
+/// desktop's browser — read on the far side, off what the browser was started with —
+/// and nothing is put in front of the reader on the way. Nothing reached the desktop
+/// before they asked, either: the address is opened on activation and not before.
+#[test]
+fn support_axiomd_opens_the_sponsors_page_in_the_browser_and_asks_nothing() {
+    let fixture = Fixture::new("chrome-support");
+    let app = axiomd_e2e::launch(&fixture.write("notes.md", NOTES));
+
+    assert!(
+        app.handed_over().is_empty(),
+        "the desktop was handed something before the reader asked for anything: {:?}",
+        app.handed_over(),
+    );
+    app.activate("app.support");
+    app.wait_for_handed_over(1);
+    assert_eq!(
+        app.handed_over(),
+        ["https://github.com/sponsors/IllyaYalovyy"],
+    );
+    assert_eq!(app.visible_dialog(), "");
 
     assert!(app.close().is_empty(), "the launch left processes behind");
 }

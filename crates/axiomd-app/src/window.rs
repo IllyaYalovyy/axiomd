@@ -2728,7 +2728,19 @@ fn primary_menu_button(zoom: &Rc<Zoom>, narrow: &adw::Breakpoint) -> gtk::MenuBu
     // scratch — which is what leaves the zoom row the popover was given untouched.
     let history = gio::Menu::new();
 
+    // Where a reader who wants to support the work goes, first and in a section of its
+    // own (owner ruling 2026-09-13, issue #58, `ux_decisions.md`): in About alone it was
+    // three steps deep and nobody found it. A plain row like every other — no icon, no
+    // styling — above even the history a narrow window puts here. Its mnemonic is `U`:
+    // `S` is Save's, and no other row in this menu is on `U`.
+    let support = gio::Menu::new();
+    support.append(
+        Some(&gettext("S_upport axiomd")),
+        Some(crate::chrome::SUPPORT),
+    );
+
     let menu = gio::Menu::new();
+    menu.append_section(None, &support);
     menu.append_section(None, &history);
     menu.append_section(None, &documents);
     menu.append_section(None, &scale);

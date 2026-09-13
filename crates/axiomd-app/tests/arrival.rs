@@ -247,6 +247,10 @@ fn a_document_appears_once_and_everything_after_it_is_effect_free() {
     );
 
     let loads = app.navigation_count();
+    // An animation has no start time until the frame it starts on is committed (Web
+    // Animations, "play pending"): read one before then and the baseline is `null`,
+    // which a load that is already a frame old can never match.
+    app.wait_until("document.querySelector('.markdown').getAnimations()[0]?.startTime != null");
     let started = appearance_started(&app);
 
     // The file changes under the reader.
