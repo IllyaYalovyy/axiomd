@@ -81,6 +81,38 @@ place while editing) is explicitly rejected, not merely deferred.
 Highlighting may never noticeably degrade typing latency; the perf
 budgets police this.
 
+## What does the editor offer for a misspelled word?
+
+Issue #59 (2026-09-13): libspelling's own context-menu section, **as
+shipped** — no menu of axiomd's. Right-click, Shift+F10 or the Menu key
+on a misspelled word in edit mode shows, below GTK's Cut/Copy/Paste
+section: up to five corrections (libspelling's `MAX_CORRECTIONS`), Add to
+Dictionary, Ignore, Check Spelling, and a Languages submenu. The rows are
+always about the word the menu opened on: a right click first moves the
+caret to where it landed (unless inside a selection), and both paths ask
+libspelling to update its corrections before the menu is built. On a
+correctly spelled word, with spell checking off, and over a document too
+long to check (`LARGEST_CHECKED_DOCUMENT`), there are no corrections and
+no Add or Ignore. Reading mode has no source view, so no such menu.
+
+- **A correction** is one edit: one undo step, the document unsaved, the
+  page re-rendered like typing. libspelling does not act on a selection.
+- **Add to Dictionary** is permanent, in enchant's personal dictionary:
+  `$XDG_CONFIG_HOME/enchant/<language>.dic` for a host install, and the
+  sandbox's own `~/.var/app/io.github.etf.axiomd/config/enchant` for the
+  flatpak — never the host's, consistent with `host:ro` (#23).
+- **Ignore** lasts until axiomd quits (enchant's session list). It is
+  process-wide, not per window, since windows share enchant's dictionary.
+- **Languages** changes the checker of that window only (each window has
+  its own checker) and is not persisted: a relaunch goes back to the
+  locale's language. Persisting it is a separate owner decision.
+- **Check Spelling** in that menu is libspelling's own toggle, part of
+  the section as shipped. It does not change the Check Spelling
+  preference (#20), and axiomd applies the preference again on the next
+  edit, so the underlines it removes come back at the next keystroke
+  (observed 2026-09-13). How the row should relate to the preference is
+  an **open owner decision**, not settled here.
+
 ## Where does search live?
 
 Owner ruling (2026-08-03): the search bar belongs to the document pane —

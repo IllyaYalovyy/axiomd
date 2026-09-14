@@ -292,6 +292,28 @@ impl Menu {
     }
 }
 
+/// The source view's context menu as the reader meets it (issue #59).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextMenu {
+    /// Whether the menu is open in front of the reader.
+    pub open: bool,
+    /// Every row in it the reader can press, in order, as the words on it and the
+    /// detailed action pressing it fires — `("sentence", "spelling.correct::sentence")`.
+    /// A row GTK hides or greys is not among them, and nor is anything on a submenu
+    /// page that is not showing; a row that opens a submenu has an empty action.
+    pub items: Vec<(String, String)>,
+}
+
+impl ContextMenu {
+    /// What the menu offers, as pairs a test can spell out.
+    pub fn offers(&self) -> Vec<(&str, &str)> {
+        self.items
+            .iter()
+            .map(|(label, action)| (label.as_str(), action.as_str()))
+            .collect()
+    }
+}
+
 /// What the About dialog says about the build the reader is running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct About {
@@ -560,6 +582,26 @@ impl Preferences {
     /// store is broken gets.
     pub fn reading_positions(&self) -> PathBuf {
         self.scratch.path().join("state/axiomd/reading-positions")
+    }
+
+    /// The folder a launch of the binary over this store keeps the reader's personal
+    /// spelling dictionary in: enchant's `$XDG_CONFIG_HOME/enchant`, which for a launch
+    /// here is this store and never the developer's own configuration (issue #59).
+    ///
+    /// Not a preference either, and here for the same reason as the reading positions:
+    /// a word added to it is exactly the kind of thing that has to still be there when
+    /// the reader comes back.
+    pub fn personal_dictionary(&self) -> PathBuf {
+        self.scratch.path().join("enchant")
+    }
+
+    /// The same for the installed flatpak over this store: enchant's
+    /// `$XDG_CONFIG_HOME/enchant` inside the sandbox, which flatpak makes the
+    /// application's own `~/.var/app/<id>/config` under the home this store's world
+    /// gives it — the sandbox's to write, and nothing on the host (issue #59).
+    pub fn personal_dictionary_in_the_sandbox(&self) -> PathBuf {
+        self.the_readers_home()
+            .join(format!(".var/app/{APP_ID}/config/enchant"))
     }
 }
 
@@ -1611,16 +1653,26 @@ impl App {
         let shown = self.property("menu");
         Menu {
             open: shown.lines().any(|line| line == "open true"),
-            items: shown
-                .lines()
-                .filter_map(|line| line.strip_prefix("item\t"))
-                .map(|item| match item.split_once('\t') {
-                    Some((label, action)) => (label.to_owned(), action.to_owned()),
-                    None => (item.to_owned(), String::new()),
-                })
-                .collect(),
+            items: items_of(&shown),
             zoom: line_of(&shown, "zoom"),
         }
+    }
+
+    /// The addressed window's source-view context menu: whether it is open, and the
+    /// rows in it the reader can press.
+    pub fn context_menu(&self) -> ContextMenu {
+        let shown = self.property("context-menu");
+        ContextMenu {
+            open: shown.lines().any(|line| line == "open true"),
+            items: items_of(&shown),
+        }
+    }
+
+    /// Clicks into the first occurrence of `word` in the addressed window's source, as
+    /// the reader does with the pointer — the caret lands inside it and nothing else
+    /// happens. A word the source does not have is a failure.
+    pub fn caret_on(&self, word: &str) {
+        self.command("caret-on", word);
     }
 
     /// The header bar of the addressed window as the reader meets it: the title, where
@@ -2396,6 +2448,19 @@ fn line_of(answer: &str, named: &str) -> String {
         .find_map(|line| line.strip_prefix(&format!("{named} ")))
         .unwrap_or_default()
         .to_owned()
+}
+
+/// Every `item<TAB>label<TAB>action` line of a menu's answer, as the words on the item
+/// and the detailed action it fires — empty for an item that fires none.
+fn items_of(answer: &str) -> Vec<(String, String)> {
+    answer
+        .lines()
+        .filter_map(|line| line.strip_prefix("item\t"))
+        .map(|item| match item.split_once('\t') {
+            Some((label, action)) => (label.to_owned(), action.to_owned()),
+            None => (item.to_owned(), String::new()),
+        })
+        .collect()
 }
 
 /// Which axiomd a launch drives.

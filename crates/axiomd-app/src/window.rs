@@ -1021,40 +1021,47 @@ impl DocumentWindow {
     /// and GTK 4 offers no way to synthesise one, so this activates the very shortcut
     /// the key press would — the same shape as the window's scroll and pinch, which
     /// call what the gesture calls.
+    ///
+    /// A key the window has nothing on goes on to the widget with the keyboard focus,
+    /// the way GTK carries it: the capture-phase shortcuts of the widgets it is inside
+    /// from the outside in, then the rest of theirs from the inside out — which is where
+    /// a widget class's key bindings live, Shift+F10 reaching GtkTextView's
+    /// `menu.popup` (issue #59). There the first shortcut that consumes the key ends
+    /// it, as in GTK (`gtk_shortcut_controller_run_controllers`). A key a widget takes
+    /// in a key controller of its own rather than a shortcut — Escape closing a
+    /// popover — is not reachable this way.
+    ///
+    /// Window shortcuts come first because the application's own accelerators are
+    /// installed on the window in the capture phase (`gtk_window_set_application`,
+    /// GTK 4.20.4), ahead of anything the focused widget holds.
     pub(crate) fn press_key(&self, accelerator: &str) -> Option<bool> {
-        let controllers = self.window.observe_controllers();
+        let window: &gtk::Widget = self.window.upcast_ref();
+        if let Some(fired) = fire_shortcuts(window, accelerator, |_| true, false) {
+            return Some(fired);
+        }
+        // The focused widget and every widget it is inside, up to but not including the
+        // window already asked: GTK's capture phase goes down that chain, and the rest
+        // of the propagation comes back up it (`gtk_propagate_event`).
+        let mut chain = Vec::new();
+        let mut at = gtk::prelude::RootExt::focus(&self.window);
+        while let Some(widget) = at.filter(|widget| widget != window) {
+            at = widget.parent();
+            chain.push(widget);
+        }
+        let capturing = |phase| phase == gtk::PropagationPhase::Capture;
+        let captures = chain.iter().rev().map(|widget| (widget, true));
+        let bubbles = chain.iter().map(|widget| (widget, false));
         let mut fired = None;
-        for at in 0..controllers.n_items() {
-            let Some(shortcuts) = controllers
-                .item(at)
-                .and_downcast::<gtk::ShortcutController>()
-            else {
-                continue;
-            };
-            for index in 0..shortcuts.n_items() {
-                let Some(shortcut) = shortcuts.item(index).and_downcast::<gtk::Shortcut>() else {
-                    continue;
-                };
-                // One shortcut can be on several keys, and GTK writes those as one
-                // trigger with the alternatives separated by a bar.
-                let on_this_key = shortcut.trigger().is_some_and(|trigger| {
-                    trigger.to_str().split('|').any(|key| key == accelerator)
-                });
-                if !on_this_key {
-                    continue;
-                }
-                let Some(action) = shortcut.action() else {
-                    continue;
-                };
-                // A shortcut whose action is disabled answers false and does not
-                // consume the key, which is the difference between a key that does
-                // nothing and a key that is not bound at all.
-                let ran = action.activate(
-                    gtk::ShortcutActionFlags::empty(),
-                    self.window.upcast_ref::<gtk::Widget>(),
-                    None,
-                );
-                fired = Some(fired.unwrap_or(false) || ran);
+        for (widget, capture) in captures.chain(bubbles) {
+            match fire_shortcuts(
+                widget,
+                accelerator,
+                |phase| capturing(phase) == capture,
+                true,
+            ) {
+                Some(true) => return Some(true),
+                Some(false) => fired = Some(false),
+                None => {}
             }
         }
         fired
@@ -1103,10 +1110,23 @@ impl DocumentWindow {
         if let Some(text) = of.strip_prefix("drawn ") {
             return Some(self.editor.styling(text));
         }
-        if of == "misspelled" {
-            return Some(self.editor.misspelled().join("\n"));
+        match of {
+            "misspelled" => Some(self.editor.misspelled().join("\n")),
+            "context-menu" => Some(self.editor.context_menu()),
+            _ => None,
         }
-        None
+    }
+
+    /// Clicks into the first occurrence of `word` in the source. Answers whether there
+    /// is one.
+    pub(crate) fn place_caret_on(&self, word: &str) -> bool {
+        self.editor.place_caret_on(word)
+    }
+
+    /// Presses the row labelled `label` in the source view's open context menu.
+    /// Answers whether there is one to press.
+    pub(crate) fn press_in_context_menu(&self, label: &str) -> bool {
+        self.editor.press_in_context_menu(label)
     }
 
     /// Types `text` into the search bar, exactly as pressing the keys does.
@@ -2592,6 +2612,54 @@ fn icon_drawn(widget: &gtk::Widget) -> Option<String> {
     None
 }
 
+/// Activates the shortcuts on `accelerator` among `on`'s shortcut controllers whose
+/// propagation phase `in_phase` accepts, acting on `on`. Answers whether any ran, or
+/// `None` when none of them is on that key; with `until_consumed`, the first one that
+/// consumes the key is the last one activated.
+fn fire_shortcuts(
+    on: &gtk::Widget,
+    accelerator: &str,
+    in_phase: impl Fn(gtk::PropagationPhase) -> bool,
+    until_consumed: bool,
+) -> Option<bool> {
+    let controllers = on.observe_controllers();
+    let mut fired = None;
+    for at in 0..controllers.n_items() {
+        let Some(shortcuts) = controllers
+            .item(at)
+            .and_downcast::<gtk::ShortcutController>()
+            .filter(|shortcuts| in_phase(shortcuts.propagation_phase()))
+        else {
+            continue;
+        };
+        for index in 0..shortcuts.n_items() {
+            let Some(shortcut) = shortcuts.item(index).and_downcast::<gtk::Shortcut>() else {
+                continue;
+            };
+            // One shortcut can be on several keys, and GTK writes those as one trigger
+            // with the alternatives separated by a bar.
+            let on_this_key = shortcut
+                .trigger()
+                .is_some_and(|trigger| trigger.to_str().split('|').any(|key| key == accelerator));
+            if !on_this_key {
+                continue;
+            }
+            let Some(action) = shortcut.action() else {
+                continue;
+            };
+            // A shortcut whose action is disabled answers false and does not consume the
+            // key, which is the difference between a key that does nothing and a key
+            // that is not bound at all.
+            let ran = action.activate(gtk::ShortcutActionFlags::empty(), on, None);
+            fired = Some(fired.unwrap_or(false) || ran);
+            if ran && until_consumed {
+                return fired;
+            }
+        }
+    }
+    fired
+}
+
 /// Everything `model` offers, appended to `said` as `item<TAB>label<TAB>action`.
 ///
 /// Sections are flattened, because a reader reads one menu rather than the boxes it is
@@ -2603,9 +2671,23 @@ fn icon_drawn(widget: &gtk::Widget) -> Option<String> {
 /// what tells a label apart from the identifier it carries: `win.engine::comrak` under
 /// the word "Comrak".
 fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
+    said.extend(
+        menu_items(model)
+            .iter()
+            .map(|(label, action)| format!("item\t{}\t{action}", as_it_is_drawn(label))),
+    );
+}
+
+/// Everything `model` offers, in the order [`offered`] describes, as each item's label
+/// as the model spells it — mnemonic marks and all — and the detailed action it fires.
+///
+/// Shared with the source view's context menu (`editor.rs`), whose rows are GTK's own
+/// and say what they are called but not what they fire.
+pub(crate) fn menu_items(model: &gio::MenuModel) -> Vec<(String, String)> {
+    let mut items = Vec::new();
     for index in 0..model.n_items() {
         if let Some(section) = model.item_link(index, gio::MENU_LINK_SECTION) {
-            offered(&section, said);
+            items.extend(menu_items(&section));
             continue;
         }
         let submenu = model.item_link(index, gio::MENU_LINK_SUBMENU);
@@ -2623,11 +2705,12 @@ fn offered(model: &gio::MenuModel, said: &mut Vec<String>) {
                 gio::Action::print_detailed_name(&action, target.as_ref()).to_string()
             })
             .unwrap_or_default();
-        said.push(format!("item\t{}\t{action}", as_it_is_drawn(&label)));
+        items.push((label, action));
         if let Some(submenu) = submenu {
-            offered(&submenu, said);
+            items.extend(menu_items(&submenu));
         }
     }
+    items
 }
 
 /// The two ways to a document, which is what the documents section of the primary menu
@@ -2652,7 +2735,7 @@ fn documents_offered(into: &gio::Menu) {
 /// `_New Document` draws `New Document` with the N underlined). Taking every underscore
 /// out instead would report a document called `release_notes.md` as `releasenotes.md` —
 /// a name nobody has, agreed on by the test and the thing it was testing.
-fn as_it_is_drawn(label: &str) -> String {
+pub(crate) fn as_it_is_drawn(label: &str) -> String {
     let mut drawn = String::with_capacity(label.len());
     let mut rest = label.chars();
     while let Some(character) = rest.next() {

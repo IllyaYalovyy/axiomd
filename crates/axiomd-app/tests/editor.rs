@@ -13,7 +13,9 @@
 //! preview or inline rendering here — the ruling on #21 is that the editor shows
 //! markup, plainly.
 
-use axiomd_e2e::{App, Fixture, Preferences};
+use std::path::Path;
+
+use axiomd_e2e::{App, ContextMenu, Fixture, Preferences};
 
 /// The document every test opens: one heading, one emphasis, one code span, one
 /// paragraph of plain prose, and one word nobody can spell.
@@ -350,5 +352,327 @@ fn a_match_found_in_a_heading_is_marked_over_its_highlighting() {
         app.source_style(HEADING) == heading
     });
 
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// What the word nobody can spell should have been.
+const CORRECTED: &str = "sentence";
+
+/// A word in the fixture the checker has no quarrel with.
+const SPELT: &str = "prose";
+
+/// The keys a reader opens the source's context menu with: GtkTextView's own
+/// `menu.popup` bindings.
+const CONTEXT_MENU_KEYS: [&str; 2] = ["<Shift>F10", "Menu"];
+
+/// The rows of a context menu that are libspelling's opinion about the word under the
+/// caret: its corrections, Add to Dictionary and Ignore.
+fn spelling_rows(menu: &ContextMenu) -> Vec<(&str, &str)> {
+    menu.offers()
+        .into_iter()
+        .filter(|(_, action)| {
+            action.starts_with("spelling.correct")
+                || ["spelling.add", "spelling.ignore"].contains(action)
+        })
+        .collect()
+}
+
+/// Opens the source's context menu from the keyboard with the caret inside `word`,
+/// and answers what it offers.
+fn menu_on(app: &App, word: &str, key: &str) -> ContextMenu {
+    app.caret_on(word);
+    assert!(
+        app.press_key(key),
+        "{key} did not open the source's context menu"
+    );
+    let menu = app.context_menu();
+    assert!(menu.open, "{key} left the context menu closed: {menu:?}");
+    menu
+}
+
+/// Issue #59: the underline was only half of it. The menu the reader opens on a
+/// misspelt word offers what it could be instead, and the two things they can do about
+/// a word that is spelt the way they meant.
+#[test]
+fn the_context_menu_on_a_misspelt_word_offers_its_corrections() {
+    let preferences = Preferences::new("editor-suggestions");
+    let (_fixture, app) = editing("editor-suggestions", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    for key in CONTEXT_MENU_KEYS {
+        let menu = menu_on(&app, MISSPELT, key);
+        let offered = menu.offers();
+        assert!(
+            offered.contains(&(CORRECTED, "spelling.correct::sentence")),
+            "{key} on {MISSPELT:?} did not offer {CORRECTED:?}: {offered:?}",
+        );
+        let corrections = offered
+            .iter()
+            .filter(|(_, action)| action.starts_with("spelling.correct::"))
+            .count();
+        assert!(
+            (1..=5).contains(&corrections),
+            "libspelling offers at most five corrections, and this offered {corrections}: \
+             {offered:?}",
+        );
+        for wanted in [
+            ("Add to Dictionary", "spelling.add"),
+            ("Ignore", "spelling.ignore"),
+            ("Languages", ""),
+        ] {
+            assert!(
+                offered.contains(&wanted),
+                "{key} on {MISSPELT:?} did not offer {wanted:?}: {offered:?}",
+            );
+        }
+        // Closed by a row that changes nothing but the selection, so the next key is
+        // opening the menu rather than finding it already open.
+        app.press("Select All");
+        assert!(
+            !app.context_menu().open,
+            "pressing a row left the menu open"
+        );
+    }
+
+    assert_eq!(app.source(), NOTES, "opening the menu changed the source");
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Choosing a correction is an edit like any other: the word is replaced, the underline
+/// goes with it, the document is unsaved, and one undo puts back exactly what was there.
+#[test]
+fn choosing_a_correction_replaces_the_word_as_one_step_of_undo() {
+    let preferences = Preferences::new("editor-correct");
+    let (_fixture, app) = editing("editor-correct", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+    assert!(
+        !app.is_modified(),
+        "the document was unsaved before anything was chosen"
+    );
+
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press(CORRECTED);
+
+    let corrected = NOTES.replace(MISSPELT, CORRECTED);
+    app.wait_until_source(&corrected);
+    assert!(
+        !app.context_menu().open,
+        "choosing a correction left the menu open"
+    );
+    app.wait_for("the underline to go with the misspelling", || {
+        app.misspelled().is_empty()
+    });
+    assert!(
+        app.is_modified(),
+        "a corrected document does not say it is unsaved"
+    );
+
+    assert!(app.press_key("<Control>z"), "Ctrl+Z did nothing");
+    app.wait_until_source(NOTES);
+    app.wait_for("the underline to come back with the misspelling", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The menu is about the word it opens on, and never the last word the caret was on:
+/// libspelling learns which word that is a tenth of a second after the caret moves, and
+/// a reader opens the menu in the same moment as they click.
+#[test]
+fn the_context_menu_never_offers_corrections_for_a_word_the_caret_has_left() {
+    let preferences = Preferences::new("editor-suggestions-fresh");
+    let (_fixture, app) = editing("editor-suggestions-fresh", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    let misspelt = menu_on(&app, MISSPELT, "<Shift>F10");
+    assert!(
+        !spelling_rows(&misspelt).is_empty(),
+        "nothing was offered for {MISSPELT:?}, so there is nothing to go stale: {misspelt:?}",
+    );
+    app.press("Select All");
+
+    // Straight on to a word spelt right, with nothing in between to let libspelling
+    // catch up.
+    let spelt = menu_on(&app, SPELT, "<Shift>F10");
+    assert_eq!(
+        spelling_rows(&spelt),
+        Vec::<(&str, &str)>::new(),
+        "the menu on {SPELT:?} offered what it offered for {MISSPELT:?}",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// Every file under `folder`, with what it holds, so a dictionary can be compared before
+/// and after — empty when there is no such folder.
+fn contents_of(folder: &Path) -> Vec<(std::path::PathBuf, String)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let held =
+                String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()).into_owned();
+            (path, held)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The developer's own enchant dictionaries — the ones a test must never write a word
+/// into.
+fn the_developers_dictionaries() -> Vec<(std::path::PathBuf, String)> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".config")))
+        .expect("a home to find the developer's configuration in");
+    contents_of(&config.join("enchant"))
+}
+
+/// Add to Dictionary is the reader's for good: the word stops being marked, and it is
+/// still known the next time they open axiomd — in their own personal dictionary, which
+/// for a launch under test is the store's and never the developer's.
+#[test]
+fn a_word_added_to_the_dictionary_is_still_known_after_a_relaunch() {
+    let developers = the_developers_dictionaries();
+    let preferences = Preferences::new("editor-spelling-add");
+    let (fixture, app) = editing("editor-spelling-add", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press("Add to Dictionary");
+    app.wait_for("the added word to stop being marked", || {
+        app.misspelled().is_empty()
+    });
+    assert_eq!(
+        app.source(),
+        NOTES,
+        "adding a word to the dictionary changed the source"
+    );
+    assert!(app.close().is_empty(), "the launch left processes behind");
+
+    let kept = contents_of(&preferences.personal_dictionary());
+    assert!(
+        kept.iter()
+            .any(|(_, words)| words.lines().any(|word| word == MISSPELT)),
+        "{MISSPELT:?} is not in the personal dictionary under the launch's own \
+         configuration: {kept:?}",
+    );
+    assert_eq!(
+        the_developers_dictionaries(),
+        developers,
+        "adding a word under test wrote into the developer's own dictionary",
+    );
+
+    let again = axiomd_e2e::launch_with(&fixture.write("notes.md", NOTES), &preferences);
+    again.activate("win.mode");
+    again.wait_until_mode("edit");
+    // Asked of the menu rather than of the underline, because an underline that has
+    // not arrived yet looks exactly like one that never will: the menu is worked out
+    // from the dictionary the moment it opens.
+    let menu = menu_on(&again, MISSPELT, "<Shift>F10");
+    assert_eq!(
+        spelling_rows(&menu),
+        Vec::<(&str, &str)>::new(),
+        "a word added to the dictionary was a misspelling again after a relaunch",
+    );
+    assert_eq!(
+        again.misspelled(),
+        Vec::<String>::new(),
+        "a word was marked after a relaunch in a document whose one misspelling was \
+         added to the dictionary",
+    );
+
+    assert!(again.close().is_empty(), "the launch left processes behind");
+}
+
+/// Ignore is for now: the word stops being marked while axiomd runs, and nothing is
+/// written anywhere — enchant keeps an ignored word for the session
+/// (`enchant_dict_add_to_session`), so the next launch marks it again.
+#[test]
+fn an_ignored_word_is_ignored_until_axiomd_is_opened_again() {
+    let developers = the_developers_dictionaries();
+    let preferences = Preferences::new("editor-spelling-ignore");
+    let (fixture, app) = editing("editor-spelling-ignore", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press("Ignore");
+    app.wait_for("the ignored word to stop being marked", || {
+        app.misspelled().is_empty()
+    });
+    assert!(app.close().is_empty(), "the launch left processes behind");
+
+    let kept = contents_of(&preferences.personal_dictionary());
+    assert!(
+        !kept
+            .iter()
+            .any(|(_, words)| words.lines().any(|word| word == MISSPELT)),
+        "ignoring a word wrote it into the personal dictionary: {kept:?}",
+    );
+    assert_eq!(
+        the_developers_dictionaries(),
+        developers,
+        "ignoring a word under test wrote into the developer's own dictionary",
+    );
+
+    let again = axiomd_e2e::launch_with(&fixture.write("notes.md", NOTES), &preferences);
+    again.activate("win.mode");
+    again.wait_until_mode("edit");
+    again.wait_for(
+        "the ignored word to be marked again after a relaunch",
+        || again.misspelled() == vec![MISSPELT.to_owned()],
+    );
+    assert!(
+        spelling_rows(&menu_on(&again, MISSPELT, "<Shift>F10"))
+            .contains(&("Ignore", "spelling.ignore")),
+        "the menu on a word ignored in an earlier launch did not offer to ignore it",
+    );
+
+    assert!(again.close().is_empty(), "the launch left processes behind");
+}
+
+/// Nothing about spelling in the menu while nothing is being checked: with the reader's
+/// preference off, and over a document too long to check.
+#[test]
+fn the_context_menu_offers_no_corrections_while_spelling_is_not_checked() {
+    let preferences = Preferences::with("editor-suggestions-off", "spellcheck", "false");
+    let (_fixture, app) = editing("editor-suggestions-off", &preferences);
+    let menu = menu_on(&app, MISSPELT, "<Shift>F10");
+    assert_eq!(
+        spelling_rows(&menu),
+        Vec::<(&str, &str)>::new(),
+        "the menu offered corrections with spell checking switched off",
+    );
+    assert!(app.close().is_empty(), "the launch left processes behind");
+
+    let fixture = Fixture::new("editor-suggestions-long");
+    let enormous = fixture.write("enormous.md", &document_of(1_100_000));
+    let preferences = Preferences::new("editor-suggestions-long");
+    let app = axiomd_e2e::launch_with(&enormous, &preferences);
+    app.wait_until_source(&document_of(1_100_000));
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    let menu = menu_on(&app, MISSPELT, "<Shift>F10");
+    assert_eq!(
+        spelling_rows(&menu),
+        Vec::<(&str, &str)>::new(),
+        "the menu offered corrections in a document too long to check",
+    );
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
