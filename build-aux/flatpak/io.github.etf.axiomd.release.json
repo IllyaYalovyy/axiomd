@@ -58,7 +58,7 @@
                     "type": "git",
                     "url": "https://github.com/IllyaYalovyy/axiomd.git",
                     "tag": "v0.9.0",
-                    "commit": "TAG-COMMIT-SHA"
+                    "commit": "c3cf7b1a2a0ba368e536e36e45f09ce65092a8c4"
                 },
                 "cargo-sources.json"
             ]
