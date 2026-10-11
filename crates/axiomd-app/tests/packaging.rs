@@ -248,6 +248,73 @@ fn manifest_array(name: &str) -> Vec<String> {
         .collect()
 }
 
+/// The Fedora spec, as text — this repository's own file, read the way the flatpak
+/// manifest above is.
+fn spec() -> String {
+    let path = repository().join("build-aux/rpm/axiomd.spec");
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"))
+}
+
+/// What a spec tag says, `Version:` or `License:` or `URL:`, with the spec's own
+/// macros expanded. Empty when the tag is not there at all.
+fn spec_tag(name: &str) -> String {
+    spec()
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}:")))
+        .map(|said| expand(said.trim()))
+        .unwrap_or_default()
+}
+
+/// The address the metainfo publishes as the project's home, which is the spec's
+/// `%{url}` and the root of the tag it builds from.
+fn homepage() -> String {
+    between(&metainfo(), "<url type=\"homepage\">", "</url>")
+        .trim()
+        .to_owned()
+}
+
+/// A spec line with the handful of macros axiomd's spec uses put back — enough to
+/// compare what it says against the repository's other files, and no more.
+fn expand(line: &str) -> String {
+    line.replace("%{appid}", APP_ID)
+        .replace("%{name}", "axiomd")
+        .replace("%{version}", env!("CARGO_PKG_VERSION"))
+        .replace("%{url}", &homepage())
+        .replace("%{_bindir}", "bin")
+        .replace("%{_datadir}", "share")
+}
+
+/// Every path the spec's `%files` section claims, under the prefix and without its
+/// rpm attributes — `%license` and `%doc` entries are the package's own paperwork
+/// rather than part of an installed axiomd, so they are left out.
+fn packaged_paths() -> Vec<String> {
+    let spec = spec();
+    let files = between(&spec, "\n%files\n", "\n%changelog");
+    files
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("%{"))
+        .map(expand)
+        .collect()
+}
+
+/// Every destination `scripts/install.sh` writes under the prefix — read from the
+/// script's own `payload` array, which is its one answer to what an installed
+/// axiomd is.
+fn installed_destinations() -> Vec<String> {
+    let path = repository().join("scripts/install.sh");
+    let script =
+        std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+    let payload = between(&script, "payload=(\n", ")\n");
+    payload
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix('"'))
+        .filter_map(|line| line.split('|').nth(1))
+        .map(|destination| destination.replace("${app_id}", APP_ID))
+        .collect()
+}
+
 /// The AppStream metainfo, as text — read the way the manifest above is, and for the
 /// same reason: it is this project's own file and every value in it is a plain string,
 /// so an XML dependency the application does not otherwise need would buy nothing.
@@ -453,6 +520,87 @@ fn the_metainfo_is_valid_appstream() {
         "appstreamcli is not happy with the metainfo:\n{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+/// The package's name is a promise about what is inside it: a version bump that
+/// forgot the spec would hand a reader `axiomd-0.9.0` built from something else.
+#[test]
+fn the_rpm_spec_packages_the_version_this_binary_is() {
+    assert_eq!(
+        spec_tag("Version"),
+        env!("CARGO_PKG_VERSION"),
+        "the spec packages a different version from the one this binary is",
+    );
+    let source = spec_tag("Source0");
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        source.contains(&format!("/tags/{tag}.tar.gz")),
+        "the spec builds from {source:?} rather than from the tag {tag} of this version",
+    );
+    assert!(
+        source.starts_with(&homepage()),
+        "the spec builds from somewhere other than the repository the metainfo publishes: {source:?}",
+    );
+}
+
+/// What the package says axiomd is, against what the software centre is told: the
+/// licence a reader agrees to and the address they go to for help cannot be one
+/// thing in a listing and another in `rpm -qi`.
+#[test]
+fn the_rpm_spec_and_the_metainfo_agree_on_what_axiomd_is() {
+    let metainfo = metainfo();
+    assert_eq!(
+        spec_tag("License"),
+        between(&metainfo, "<project_license>", "</project_license>").trim(),
+        "the package's licence is not the one the metainfo declares",
+    );
+    assert_eq!(
+        spec_tag("URL"),
+        between(&metainfo, "<url type=\"homepage\">", "</url>").trim(),
+        "the package's URL is not the homepage the metainfo publishes",
+    );
+}
+
+/// The spec installs through `scripts/install.sh` precisely so that there is one
+/// answer to what an installed axiomd is — but `%files` still has to claim every
+/// path that script writes, or `rpmbuild` fails on an unpackaged file and a payload
+/// entry added to the script goes unnoticed until then.
+#[test]
+fn the_rpm_packages_exactly_what_the_installer_installs() {
+    let packaged = packaged_paths();
+    let destinations = installed_destinations();
+    assert!(
+        !destinations.is_empty(),
+        "no payload was read from scripts/install.sh, so this test proves nothing",
+    );
+    for destination in destinations {
+        assert!(
+            packaged.iter().any(|path| path == &destination),
+            "scripts/install.sh installs {destination:?} and the spec's %files does not \
+             claim it; packaged: {packaged:?}",
+        );
+    }
+}
+
+/// A language in the repository and a spec that does not compile it would install an
+/// axiomd the reader cannot read in their own words — and `%find_lang` cannot simply
+/// be left in, because rpm refuses the empty list it writes today.
+#[test]
+fn a_translated_repository_would_need_the_spec_to_name_its_languages() {
+    let path = repository().join("po/LINGUAS");
+    let linguas = std::fs::read_to_string(&path).unwrap_or_default();
+    let translated = linguas
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .any(|code| !code.is_empty());
+    if !translated {
+        return;
+    }
+    let spec = spec();
+    assert!(
+        spec.contains("%find_lang %{name}") && spec.contains("-f %{name}.lang"),
+        "po/LINGUAS names a language and the spec neither finds nor packages it",
     );
 }
 

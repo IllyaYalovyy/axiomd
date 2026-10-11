@@ -92,6 +92,16 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.9.0" date="2026-10-11" type="stable">
+      <description>
+        <p>
+          The first release packaged for installation: a Markdown reader and
+          editor for GNOME, with tables, images, diagrams, maths and callouts,
+          an outline that follows the reading, spell checking with corrections,
+          printing and PDF or HTML export.
+        </p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-03" type="development">
       <description>
         <p>Pre-MVP development build.</p>

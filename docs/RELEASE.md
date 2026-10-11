@@ -1,11 +1,22 @@
 # Releasing axiomd
 
-axiomd is distributed through **Flathub**, and for now Flathub only. The
-distribution targets are Fedora and Ubuntu; one flatpak covers both, and both
-install it through GNOME Software (Fedora out of the box, Ubuntu after a
-one-time `apt install flatpak gnome-software-plugin-flatpak`). Snap, deb/PPA,
-COPR/RPM and AppImage are separate channels, separately decided, and are not
-part of this procedure.
+axiomd is distributed through two channels. The **Fedora package** is the one
+that exists today (issue #61): an `.rpm` built on the release machine and
+attached to the GitHub release, which is also the owner's own daily install.
+**Flathub** is the second, in preparation, and covers both distribution targets
+at once — Fedora and Ubuntu both install a flatpak through GNOME Software
+(Fedora out of the box, Ubuntu after a one-time
+`apt install flatpak gnome-software-plugin-flatpak`).
+
+COPR is the obvious next step for Fedora readers, because it is what turns
+`dnf install` into something that updates itself; it needs the owner's Fedora
+account and a vendored source tarball, since COPR builders have no network.
+Snap, deb/PPA and AppImage are separate channels, separately decided, and are
+not part of this procedure.
+
+Nothing here is run by a service: the no-CI/CD ruling stands, the quality gate
+is the local script, and release artefacts are built by hand on the release
+machine.
 
 Everything below is meant to be followed top to bottom. Where a step can be
 got wrong silently, the quality gate has a test that catches it — those are
@@ -80,11 +91,20 @@ owner's to write, personally; nothing about the sandbox changes either way.
 
 ### 1. Decide the version and its kind
 
-The workspace version in `Cargo.toml` is the version. The metainfo `<release>`
-entry carries `type="development"` or `type="stable"`; a software centre shows
-a development release differently and some will not offer it at all. Which one
-this release is, and whether the first published version is `0.1.0` or
-`1.0.0`, is the owner's call.
+The workspace version in `Cargo.toml` is the version, and since the owner's
+ruling of 2026-10-11 it moves with **every task**, not only at a release: a
+small task bumps the patch number, and a big task or a release bumps the
+leading number (`0.9.1` … then `1.0.0`, `2.0.0` — there is no 0.x phase). The
+rule is written out in CONTRIBUTING.md "Versioning" and is invariant 15 in
+`.ktask/context.md`, so a task that forgets it is a task that broke a rule
+rather than one that merely skipped a chore.
+
+A release therefore does not usually *decide* a number, it decides a kind: the
+metainfo `<release>` entry carries `type="development"` or `type="stable"`, and
+a software centre shows a development release differently — some will not offer
+it at all. The first published version was `0.9.0`, marked `stable` (owner,
+2026-10-11): a stable-marked pre-1.0 that installs and updates like any other
+package without claiming 1.0.
 
 ### 2. Bump the version
 
@@ -200,6 +220,69 @@ left pointing at the previous release's commit fails the gate.
 Create the release from the tag at
 `https://github.com/IllyaYalovyy/axiomd/releases`, with the same notes as the
 metainfo entry.
+
+### 9b. Build the Fedora package and attach it
+
+The spec is `build-aux/rpm/axiomd.spec`. It installs through
+`scripts/install.sh --prefix /usr --destdir %{buildroot}`, so the question
+"what is an installed axiomd" has one answer here as everywhere else, and four
+gate tests hold the spec to the rest of the repository: the version it packages,
+the licence and homepage it claims, the tag it builds from, and that `%files`
+claims every path the installer writes.
+
+Build from the tag's own tree, not from a dirty checkout:
+
+```bash
+topdir=$(mktemp -d)
+mkdir -p "${topdir}"/{SOURCES,SPECS}
+git archive --prefix="axiomd-<version>/" \
+    -o "${topdir}/SOURCES/axiomd-<version>.tar.gz" "v<version>"
+cp build-aux/rpm/axiomd.spec "${topdir}/SPECS/"
+rpmbuild -ba --define "_topdir ${topdir}" "${topdir}/SPECS/axiomd.spec"
+```
+
+`%check` runs inside that build: `desktop-file-validate`, `appstreamcli
+validate` and `glib-compile-schemas --strict --dry-run`. The last one matters
+more than it looks — axiomd dies on startup without a compilable schema, so a
+package that carries a broken one is a package that cannot start.
+
+Then verify what came out, before it goes anywhere:
+
+```bash
+rpm=${topdir}/RPMS/x86_64/axiomd-<version>-1.fc<release>.x86_64.rpm
+rpmlint "${rpm}"
+rpm -qlp "${rpm}"       # exactly install.sh's payload, plus rpm's own paperwork
+rpm -qp --requires "${rpm}"
+sudo dnf install "${rpm}" && axiomd --help
+```
+
+`rpm -qlp` must show no `gschemas.compiled`, no `mimeinfo.cache` and no
+`icon-theme.cache`: the spec deletes the caches `install.sh` refreshes for a
+live prefix, because in a package they belong to Fedora's file triggers, which
+run after every transaction rather than once on the build machine.
+
+Three `rpmlint` findings are expected and accepted, recorded here so a new one
+is recognisable as new: `spelling-error ('maths')` and
+`spelling-error ('callouts')` — rpmlint's dictionary, not the description's
+mistakes — and `no-manual-page-for-binary axiomd`, which is true and is its own
+small piece of work rather than a release blocker.
+
+Attach the binary package and the source package to the release:
+
+```bash
+gh release upload "v<version>" \
+    "${topdir}/RPMS/x86_64/axiomd-<version>-1.fc<release>.x86_64.rpm" \
+    "${topdir}/SRPMS/axiomd-<version>-1.fc<release>.src.rpm"
+```
+
+The debuginfo and debugsource packages are not attached: they are large, they
+are only useful beside a matching build tree, and a reader installing axiomd
+has no use for them.
+
+A reader then installs it with `sudo dnf install <url of the .rpm>`. That is a
+one-time install and not a channel that updates itself — COPR is what adds
+that, and it needs the owner's Fedora account and a vendored source tarball,
+because its builders have no network.
 
 ### 10. Run Flathub's own linter
 
