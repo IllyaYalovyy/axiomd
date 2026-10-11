@@ -57,7 +57,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "axiomd-app"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "axiomd-doc",
  "axiomd-e2e",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "axiomd-doc"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "axiomd-i18n",
  "gio",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "axiomd-e2e"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "gtk4",
  "libc",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "axiomd-engine"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "axiomd-e2e",
  "comrak",
@@ -101,14 +101,14 @@ dependencies = [
 
 [[package]]
 name = "axiomd-i18n"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "gettext-rs",
 ]
 
 [[package]]
 name = "axiomd-render"
-version = "0.1.0"
+version = "0.9.0"
 dependencies = [
  "ammonia",
  "axiomd-engine",

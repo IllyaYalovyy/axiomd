@@ -136,6 +136,30 @@ Use `docs/DESIGN-REVIEW.md` for RFC review before implementation.
 Follow `docs/COMMITS.md`. Keep commits coherent, inspect staged diffs before
 committing, and do not mix unrelated refactors with behavior changes.
 
+## Versioning
+
+Owner ruling (2026-10-11): **every task changes the version.**
+
+- A **small task** — a fix, a test, a refactor, documentation — bumps the patch
+  number: `0.9.0` → `0.9.1` → `0.9.2`.
+- A **big task** — a new feature, a new surface, a new dependency, anything the
+  owner calls big — and **every release** bumps the leading number: `1.0.0`,
+  then `2.0.0`. There is no 0.x phase and no separate minor number in use.
+- When it is not obvious which kind a task is, it is the owner's call: ask
+  rather than deciding silently.
+
+The workspace version in `Cargo.toml` is the version. After changing it run
+`cargo check --workspace` so the lock file carries it to every member.
+
+A bump is not finished until the metainfo has its `<release>` entry, newest
+first, written for readers rather than from the commit log:
+`type="development"` for a task, `type="stable"` for a release the owner
+publishes. The gate asserts the newest entry *is* the version the binary was
+built as (`the_metainfo_names_the_version_this_binary_is`), so a bump without
+an entry fails before it can land.
+
+Say in the task report which kind of bump it was and why.
+
 ## Push Policy
 
 Do not push to a remote unless explicitly instructed or unless this project has
