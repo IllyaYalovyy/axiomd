@@ -44,6 +44,17 @@
 //! Highlighting and spell checking are both *ways of drawing* the buffer. Neither
 //! changes a byte of it, and switching palette re-draws where the reader stands rather
 //! than reloading anything (invariant 9).
+//!
+//! # What is spell checked
+//!
+//! The reader's preference, while they are editing, in a document short enough for
+//! checking to cost nothing they can feel ([`LARGEST_CHECKED_DOCUMENT`]) — unless this
+//! window's reader has used the Check Spelling row of the editor's own context menu,
+//! which libspelling ships in it. That row is this window's alone: it holds for the
+//! life of the window, nothing is written down, and every other window goes on
+//! following the preference (owner ruling, issue #59; the same shape as the engine a
+//! window has been switched to in `window.rs`). The corrections beside it are
+//! libspelling's as it ships them — see [`corrections_follow_the_popup`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -122,6 +133,13 @@ pub(crate) struct Editor {
     /// actually checked is that *and* this surface being on screen — see
     /// [`Editor::check_spelling`].
     checking: Cell<bool>,
+    /// What this window's reader said with the Check Spelling row of the editor's own
+    /// menu, or `None` while this window still follows the preference above. The
+    /// window's own, for as long as the window lives — see [`Editor::new`].
+    switched: Cell<Option<bool>>,
+    /// What this editor last asked of the adapter, which is the only way a change it
+    /// did not make — the reader pressing that row — can be told from its own.
+    marking: Cell<bool>,
     /// This surface's subscription to the reader's colour scheme, which ends with the
     /// window rather than outliving it on a store that belongs to the application
     /// (invariant 7).
@@ -204,6 +222,8 @@ impl Editor {
             researching: Cell::new(0),
             spelling,
             checking: Cell::new(false),
+            switched: Cell::new(None),
+            marking: Cell::new(false),
             dressed: Cell::new(false),
             recolouring: RefCell::new(None),
         });
@@ -226,6 +246,36 @@ impl Editor {
             if let Some(editor) = hidden.upgrade() {
                 editor.mark_misspellings();
             }
+        });
+
+        // The Check Spelling row of libspelling's menu, which is part of the section as
+        // it ships. Owner ruling (2026-10-16, issue #59): that row belongs to this
+        // window and to nothing else. Pressing it stops — or starts — the marking here
+        // for as long as the window lives; the reader's preference is neither written
+        // to nor read back over it, and every other window goes on following the
+        // preference the moment it changes. The same shape as the engine a window has
+        // been switched to (`window.rs`).
+        //
+        // Noticed here rather than acted on where the row is, because the row is
+        // libspelling's own: its action toggles the adapter directly
+        // (`spelling_enabled_action`, 0.4.9, which flips `get_enabled` rather than the
+        // action's state, so it always flips the value in force), and nothing of
+        // axiomd's sits between the two. What reaches this handler is therefore every
+        // change of the adapter's `enabled` — including the ones this editor makes
+        // itself, which are the ones it has just recorded in `marking`.
+        let switched = Rc::downgrade(&editor);
+        editor.spelling.connect_enabled_notify(move |spelling| {
+            let Some(editor) = switched.upgrade() else {
+                return;
+            };
+            if spelling.is_enabled() == editor.marking.get() {
+                return;
+            }
+            editor.switched.set(Some(spelling.is_enabled()));
+            // Said again through the one place that decides it, so that what the row
+            // asks for still meets the document's length and the surface being on
+            // screen rather than overriding them.
+            editor.mark_misspellings();
         });
 
         // The highlight follows the reader's colour scheme, because a text tag carries
@@ -580,17 +630,27 @@ impl Editor {
     /// reading: a document on the page is not spell checked, and the words behind it
     /// are not checked either — checking a ten-megabyte buffer nobody is typing in
     /// would be work spent on marks nobody can see.
+    ///
+    /// A window whose reader has used the Check Spelling row of the editor's own menu
+    /// has said what it does for itself, and the preference no longer reaches it (see
+    /// [`Editor::new`]).
     pub(crate) fn check_spelling(&self, wanted: bool) {
         self.checking.set(wanted);
         self.mark_misspellings();
     }
 
-    /// Applies that, for whichever of the three things that decide it has just
-    /// changed: the preference, the surface being on screen, or the document.
+    /// Applies that, for whichever of the four things that decide it has just changed:
+    /// this window's own choice, the preference behind it, the surface being on screen,
+    /// or the document.
     fn mark_misspellings(&self) {
         let checkable =
             self.view.is_mapped() && self.buffer.char_count() <= LARGEST_CHECKED_DOCUMENT;
-        self.spelling.set_enabled(self.checking.get() && checkable);
+        let marking = self.switched.get().unwrap_or(self.checking.get()) && checkable;
+        // Recorded before it is asked for, because asking emits the adapter's own
+        // notification before this call returns, and the handler reading it must see
+        // what this editor is in the middle of doing rather than what it did before.
+        self.marking.set(marking);
+        self.spelling.set_enabled(marking);
     }
 
     /// The words the reader can see underlined as misspelled, in the order they are

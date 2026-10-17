@@ -534,7 +534,11 @@ impl Preferences {
 
     /// What the store holds for `key` now, as it is written down, or `None` while the
     /// reader has never changed that setting.
-    fn get(&self, key: &str) -> Option<String> {
+    ///
+    /// The far side of the preferences dialog, like [`Preferences::wait_until`], and
+    /// for the assertion that one cannot make: that a setting is *still* what it was
+    /// after something that must not have touched it.
+    pub fn holds(&self, key: &str) -> Option<String> {
         let stored = std::fs::read_to_string(self.keyfile()).ok()?;
         stored
             .lines()
@@ -553,7 +557,7 @@ impl Preferences {
     pub fn wait_until(&self, key: &str, value: &str) {
         let deadline = Instant::now() + SETTLES_WITHIN;
         loop {
-            let stored = self.get(key);
+            let stored = self.holds(key);
             if stored.as_deref() == Some(value) {
                 return;
             }

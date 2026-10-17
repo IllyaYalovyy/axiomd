@@ -676,3 +676,226 @@ fn the_context_menu_offers_no_corrections_while_spelling_is_not_checked() {
     );
     assert!(app.close().is_empty(), "the launch left processes behind");
 }
+
+/// The row libspelling ships in that menu for switching the checking itself.
+const CHECK_SPELLING: &str = "Check Spelling";
+
+/// A line of the fixture with nothing misspelt on it, where a keystroke can land
+/// without touching the one word that is — counted from one, as the reader's caret is.
+const BLANK_LINE: u32 = 2;
+
+/// Types `text` where the caret is and waits until the page has caught up with it.
+///
+/// The page catching up is what says the editor has *seen* the edit: whether this
+/// window checks the document's spelling is decided on the same signal the re-render is
+/// scheduled from (`editor.rs`).
+fn edit_and_let_the_page_catch_up(app: &App, text: &str) {
+    let pages = app.render_count();
+    app.type_text(text);
+    app.wait_for("the page to catch up with an edit", || {
+        app.render_count() > pages
+    });
+}
+
+/// Whether the addressed window is checking the fixture's misspelling, answered without
+/// waiting for anything — and leaving the caret on [`BLANK_LINE`] with the menu closed.
+///
+/// Asked of the menu rather than of the underlines, because an underline that has not
+/// arrived yet looks exactly like one that never will. The menu is not like that: it
+/// works its corrections out from the dictionary the moment it opens, in the main loop,
+/// and while the checking is off it has none to offer — `update_corrections` returns
+/// immediately when the adapter is disabled, and disabling it clears the corrections it
+/// had and disables Add and Ignore (`spelling-text-buffer-adapter.c`, libspelling
+/// 0.4.9, the tarball the manifest pins). So this tells "not checking" from "not
+/// checked yet", which the underlines alone cannot.
+fn checking(app: &App) -> bool {
+    let menu = menu_on(app, MISSPELT, "<Shift>F10");
+    assert!(
+        menu.offers()
+            .contains(&(CHECK_SPELLING, "spelling.enabled")),
+        "the menu on {MISSPELT:?} did not offer {CHECK_SPELLING:?}: {menu:?}",
+    );
+    let offered = !spelling_rows(&menu).is_empty();
+    // Closed by a row that changes nothing but the selection, and the caret put where
+    // the next keystroke can land, which also takes that selection off.
+    app.press("Select All");
+    app.place_caret(BLANK_LINE);
+    offered
+}
+
+/// Owner ruling (2026-10-16, issue #59): the Check Spelling row of that menu is this
+/// window's own switch, and what it switches stays switched.
+///
+/// The defect it fixes is the next keystroke: the editor applied the reader's
+/// preference again on every edit, so the underlines the row had taken off came back as
+/// soon as they typed. Pressing it again is the way back, because libspelling's action
+/// flips the value in force.
+#[test]
+fn the_menus_check_spelling_row_stops_this_windows_checking_for_good() {
+    let preferences = Preferences::with("editor-spelling-row", "spellcheck", "true");
+    let (_fixture, app) = editing("editor-spelling-row", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+    assert!(
+        checking(&app),
+        "the window was not checking the misspelt word to begin with",
+    );
+
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press(CHECK_SPELLING);
+    app.wait_for("the marks to come off the source", || {
+        app.misspelled().is_empty()
+    });
+    assert!(
+        !checking(&app),
+        "the menu went on offering corrections in a window whose reader had just \
+         switched the checking off in it",
+    );
+
+    // The keystroke that used to bring the underlines back, typed on the blank line the
+    // readout above left the caret on.
+    edit_and_let_the_page_catch_up(&app, " ");
+    assert_eq!(
+        app.misspelled(),
+        Vec::<String>::new(),
+        "the underlines came back at the next keystroke in a window whose reader had \
+         switched the checking off in the menu",
+    );
+    assert!(
+        !checking(&app),
+        "the editor started checking again at the next keystroke, over the reader's own \
+         choice in that window's menu",
+    );
+
+    // And the row is the way back for the reader who changes their mind — in this
+    // window, where they changed it.
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press(CHECK_SPELLING);
+    app.wait_for("the marks to come back with the row pressed again", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// And the row is the window's alone: pressing it says nothing about what the reader
+/// wants of axiomd, so nothing of theirs is written down.
+///
+/// Read from the store rather than from the dialog, because the store is what the next
+/// launch — and every other window — reads.
+#[test]
+fn the_menus_check_spelling_row_leaves_the_readers_preference_alone() {
+    let preferences = Preferences::with("editor-spelling-row-store", "spellcheck", "true");
+    let (_fixture, app) = editing("editor-spelling-row-store", &preferences);
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+    assert_eq!(
+        preferences.holds("spellcheck").as_deref(),
+        Some("true"),
+        "the store did not hold the preference this test is about",
+    );
+
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press(CHECK_SPELLING);
+    app.wait_for("the marks to come off the source", || {
+        app.misspelled().is_empty()
+    });
+    // A setting reaches the store through the main loop, so an edit that has been round
+    // it is what makes "nothing was written" more than "nothing yet".
+    app.place_caret(BLANK_LINE);
+    edit_and_let_the_page_catch_up(&app, " ");
+    assert_eq!(
+        preferences.holds("spellcheck").as_deref(),
+        Some("true"),
+        "pressing {CHECK_SPELLING:?} in one window's menu wrote the reader's preference",
+    );
+    // And the dialog the reader would look in says the same.
+    app.activate("app.preferences");
+    assert_eq!(
+        app.preference(CHECK_SPELLING),
+        "true",
+        "pressing {CHECK_SPELLING:?} in one window's menu moved the preferences row",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}
+
+/// The two halves of what a window-only override is: it overrides, and it is the only
+/// thing that does.
+///
+/// A window opened after the row was pressed knows nothing about it (invariant 7), a
+/// window that never used it follows the preference the moment it changes — both ways —
+/// and the window that used it is reached by neither change. The same shape as the
+/// engine a window has been switched to (`tests/engines.rs`).
+#[test]
+fn a_window_that_used_the_row_keeps_its_checking_when_the_preference_changes() {
+    let fixture = Fixture::new("editor-spelling-row-windows");
+    let notes = fixture.write("notes.md", NOTES);
+    let more = fixture.write("more.md", NOTES);
+    let preferences = Preferences::new("editor-spelling-row-windows");
+
+    let app = axiomd_e2e::launch_with(&notes, &preferences);
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    app.wait_for("the misspelt word to be marked", || {
+        app.misspelled() == vec![MISSPELT.to_owned()]
+    });
+    menu_on(&app, MISSPELT, "<Shift>F10");
+    app.press(CHECK_SPELLING);
+    app.wait_for("the marks to come off the first window", || {
+        app.misspelled().is_empty()
+    });
+    assert!(
+        !checking(&app),
+        "the first window went on checking after its reader switched it off",
+    );
+
+    // A second window, opened after that press and in the same application: nothing of
+    // the first window's choice is in it.
+    app.open(&more);
+    app.wait_until_windows(2);
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    app.wait_for(
+        "the misspelt word to be marked in a window of its own",
+        || app.misspelled() == vec![MISSPELT.to_owned()],
+    );
+
+    // The reader switches the preference off. The window that never used the row
+    // follows it.
+    app.activate("app.preferences");
+    app.set_preference(CHECK_SPELLING, "false");
+    app.wait_for(
+        "the second window's marks to come off with the preference",
+        || app.misspelled().is_empty(),
+    );
+    preferences.wait_until("spellcheck", "false");
+
+    // And on again. The second window marks its misspelling once more; the first is
+    // asked after an edit of its own, so that "nothing came back" is read with the
+    // editor having had every chance to apply a preference it no longer follows.
+    app.select_window(1);
+    app.activate("app.preferences");
+    app.set_preference(CHECK_SPELLING, "true");
+    app.wait_for(
+        "the second window's marks to come back with the preference",
+        || app.misspelled() == vec![MISSPELT.to_owned()],
+    );
+    app.select_window(0);
+    edit_and_let_the_page_catch_up(&app, " ");
+    assert_eq!(
+        app.misspelled(),
+        Vec::<String>::new(),
+        "the preference underlined words again in a window whose reader had switched \
+         the checking off in its own menu",
+    );
+    assert!(
+        !checking(&app),
+        "the preference reached a window whose reader had switched the checking off in \
+         its own menu",
+    );
+
+    assert!(app.close().is_empty(), "the launch left processes behind");
+}

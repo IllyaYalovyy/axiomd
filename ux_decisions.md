@@ -107,11 +107,18 @@ no Add or Ignore. Reading mode has no source view, so no such menu.
   its own checker) and is not persisted: a relaunch goes back to the
   locale's language. Persisting it is a separate owner decision.
 - **Check Spelling** in that menu is libspelling's own toggle, part of
-  the section as shipped. It does not change the Check Spelling
-  preference (#20), and axiomd applies the preference again on the next
-  edit, so the underlines it removes come back at the next keystroke
-  (observed 2026-09-13). How the row should relate to the preference is
-  an **open owner decision**, not settled here.
+  the section as shipped, and owner ruling (2026-10-16) makes it a
+  **window-only override**: pressing it stops — or starts — the marking
+  in *that* window for as long as the window lives. The Check Spelling
+  preference (#20) is neither written to nor read back over it, so the
+  underlines it takes off stay off through the next keystroke, and every
+  other window goes on following the preference the moment it changes. A
+  window that has never used the row still follows it live, both ways.
+  This is the shape the engine a window has been switched to already has
+  (`window.rs`): the override belongs to the window, lasts as long as it
+  does, and is written nowhere. The document's length and reading mode
+  still decide above it — a document past `LARGEST_CHECKED_DOCUMENT` is
+  not checked whatever the row says.
 
 ## Where does search live?
 
