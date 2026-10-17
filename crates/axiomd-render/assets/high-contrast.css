@@ -18,8 +18,10 @@
  *
  * It is delivered as a *user* stylesheet, so every declaration has to be
  * important to outrank the document's own — including the ones inside the
- * document's `prefers-color-scheme` block, which is why the dark reading is
- * repeated here rather than left to it.
+ * document's `prefers-color-scheme` block, which is why this file paints a
+ * palette at all rather than leaving the colours to it. This is the light
+ * reading; the dark one is `high-contrast-dark.css`, which the reader's
+ * stylesheet appends after this file when that is the palette in force.
  *
  * Screen only, for the same reason the dark palette is: a print job and an
  * exported PDF are paginated from the very page on screen with this stylesheet
@@ -54,36 +56,6 @@
     --axiomd-find: #ffff00 !important;
     --axiomd-find-current: #ff6600 !important;
     --axiomd-find-ink: #000000 !important;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --axiomd-bg: #000000 !important;
-      --axiomd-fg: #ffffff !important;
-      --axiomd-fg-dim: #ffffff !important;
-      --axiomd-accent: #8cb4ff !important;
-      --axiomd-border: #ffffff !important;
-      --axiomd-surface: #1a1a1a !important;
-      --axiomd-surface-strong: #2e2e2e !important;
-
-      --axiomd-note: #8cb4ff !important;
-      --axiomd-abstract: #5ce0e0 !important;
-      --axiomd-info: #8cb4ff !important;
-      --axiomd-todo: #8cb4ff !important;
-      --axiomd-tip: #6ee79b !important;
-      --axiomd-success: #6ee79b !important;
-      --axiomd-question: #ffd84d !important;
-      --axiomd-warning: #ffd84d !important;
-      --axiomd-failure: #ff9b8a !important;
-      --axiomd-danger: #ff9b8a !important;
-      --axiomd-bug: #ff9b8a !important;
-      --axiomd-example: #eaa8ec !important;
-      --axiomd-quote: #ffffff !important;
-
-      --axiomd-find: #ffff00 !important;
-      --axiomd-find-current: #ff9d3d !important;
-      --axiomd-find-ink: #000000 !important;
-    }
   }
 
   /* A link is a link whatever the page is painted in. */

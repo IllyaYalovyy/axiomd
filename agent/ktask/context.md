@@ -37,7 +37,12 @@ creates a new invariant, add it here with the issue number.
    and report the numbers. A budget regression means the task is not done.
 9. **Theme changes restyle, never re-parse.** Light/dark/high-contrast
    switching swaps styling live; it must not re-run the parser or reload
-   the document.
+   the document. And the palette is *stated* by the application, never
+   asked of the page: no stylesheet, plugin script or diagram may decide a
+   colour from `prefers-color-scheme` / `matchMedia`, because WebKitGTK
+   answers it once per web process and then stops (#60). The one exception
+   is the document's own `dark.css` block, which the statement is read out
+   of.
 10. **Deep modules, simple APIs — no drift.** Shallow/pass-through modules
    and wide or leaky interfaces are defects (see the `deep-modules`
    skill). Every report states whether touched crates' public API grew,

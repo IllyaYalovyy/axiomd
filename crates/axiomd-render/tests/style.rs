@@ -4,6 +4,8 @@
 //! being parsed, rendered or loaded again (`design_decisions.md`, invariant 9), so it
 //! travels as CSS and nothing else. These tests hold the two halves of that together:
 //! what the default stylesheet reads the measure from, and what the override writes.
+//!
+//! The palette the override also states is `palette.rs`'s, and `palette.rs`'s tests.
 
 use axiomd_render::{Contrast, Motion, Palette};
 
@@ -74,26 +76,49 @@ fn the_reader_stylesheet_outranks_the_documents_own() {
     }
 }
 
-/// Nothing but the reader's choices: a user stylesheet applies to every document this
-/// application shows, so anything that crept in here would be unremovable styling.
+/// Nothing but the reader's choices and the palette they are reading in: a user
+/// stylesheet applies to every document this application shows, so a rule in here that
+/// reached the document's own elements would be styling no reader could remove.
+///
+/// The measure and the palette are the whole of it (`palette.rs`), and neither of them
+/// is a rule about a paragraph, a table or a link.
 #[test]
 fn the_reader_stylesheet_says_nothing_the_reader_did_not_ask_for() {
     let sheet = reader_stylesheet(Some(46), Contrast::Normal);
-    let declarations = sheet.matches(':').count() - sheet.matches(":root").count();
+
     assert_eq!(
-        declarations, 1,
-        "more than the reading width is set: {sheet}"
+        sheet.matches("--axiomd-reading-width").count(),
+        1,
+        "the measure is said more than once: {sheet}",
     );
+    for element in [
+        ".markdown",
+        "article",
+        "body ",
+        "body{",
+        "table",
+        "@keyframes",
+    ] {
+        assert!(
+            !sheet.contains(element),
+            "the reader's own stylesheet restyles {element}: {sheet}",
+        );
+    }
 }
 
 /// A desktop that is not asking for high contrast gets a stylesheet that says nothing
-/// about contrast at all — the palette the document defines is the one it keeps.
+/// about contrast at all — the palette it states is the one the document defines,
+/// colour for colour, and not a repaint of it.
 #[test]
 fn a_normal_desktop_is_never_given_high_contrast_styling() {
     let sheet = reader_stylesheet(Some(46), Contrast::Normal);
     assert!(
-        !sheet.contains("--axiomd-fg"),
-        "an ordinary desktop had its ink repainted: {sheet}",
+        sheet.contains("--axiomd-fg: rgb(0 0 6 / 80%) !important"),
+        "an ordinary light desktop is not given the document's own ink: {sheet}",
+    );
+    assert!(
+        !sheet.contains("--axiomd-fg: #000000"),
+        "an ordinary desktop had its ink repainted at full strength: {sheet}",
     );
     assert!(
         !sheet.contains("text-decoration"),
@@ -152,21 +177,38 @@ fn high_contrast_repaints_properties_the_document_stylesheet_defines() {
 
 /// Both ways of reading. High contrast is not "the dark palette": a reader on a light
 /// desktop gets dark ink on white and a reader on a dark one gets the reverse, and the
-/// user stylesheet has to say which because it outranks the document's own dark block.
+/// reader's stylesheet carries the reading that is in force — chosen by the palette the
+/// application states, since the page cannot be asked which one it is in
+/// (`palette.rs`, issue #60).
 #[test]
 fn high_contrast_has_a_light_reading_and_a_dark_one() {
-    let sheet = reader_stylesheet(Some(46), Contrast::High);
-    let dark = sheet
-        .find("prefers-color-scheme: dark")
-        .expect("high contrast says nothing about a dark desktop");
+    let light = reader_stylesheet(Some(46), Contrast::High);
+    let dark = axiomd_render::reading(Some(46), Palette::Dark, Contrast::High, Motion::Full)
+        .stylesheet()
+        .to_owned();
 
-    let light_ink =
-        declarations_for(&sheet[..dark], ":root {").expect("a light high-contrast root");
-    let dark_ink = declarations_for(&sheet[dark..], ":root {").expect("a dark high-contrast root");
-    assert_ne!(
-        light_ink.trim(),
-        dark_ink.trim(),
-        "high contrast paints a dark desktop exactly as it paints a light one",
+    assert!(
+        light.contains("--axiomd-fg: #000000 !important"),
+        "a light high-contrast reader is not given full-strength black ink: {light}",
+    );
+    assert!(
+        !light.contains("--axiomd-fg: #ffffff"),
+        "a light high-contrast reader is given the dark reading too: {light}",
+    );
+
+    // The dark reading comes last, which is the whole of why it wins: both readings are
+    // important user declarations of the same property, so the cascade is decided by
+    // which was written later (CSS Cascading and Inheritance Level 5, §6.2).
+    let light_ink = dark
+        .find("--axiomd-fg: #000000 !important")
+        .expect("the dark reader's stylesheet carries the light high-contrast reading");
+    let dark_ink = dark
+        .find("--axiomd-fg: #ffffff !important")
+        .expect("high contrast says nothing about a dark reader");
+    assert!(
+        dark_ink > light_ink,
+        "the dark high-contrast reading is overridden by the light one it repaints: \
+         {dark}",
     );
 }
 

@@ -37,10 +37,12 @@
 //! * **Themed by CSS alone.** Colours — including the code palettes — live in
 //!   [`stylesheet`], in a light block and a screen-only `prefers-color-scheme: dark`
 //!   block, so switching theme restyles a rendered document without re-parsing it,
-//!   and neither paper nor an exported file ever goes dark. What the reader's own
-//!   desktop asks for on top of that — a measure, high contrast, less movement — is a
-//!   second stylesheet ([`Reading::stylesheet`]) the app installs over the first, for
-//!   the same reason and at the same cost.
+//!   and neither paper nor an exported file ever goes dark. *Which* of the two a
+//!   reader is in is said by the application rather than asked of the page, because an
+//!   engine may answer that query once and never again (issue #60); it is said in the
+//!   second stylesheet ([`Reading::stylesheet`]) the app installs over the first,
+//!   along with everything else the reader's own desktop asks for — a measure, high
+//!   contrast, less movement — for the same reason and at the same cost.
 //! * **Arriving rather than appearing from nothing.** [`reading`] also answers with the
 //!   colour the page is painted, read out of the stylesheet itself, so the view can be
 //!   that colour before the document's first byte and the reader never sees a black
@@ -65,6 +67,7 @@ mod callout;
 mod footnote;
 mod highlight;
 mod meta;
+mod palette;
 mod plugin;
 mod request;
 mod sanitize;
@@ -387,7 +390,7 @@ fn exported_stylesheet() -> &'static str {
                     body::base64(asset.bytes)
                 )
             }),
-            highlight::light_palette(),
+            highlight::palette(Palette::Light),
         )
     })
 }
@@ -404,8 +407,11 @@ pub enum Contrast {
 }
 
 /// Which of the two palettes a document is being read in — the desktop's colour
-/// scheme, which is also what the document's own stylesheet answers
-/// `prefers-color-scheme` with.
+/// scheme, as libadwaita's style manager reports it (`ux_decisions.md`).
+///
+/// It is the application's answer to `prefers-color-scheme` and not the page's: told
+/// to [`reading`], it becomes the palette the document is painted in, whatever the
+/// engine would have resolved that query to (issue #60).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Palette {
     /// The light document, which is the stylesheet's own.
@@ -444,17 +450,21 @@ impl Reading {
     /// It is meant to be installed as a *user* stylesheet on the view rather than
     /// folded into the document, which is what makes a change to it free: the page on
     /// screen restyles in place, and nothing is re-parsed, re-rendered or reloaded to
-    /// change how wide a document is, how much contrast it has, or whether it moves.
-    /// `!important` is not decoration — under the cascade (CSS Cascading and
-    /// Inheritance Level 5, §6.2) a normal user declaration loses to the document's
-    /// own author one, and only an important user declaration outranks it. That is
-    /// also why high contrast and reduced motion are written here rather than as
-    /// `prefers-contrast` and `prefers-reduced-motion` blocks in the document's own
-    /// stylesheet: WebKitGTK answers neither query from the desktop the application is
-    /// running on (probed on WebKitGTK 2.52.5, libadwaita 1.8.6 and GTK 4.20.4 —
-    /// `prefers-contrast: more` stayed false with the desktop in high contrast, and a
-    /// document went on fading in on a desktop whose `enable-animations` was off and
-    /// which GTK itself reported as not animating), so the application has to say it.
+    /// change which palette a document is in, how wide it is, how much contrast it has,
+    /// or whether it moves. `!important` is not decoration — under the cascade (CSS
+    /// Cascading and Inheritance Level 5, §6.2) a normal user declaration loses to the
+    /// document's own author one, and only an important user declaration outranks it.
+    /// That is also why the palette, high contrast and reduced motion are written here
+    /// rather than left to `prefers-color-scheme`, `prefers-contrast` and
+    /// `prefers-reduced-motion` in the document's own stylesheet: WebKitGTK answers
+    /// none of those three from the desktop the application is running on for as long
+    /// as the application runs. Contrast and motion it has never answered (probed on
+    /// WebKitGTK 2.52.5, libadwaita 1.8.6 and GTK 4.20.4 — `prefers-contrast: more`
+    /// stayed false with the desktop in high contrast, and a document went on fading in
+    /// on a desktop whose `enable-animations` was off and which GTK itself reported as
+    /// not animating); the colour scheme it answered until 2.54 read it once per web
+    /// process and stopped following the desktop (issue #60, WebKit bug 327072). So the
+    /// application says all three, and `palette.rs` says what saying a palette means.
     pub fn stylesheet(&self) -> &str {
         &self.stylesheet
     }
@@ -491,9 +501,21 @@ pub fn reading(
         Some(rem) => format!("{rem}rem"),
         None => "none".to_owned(),
     };
-    let mut stylesheet = format!(":root {{ --axiomd-reading-width: {measure} !important; }}\n");
+    // Which palette is in force, first, so that anything after it outranks it by
+    // coming later: high contrast is a repaint of whichever palette this is, and the
+    // measure is the reader's own and belongs to neither.
+    let mut stylesheet = palette::stated(palette).to_owned();
+    stylesheet.push_str(&format!(
+        ":root {{ --axiomd-reading-width: {measure} !important; }}\n"
+    ));
     if contrast == Contrast::High {
         stylesheet.push_str(include_str!("../assets/high-contrast.css"));
+        // The dark reading of it, which is chosen here for the same reason the palette
+        // itself is: the page cannot be trusted to answer which scheme it is in
+        // (`palette.rs`, issue #60). It comes after the light reading and repaints it.
+        if palette == Palette::Dark {
+            stylesheet.push_str(include_str!("../assets/high-contrast-dark.css"));
+        }
     }
     if motion == Motion::Reduced {
         stylesheet.push_str(include_str!("../assets/still.css"));
@@ -513,16 +535,16 @@ pub fn reading(
 /// stylesheets declare `--axiomd-bg`.
 ///
 /// `axiomd.css` declares it once for the light document and again inside its print
-/// block, which is paper and not a pane; `dark.css` declares the one dark palette;
-/// `high-contrast.css` declares its light page and then, in the nested
-/// `prefers-color-scheme: dark` block, its dark one. So the first declaration of each
-/// file is its page, and high contrast's second is its dark page.
+/// block, which is paper and not a pane; `dark.css` declares the one dark palette; and
+/// high contrast declares its light page and its dark one in the two files the reader's
+/// stylesheet picks between (`high-contrast.css`, `high-contrast-dark.css`). So the
+/// first declaration of each file is the page that file paints.
 const LIGHT_PAGE: (u8, u8, u8) = declared_background(include_str!("../assets/axiomd.css"), 0);
 const DARK_PAGE: (u8, u8, u8) = declared_background(include_str!("../assets/dark.css"), 0);
 const HIGH_CONTRAST_LIGHT_PAGE: (u8, u8, u8) =
     declared_background(include_str!("../assets/high-contrast.css"), 0);
 const HIGH_CONTRAST_DARK_PAGE: (u8, u8, u8) =
-    declared_background(include_str!("../assets/high-contrast.css"), 1);
+    declared_background(include_str!("../assets/high-contrast-dark.css"), 0);
 
 /// The colour of the `nth` `--axiomd-bg` declared in `css`, counting from zero.
 ///

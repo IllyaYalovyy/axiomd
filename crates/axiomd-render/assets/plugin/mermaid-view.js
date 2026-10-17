@@ -18,7 +18,7 @@
 // Everything else here follows from the same three tools: frames, an
 // `IntersectionObserver` for what is near the reader, a `MutationObserver` for blocks
 // the app has just patched in, and a `ResizeObserver` for the one question that has no
-// observer of its own — whether the desktop went dark.
+// observer of its own — which palette the application says the reader is in.
 //
 // # Why a diagram lives in a shadow root
 //
@@ -106,20 +106,26 @@
       ' font-size: 0.85em; text-align: left; }',
   );
 
-  // The one element on the page that changes size when the desktop changes colour.
-  // A media query cannot be listened to — there are no event listeners here — but a
-  // box it resizes can be observed, and that is the same fact arriving by the one
-  // road that is open.
+  // The one element on the page that changes size when the palette changes, and so
+  // the only way a diagram can learn which palette it is being drawn in. Its width is
+  // the application's own statement of that — one pixel light, two dark, written
+  // important into the reader's stylesheet (`palette.rs`) — and not the page's
+  // `prefers-color-scheme`, which an engine may answer once and never again (issue
+  // #60). A query could not be listened to in here anyway: there are no event
+  // listeners, and a box that resizes is the one road open.
   document.adoptedStyleSheets = [
     ...document.adoptedStyleSheets,
     sheetOf(
       '.axiomd-scheme { position: fixed; top: 0; left: 0; width: 1px; height: 1px;' +
-        ' opacity: 0; pointer-events: none; }' +
-        '@media (prefers-color-scheme: dark) { .axiomd-scheme { width: 2px; } }',
+        ' opacity: 0; pointer-events: none; }',
     ),
   ];
+  const probe = document.createElement('div');
+  probe.className = 'axiomd-scheme';
+  document.body.appendChild(probe);
 
-  const dark = () => matchMedia('(prefers-color-scheme: dark)').matches;
+  const schemeWidth = () => Math.round(probe.getBoundingClientRect().width);
+  const dark = () => schemeWidth() === 2;
 
   const rootOf = (block) =>
     block.shadowRoot === null ? block.attachShadow({ mode: 'open' }) : block.shadowRoot;
@@ -213,15 +219,12 @@
     watch();
   }).observe(article, { childList: true, subtree: true });
 
-  // The desktop changing colour: every diagram already drawn is drawn again in the
-  // other palette. Only the drawn ones — a diagram that failed to parse fails in
+  // The palette changing under the reader: every diagram already drawn is drawn again
+  // in the other one. Only the drawn ones — a diagram that failed to parse fails in
   // either colour, and re-running it would only take its message away and put it back.
-  const probe = document.createElement('div');
-  probe.className = 'axiomd-scheme';
-  document.body.appendChild(probe);
   let scheme = null;
   new ResizeObserver(() => {
-    const width = Math.round(probe.getBoundingClientRect().width);
+    const width = schemeWidth();
     if (scheme !== null && scheme !== width) {
       for (const block of article.querySelectorAll(BLOCK)) {
         if (block.shadowRoot !== null && block.shadowRoot.querySelector('svg') !== null) {

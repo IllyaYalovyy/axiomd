@@ -18,7 +18,7 @@
 %global appid io.github.etf.axiomd
 
 Name:           axiomd
-Version:        0.9.0
+Version:        0.9.1
 Release:        1%{?dist}
 Summary:        Read and write Markdown documents
 
@@ -100,5 +100,8 @@ glib-compile-schemas --strict --dry-run %{buildroot}%{_datadir}/glib-2.0/schemas
 %{_datadir}/icons/hicolor/symbolic/apps/%{appid}-symbolic.svg
 
 %changelog
+* Fri Oct 16 2026 Illya Yalovyy <yalovoy@gmail.com> - 0.9.1-1
+- Documents follow the desktop's light and dark again.
+
 * Sun Oct 11 2026 Illya Yalovyy <yalovoy@gmail.com> - 0.9.0-1
 - First packaged release.

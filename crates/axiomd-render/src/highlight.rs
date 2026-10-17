@@ -6,6 +6,11 @@
 //! a `prefers-color-scheme` block that overrides it — on screen only, so that code
 //! is as light on paper and in an exported file as the rest of the document.
 //!
+//! Which of the two a reader is reading in is not left to that query, though: the
+//! application states it, and states this module's palette for it, because an engine
+//! that answers the query once and never again would leave a dark reader with light
+//! code (`palette.rs`, issue #60).
+//!
 //! The syntax set is several megabytes of dumped Sublime grammars, so it is loaded
 //! on first use rather than at startup, and only a fenced block naming a language
 //! ever triggers that load.
@@ -16,6 +21,8 @@ use syntect::html::{ClassStyle, ClassedHTMLGenerator, css_for_theme_with_class_s
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
+
+use crate::Palette;
 
 /// Every class this module emits starts with this, so document classes and palette
 /// classes cannot collide.
@@ -46,20 +53,24 @@ pub(crate) fn highlight(language: &str, code: &str) -> Option<String> {
 /// The CSS both palettes need, light first and dark inside the screen-only media
 /// query that overrides it.
 pub(crate) fn palettes() -> String {
-    let mut css = light_palette();
-    let dark = css_for_theme_with_class_style(two_face::theme::extra().get(DARK), CLASS_STYLE)
-        .expect("the dark palette is a bundled theme");
+    let mut css = palette(Palette::Light);
     css.push_str("\n@media screen and (prefers-color-scheme: dark) {\n");
-    css.push_str(&dark);
+    css.push_str(&palette(Palette::Dark));
     css.push_str("}\n");
     css
 }
 
-/// The light palette alone — the whole of what a printed or exported document needs,
-/// since neither of those follows anybody's colour scheme.
-pub(crate) fn light_palette() -> String {
-    css_for_theme_with_class_style(two_face::theme::extra().get(LIGHT), CLASS_STYLE)
-        .expect("the light palette is a bundled theme")
+/// One palette alone: the light one is the whole of what a printed or exported
+/// document needs, since neither of those follows anybody's colour scheme, and either
+/// of them is what the application states while a reader is reading in it
+/// ([`crate::Reading::stylesheet`]).
+pub(crate) fn palette(palette: Palette) -> String {
+    let theme = match palette {
+        Palette::Light => LIGHT,
+        Palette::Dark => DARK,
+    };
+    css_for_theme_with_class_style(two_face::theme::extra().get(theme), CLASS_STYLE)
+        .expect("a palette is a bundled theme")
 }
 
 fn syntaxes() -> &'static SyntaxSet {

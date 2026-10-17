@@ -12,10 +12,12 @@
 //! Nothing here asks anyone to restart, reopen or re-render. A preference is answered
 //! by whoever consumes it as soon as it changes ([`Settings::watch`]), and the two the
 //! reader can see today reach the document without touching it: the colour scheme is
-//! a libadwaita style-manager call that WebKit's `prefers-color-scheme` follows
-//! (probed on WebKitGTK 2.52.5), and the reading width is a user stylesheet swapped on
-//! the view. The document on screen is never parsed, rendered or loaded again to
-//! answer either of them (invariant 9).
+//! a libadwaita style-manager call, which the window follows and which this module
+//! turns into the palette the document is stated to be in, and the reading width is a
+//! user stylesheet swapped on the view — the same stylesheet, as it happens, because
+//! the palette travels in it ([`axiomd_render::Reading`], issue #60). The document on
+//! screen is never parsed, rendered or loaded again to answer either of them
+//! (invariant 9).
 //!
 //! # Where the schema comes from
 //!
@@ -163,10 +165,11 @@ impl Settings {
     /// their mind, until the returned [`Watch`] is dropped.
     ///
     /// libadwaita's style manager is the source of truth (`ux_decisions.md`), and it
-    /// is what the rendered document follows too: WebKit answers
-    /// `prefers-color-scheme` from it, so a document restyles with the window and is
-    /// never re-parsed or reloaded to change colour (invariant 9; probed on WebKitGTK
-    /// 2.52.5).
+    /// is what the rendered document follows too — not by WebKit reading the desktop
+    /// for itself, which it does once per web process and then stops (issue #60), but
+    /// because [`palette`] reads this manager and the document is told. Either way a
+    /// document restyles with the window and is never re-parsed or reloaded to change
+    /// colour (invariant 9).
     pub(crate) fn follow_theme(self: &Rc<Self>) -> Watch {
         let settings = self.clone();
         let apply = move || {
@@ -532,6 +535,13 @@ fn contrast() -> axiomd_render::Contrast {
 /// The same style manager, and the same source of truth: the reader's own light/dark
 /// preference is put into force by setting a colour scheme on it (`follow_theme`), so
 /// this one answer covers both their choice and the desktop's.
+///
+/// It is also the *only* answer the document gets. A page cannot be left to work it
+/// out from `prefers-color-scheme`: WebKitGTK 2.54 reads the desktop's colour scheme
+/// when a web process starts and never again, so a packaged window followed the
+/// desktop into dark around a document that stayed white (issue #60). What the
+/// document is painted in is therefore whatever this function says, carried into the
+/// reader's stylesheet by [`axiomd_render::reading`].
 fn palette() -> axiomd_render::Palette {
     match adw::StyleManager::default().is_dark() {
         true => axiomd_render::Palette::Dark,

@@ -1,0 +1,45 @@
+/*
+ * High contrast, dark: the dark reading of `high-contrast.css`.
+ *
+ * Its own file rather than the nested `prefers-color-scheme: dark` block it used to
+ * be, because which palette a reader is in is the application's answer and no longer
+ * the page's (`palette.rs`, issue #60): an engine that reads the desktop's colour
+ * scheme once would have left a dark high-contrast reader with the light reading of
+ * it. The reader's stylesheet appends this after `high-contrast.css`, so it repaints
+ * that file's light reading with the same importance and wins by coming last.
+ *
+ * Screen only, and important, for the two reasons `high-contrast.css` is both: it is
+ * delivered as a *user* stylesheet, over a document whose own declarations are author
+ * ones; and a print job is paginated from the very page on screen, where neither this
+ * reader's accessibility setting nor their colour scheme is anybody else's.
+ */
+
+@media screen {
+  :root {
+    --axiomd-bg: #000000 !important;
+    --axiomd-fg: #ffffff !important;
+    --axiomd-fg-dim: #ffffff !important;
+    --axiomd-accent: #8cb4ff !important;
+    --axiomd-border: #ffffff !important;
+    --axiomd-surface: #1a1a1a !important;
+    --axiomd-surface-strong: #2e2e2e !important;
+
+    --axiomd-note: #8cb4ff !important;
+    --axiomd-abstract: #5ce0e0 !important;
+    --axiomd-info: #8cb4ff !important;
+    --axiomd-todo: #8cb4ff !important;
+    --axiomd-tip: #6ee79b !important;
+    --axiomd-success: #6ee79b !important;
+    --axiomd-question: #ffd84d !important;
+    --axiomd-warning: #ffd84d !important;
+    --axiomd-failure: #ff9b8a !important;
+    --axiomd-danger: #ff9b8a !important;
+    --axiomd-bug: #ff9b8a !important;
+    --axiomd-example: #eaa8ec !important;
+    --axiomd-quote: #ffffff !important;
+
+    --axiomd-find: #ffff00 !important;
+    --axiomd-find-current: #ff9d3d !important;
+    --axiomd-find-ink: #000000 !important;
+  }
+}
