@@ -273,6 +273,12 @@ impl Session {
                 window.place_caret(line);
                 Ok(String::new())
             }
+            // Clicking into a word, as the reader does before asking the menu what it
+            // could be instead: the caret, and nothing but the caret (issue #59).
+            "caret-on" => match self.target(shell)?.place_caret_on(payload) {
+                true => Ok(String::new()),
+                false => Err(format!("the source has no {payload:?} to click into")),
+            },
             // Pressing a button the window is showing — in an inline notice or in a
             // dialog — by the words on it, which is all the reader has to go on.
             "press" => press(&self.target(shell)?, payload),
@@ -964,6 +970,11 @@ fn press(window: &Rc<DocumentWindow>, label: &str) -> Answer {
         // than `gtk_widget_activate`, whose answer depends on whether the widget
         // is focusable and which is not how a button gets pressed.
         button.emit_clicked();
+        return Ok(String::new());
+    }
+    // Nor are a context menu's: a row of the source view's open menu is pressed by its
+    // own `clicked`, which closes the menu and fires the row's action.
+    if window.press_in_context_menu(label) {
         return Ok(String::new());
     }
     // The sidebar's rows are not buttons: a section is picked by the list's own

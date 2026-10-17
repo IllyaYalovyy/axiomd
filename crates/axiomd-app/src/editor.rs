@@ -44,6 +44,17 @@
 //! Highlighting and spell checking are both *ways of drawing* the buffer. Neither
 //! changes a byte of it, and switching palette re-draws where the reader stands rather
 //! than reloading anything (invariant 9).
+//!
+//! # What is spell checked
+//!
+//! The reader's preference, while they are editing, in a document short enough for
+//! checking to cost nothing they can feel ([`LARGEST_CHECKED_DOCUMENT`]) — unless this
+//! window's reader has used the Check Spelling row of the editor's own context menu,
+//! which libspelling ships in it. That row is this window's alone: it holds for the
+//! life of the window, nothing is written down, and every other window goes on
+//! following the preference (owner ruling, issue #59; the same shape as the engine a
+//! window has been switched to in `window.rs`). The corrections beside it are
+//! libspelling's as it ships them — see [`corrections_follow_the_popup`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -122,6 +133,13 @@ pub(crate) struct Editor {
     /// actually checked is that *and* this surface being on screen — see
     /// [`Editor::check_spelling`].
     checking: Cell<bool>,
+    /// What this window's reader said with the Check Spelling row of the editor's own
+    /// menu, or `None` while this window still follows the preference above. The
+    /// window's own, for as long as the window lives — see [`Editor::new`].
+    switched: Cell<Option<bool>>,
+    /// What this editor last asked of the adapter, which is the only way a change it
+    /// did not make — the reader pressing that row — can be told from its own.
+    marking: Cell<bool>,
     /// This surface's subscription to the reader's colour scheme, which ends with the
     /// window rather than outliving it on a store that belongs to the application
     /// (invariant 7).
@@ -174,9 +192,23 @@ impl Editor {
         // Off until somebody says otherwise: the reader's preference is answered by
         // the window that owns this editor, and a document being read is not being
         // spell checked at all.
+        //
+        // A checker of this window's own rather than libspelling's process-wide
+        // default, because the Languages submenu below sets the language on the
+        // checker: with the shared one, choosing a language in one window would
+        // re-check every other window in it (invariant 7).
         let spelling =
-            libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::default());
+            libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::new(None, None));
         spelling.set_enabled(false);
+
+        // The other half of libspelling's contract, as it ships (issue #59): the
+        // corrections for the word under the caret, Add to Dictionary, Ignore and the
+        // Languages submenu, in the source view's own context menu, pressing the
+        // adapter's own actions. What the word is, what it could be and what happens
+        // when one is chosen are all the adapter's; nothing here knows any of it.
+        view.set_extra_menu(Some(&spelling.menu_model()));
+        view.insert_action_group("spelling", Some(&spelling));
+        corrections_follow_the_popup(&view, &spelling);
 
         let editor = Rc::new(Self {
             scroller,
@@ -190,6 +222,8 @@ impl Editor {
             researching: Cell::new(0),
             spelling,
             checking: Cell::new(false),
+            switched: Cell::new(None),
+            marking: Cell::new(false),
             dressed: Cell::new(false),
             recolouring: RefCell::new(None),
         });
@@ -212,6 +246,36 @@ impl Editor {
             if let Some(editor) = hidden.upgrade() {
                 editor.mark_misspellings();
             }
+        });
+
+        // The Check Spelling row of libspelling's menu, which is part of the section as
+        // it ships. Owner ruling (2026-10-16, issue #59): that row belongs to this
+        // window and to nothing else. Pressing it stops — or starts — the marking here
+        // for as long as the window lives; the reader's preference is neither written
+        // to nor read back over it, and every other window goes on following the
+        // preference the moment it changes. The same shape as the engine a window has
+        // been switched to (`window.rs`).
+        //
+        // Noticed here rather than acted on where the row is, because the row is
+        // libspelling's own: its action toggles the adapter directly
+        // (`spelling_enabled_action`, 0.4.9, which flips `get_enabled` rather than the
+        // action's state, so it always flips the value in force), and nothing of
+        // axiomd's sits between the two. What reaches this handler is therefore every
+        // change of the adapter's `enabled` — including the ones this editor makes
+        // itself, which are the ones it has just recorded in `marking`.
+        let switched = Rc::downgrade(&editor);
+        editor.spelling.connect_enabled_notify(move |spelling| {
+            let Some(editor) = switched.upgrade() else {
+                return;
+            };
+            if spelling.is_enabled() == editor.marking.get() {
+                return;
+            }
+            editor.switched.set(Some(spelling.is_enabled()));
+            // Said again through the one place that decides it, so that what the row
+            // asks for still meets the document's length and the surface being on
+            // screen rather than overriding them.
+            editor.mark_misspellings();
         });
 
         // The highlight follows the reader's colour scheme, because a text tag carries
@@ -434,14 +498,7 @@ impl Editor {
     /// An empty answer means the reader sees that text in the ordinary ink of the
     /// editor, which is what unhighlighted source looks like.
     pub(crate) fn styling(&self, of: &str) -> String {
-        let text: Vec<char> = self.text().chars().collect();
-        let needle: Vec<char> = of.chars().collect();
-        if needle.is_empty() || needle.len() > text.len() {
-            return String::new();
-        }
-        let Some(at) = (0..=text.len() - needle.len())
-            .find(|start| text[*start..*start + needle.len()] == needle[..])
-        else {
+        let Some(at) = self.first(of) else {
             return String::new();
         };
         let at = self.at(at);
@@ -451,6 +508,86 @@ impl Editor {
         let (from, to) = line_around(&at);
         self.buffer.ensure_highlight(&from, &to);
         drawing(&at)
+    }
+
+    /// Where `of` first occurs in the source, in characters, or `None` when it does not.
+    fn first(&self, of: &str) -> Option<usize> {
+        let text: Vec<char> = self.text().chars().collect();
+        let needle: Vec<char> = of.chars().collect();
+        if needle.is_empty() || needle.len() > text.len() {
+            return None;
+        }
+        (0..=text.len() - needle.len())
+            .find(|start| text[*start..*start + needle.len()] == needle[..])
+    }
+
+    /// Puts the caret in the middle of the first occurrence of `word`, as clicking on
+    /// that word does, and answers whether the source has one.
+    ///
+    /// Only the caret moves: what the spelling adapter makes of the move is its own
+    /// queued business, exactly as after a click.
+    pub(crate) fn place_caret_on(&self, word: &str) -> bool {
+        let Some(at) = self.first(word) else {
+            return false;
+        };
+        self.buffer
+            .place_cursor(&self.at(at + word.chars().count() / 2));
+        true
+    }
+
+    /// The source view's context menu as the reader meets it: whether it is open, and
+    /// every row they can press in it, as `item<TAB>label<TAB>detailed-action`.
+    ///
+    /// Read off the rows the popover draws rather than off its model, because the model
+    /// says what *could* be there: libspelling's Add to Dictionary and Ignore stay in it
+    /// with nothing to add, and GTK hides them (`hidden-when` `action-disabled`); a
+    /// Paste with nothing to paste is in it too, drawn greyed. A row that is hidden,
+    /// greyed, or on a submenu page the reader has not opened is not listed. The
+    /// popover is built the first time the menu opens, so before that the answer is a
+    /// closed menu with nothing in it.
+    pub(crate) fn context_menu(&self) -> String {
+        let popover = self.popover();
+        let mut said = vec![format!(
+            "open {}",
+            popover.as_ref().is_some_and(|popover| popover.is_visible())
+        )];
+        if let Some(popover) = &popover {
+            said.extend(pressable_rows(popover).iter().map(|(_, label, action)| {
+                format!("item\t{}\t{action}", crate::window::as_it_is_drawn(label))
+            }));
+        }
+        said.join("\n")
+    }
+
+    /// Presses the row labelled `label` in the open context menu, as clicking it does,
+    /// and answers whether the menu had one the reader could press.
+    pub(crate) fn press_in_context_menu(&self, label: &str) -> bool {
+        let Some(popover) = self.popover().filter(|popover| popover.is_visible()) else {
+            return false;
+        };
+        let Some((row, _, _)) = pressable_rows(&popover)
+            .into_iter()
+            .find(|(_, drawn, _)| crate::window::as_it_is_drawn(drawn) == label)
+        else {
+            return false;
+        };
+        // The row's own signal, which is what a pointer press emits: it closes the
+        // menu and activates the row's action (`gtk_model_button_clicked`, GTK 4.20.4).
+        row.emit_by_name::<()>("clicked", &[]);
+        true
+    }
+
+    /// The popover GtkTextView parents to itself the first time its menu opens
+    /// (`gtk_text_view_do_popup`, GTK 4.20.4), if it has opened.
+    fn popover(&self) -> Option<gtk::PopoverMenu> {
+        let mut child = self.view.first_child();
+        while let Some(candidate) = child {
+            if let Some(popover) = candidate.downcast_ref::<gtk::PopoverMenu>() {
+                return Some(popover.clone());
+            }
+            child = candidate.next_sibling();
+        }
+        None
     }
 
     /// Loads what the source is drawn with, the first time there is anybody to draw it
@@ -493,17 +630,27 @@ impl Editor {
     /// reading: a document on the page is not spell checked, and the words behind it
     /// are not checked either — checking a ten-megabyte buffer nobody is typing in
     /// would be work spent on marks nobody can see.
+    ///
+    /// A window whose reader has used the Check Spelling row of the editor's own menu
+    /// has said what it does for itself, and the preference no longer reaches it (see
+    /// [`Editor::new`]).
     pub(crate) fn check_spelling(&self, wanted: bool) {
         self.checking.set(wanted);
         self.mark_misspellings();
     }
 
-    /// Applies that, for whichever of the three things that decide it has just
-    /// changed: the preference, the surface being on screen, or the document.
+    /// Applies that, for whichever of the four things that decide it has just changed:
+    /// this window's own choice, the preference behind it, the surface being on screen,
+    /// or the document.
     fn mark_misspellings(&self) {
         let checkable =
             self.view.is_mapped() && self.buffer.char_count() <= LARGEST_CHECKED_DOCUMENT;
-        self.spelling.set_enabled(self.checking.get() && checkable);
+        let marking = self.switched.get().unwrap_or(self.checking.get()) && checkable;
+        // Recorded before it is asked for, because asking emits the adapter's own
+        // notification before this call returns, and the handler reading it must see
+        // what this editor is in the middle of doing rather than what it did before.
+        self.marking.set(marking);
+        self.spelling.set_enabled(marking);
     }
 
     /// The words the reader can see underlined as misspelled, in the order they are
@@ -669,6 +816,130 @@ impl Editor {
             }
         }
     }
+}
+
+/// Makes the corrections in the context menu the ones for the word the menu opens on.
+///
+/// libspelling learns the word under the caret on a low-priority timeout a tenth of a
+/// second after the caret moves (`spelling_text_buffer_adapter_cursor_moved`, 0.4.9),
+/// so a menu opened in the same moment as the move would offer the previous word's
+/// corrections. `update_corrections` is libspelling's own answer — "force an update
+/// immediately rather than after the automatic timeout" — and it is called on both
+/// ways the menu opens, before GtkTextView builds it:
+///
+/// * a right click, from a capture-phase gesture that runs before the view's own. It
+///   first puts the caret where the click is, unless the click is inside a selection,
+///   because GtkTextView opens its menu without moving the caret
+///   (`gtk_text_view_click_gesture_pressed`, GTK 4.20.4). This is what libspelling's
+///   test program (`test/test-spelling.c`) and GNOME Text Editor 49
+///   (`on_click_pressed_cb`, `editor-source-view.c`) do;
+/// * Shift+F10 or the Menu key, from a capture-phase shortcut on those keys that does
+///   not consume them, so the view's own binding to `menu.popup` still opens the menu.
+///   Text Editor does the same from a key controller, because GtkTextView gives no
+///   callback before `menu.popup` builds its menu (its issue #693).
+///
+/// Neither moves anything the reader can see except the caret a right click lands.
+/// While checking is off `update_corrections` does nothing, and the adapter has
+/// already emptied the corrections and disabled Add and Ignore.
+fn corrections_follow_the_popup(
+    view: &sourceview5::View,
+    spelling: &libspelling::TextBufferAdapter,
+) {
+    let clicked = gtk::GestureClick::builder()
+        .button(gtk::gdk::BUTTON_SECONDARY)
+        .propagation_phase(gtk::PropagationPhase::Capture)
+        .build();
+    let adapter = spelling.downgrade();
+    clicked.connect_pressed(move |gesture, presses, x, y| {
+        let Some(adapter) = adapter.upgrade() else {
+            return;
+        };
+        if presses != 1 {
+            return;
+        }
+        let Some(view) = gesture.widget().and_downcast::<gtk::TextView>() else {
+            return;
+        };
+        let buffer = view.buffer();
+        let (at_x, at_y) =
+            view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        if let Some(clicked) = view.iter_at_location(at_x, at_y) {
+            let inside_the_selection = buffer
+                .selection_bounds()
+                .is_some_and(|(from, to)| clicked.in_range(&from, &to) || clicked == to);
+            if !inside_the_selection {
+                buffer.place_cursor(&clicked);
+            }
+        }
+        adapter.update_corrections();
+    });
+    view.add_controller(clicked);
+
+    let keyed = gtk::ShortcutController::new();
+    keyed.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let adapter = spelling.downgrade();
+    keyed.add_shortcut(gtk::Shortcut::new(
+        gtk::ShortcutTrigger::parse_string(CONTEXT_MENU_KEYS),
+        Some(gtk::CallbackAction::new(move |_, _| {
+            if let Some(adapter) = adapter.upgrade() {
+                adapter.update_corrections();
+            }
+            // Not consumed: the key goes on to GtkTextView's own `menu.popup`.
+            glib::Propagation::Proceed
+        })),
+    ));
+    view.add_controller(keyed);
+}
+
+/// The keys GtkTextView opens its context menu on (`gtk_text_view_class_init`, GTK
+/// 4.20.4), spelled the way GTK spells a trigger.
+const CONTEXT_MENU_KEYS: &str = "<Shift>F10|Menu";
+
+/// Every row in `popover` the reader can press — drawn, not greyed, and on the page of
+/// the menu that is showing — with its label as the model spells it and the detailed
+/// action pressing it fires (`spelling.correct::sentence`; empty for a submenu).
+///
+/// The words come from the rows and the action from the popover's model, matched in
+/// order by label: a row is GTK's private `GtkModelButton`, which says what it is
+/// called in `text` but is activated through GTK's menu tracker rather than an action
+/// of its own, so it cannot say what it fires (probed on GTK 4.20.4: its
+/// `GtkActionable` name is unset).
+fn pressable_rows(popover: &gtk::PopoverMenu) -> Vec<(gtk::Widget, String, String)> {
+    fn walk(widget: &gtk::Widget, rows: &mut Vec<gtk::Widget>) {
+        if !widget.is_visible() || !widget.is_child_visible() {
+            return;
+        }
+        if widget.is::<gtk::Actionable>() && widget.find_property("text").is_some() {
+            if widget.is_sensitive() {
+                rows.push(widget.clone());
+            }
+            return;
+        }
+        let mut child = widget.first_child();
+        while let Some(candidate) = child {
+            walk(&candidate, rows);
+            child = candidate.next_sibling();
+        }
+    }
+    let mut drawn = Vec::new();
+    walk(popover.upcast_ref(), &mut drawn);
+    let mut items = popover
+        .menu_model()
+        .map(|model| crate::window::menu_items(&model))
+        .unwrap_or_default();
+    drawn
+        .into_iter()
+        .filter_map(|row| {
+            // Compared as they are drawn: a row's `text` has lost the mnemonic marks its
+            // model item's label still carries — `Select All` against `Select _All`.
+            let label = crate::window::as_it_is_drawn(&row.property::<Option<String>>("text")?);
+            let at = items
+                .iter()
+                .position(|(named, _)| crate::window::as_it_is_drawn(named) == label)?;
+            let (label, action) = items.remove(at);
+            Some((row, label, action))
+        })
+        .collect()
 }
 
 /// What is legible on both of those, which is not the same colour on both.

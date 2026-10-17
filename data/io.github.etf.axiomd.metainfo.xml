@@ -92,6 +92,18 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.9.2" date="2026-10-16" type="development">
+      <description>
+        <p>
+          The editor now offers corrections for a misspelled word: right click
+          it, or press Shift+F10, for up to five spellings, Add to Dictionary,
+          Ignore and the checking language. Switching Check Spelling off in
+          that menu is for the window you switched it in — it stays off while
+          you keep typing, and every other window still follows your
+          preference.
+        </p>
+      </description>
+    </release>
     <release version="0.9.1" date="2026-10-16" type="development">
       <description>
         <p>

@@ -3414,3 +3414,69 @@ fn a_translated_user_install_keeps_both_its_language_and_its_exec() {
         "a per-user install left no catalogue in the reader's own files",
     );
 }
+
+/// Issue #59, against the package: the corrections libspelling offers depend on
+/// dictionaries and enchant providers that are the runtime's and not axiomd's, so a
+/// development build that offers `sentence` for `sentance` says nothing about the
+/// sandbox. And a word added to the dictionary is written inside the sandbox — its own
+/// `~/.var/app/<id>/config/enchant` — and nowhere on the host.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_offers_corrections_and_keeps_added_words_in_its_sandbox() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-spelling");
+    let preferences = Preferences::new("flatpak-spelling");
+    let document = fixture.write("notes.md", "# Notes\n\nA sentance of prose to read.\n");
+
+    let app = axiomd_e2e::launch_installed_flatpak_with(&document, &preferences);
+    app.activate("win.mode");
+    app.wait_until_mode("edit");
+    app.wait_for("the misspelt word to be marked in the sandbox", || {
+        app.misspelled() == vec!["sentance".to_owned()]
+    });
+    app.caret_on("sentance");
+    assert!(
+        app.press_key("<Shift>F10"),
+        "Shift+F10 did not open the packaged source view's context menu",
+    );
+    let menu = app.context_menu();
+    assert!(
+        menu.open,
+        "the packaged context menu did not open: {menu:?}"
+    );
+    assert!(
+        menu.offers()
+            .contains(&("sentence", "spelling.correct::sentence")),
+        "the packaged application offered no \"sentence\" for \"sentance\", so the \
+         sandbox has no dictionary or no provider to ask: {menu:?}",
+    );
+
+    app.press("Add to Dictionary");
+    app.wait_for("the added word to stop being marked in the sandbox", || {
+        app.misspelled().is_empty()
+    });
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+
+    let added = |folder: &Path| {
+        std::fs::read_dir(folder).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                std::fs::read_to_string(entry.path())
+                    .is_ok_and(|words| words.lines().any(|word| word == "sentance"))
+            })
+        })
+    };
+    assert!(
+        added(&preferences.personal_dictionary_in_the_sandbox()),
+        "the word added in the sandbox is not in the sandbox's own personal dictionary \
+         at {:?}",
+        preferences.personal_dictionary_in_the_sandbox(),
+    );
+    assert!(
+        !preferences.personal_dictionary().exists(),
+        "the sandbox wrote a personal dictionary where a host launch keeps one",
+    );
+}
