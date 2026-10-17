@@ -147,6 +147,40 @@ The packaged probes assert both halves on the same document — the picture
 beside it arrives, the one a folder above it does not, and the sandbox is shown
 to be able to read the second before the document is asked to.
 
+## Who decides which palette a document is painted in?
+
+axiomd, and it says so in the reader's own stylesheet — never the page, by
+asking `prefers-color-scheme`.
+
+libadwaita's style manager remains the one source of truth for light and
+dark (`ux_decisions.md`): it is what the reader's `theme` preference is put
+into force on, and what hears the desktop change. What changed (issue #60)
+is who tells the *document*. WebKitGTK 2.54 reads the desktop's colour
+scheme once, when a web process starts, and never again — WebKit bug 327072,
+regressed in 316709@main, fixed in 323359@main and in no release the GNOME
+49 runtime carries — so a packaged window followed the desktop into dark
+around a document that stayed white, and a reader who chose Dark while
+reading got the same. The media query cannot be relied on to answer a
+question that changes while a document is open.
+
+So `axiomd-render`'s `palette.rs` states the palette in force — the colour
+properties, the code palette, `color-scheme`, and the size of the one box a
+drawing plugin can observe — as important declarations in the user
+stylesheet the application installs on the view. It is the mechanism this
+codebase already used for `prefers-contrast` and `prefers-reduced-motion`,
+which WebKitGTK has never answered from the desktop, now extended to the
+third query it stopped answering. Both palettes are stated, in both
+directions, because a page whose answer is stuck is stuck at dark as readily
+as at light.
+
+The document's own stylesheet keeps its light block and its screen-only
+`prefers-color-scheme: dark` block: it is what an engine that answers the
+query honestly would use, and the statement is read out of those very blocks
+so the two can never disagree. **Nothing in a rendered surface — stylesheet,
+plugin script or diagram — may decide a colour by asking the page which
+scheme the desktop is in.** Styling still swaps live and nothing is
+re-parsed or reloaded to change colour (invariant 9).
+
 ## How is scroll sync / outline tracking mapped?
 
 By source spans (line ↔ rendered block anchors), never by proportional

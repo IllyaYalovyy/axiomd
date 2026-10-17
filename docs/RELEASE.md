@@ -389,8 +389,11 @@ something Flathub's reviewer may reasonably want to hear stated:
   unless they say otherwise). Inside a sandbox the desktop's colour scheme
   arrives through `org.freedesktop.portal.Settings`, which needs no permission
   beyond the portal access every flatpak has. The probe puts a real settings
-  portal on the launch's own session, flips it, and asserts both the page colour
-  WebKit resolves `prefers-color-scheme` to and how bright the whole window is.
+  portal on the launch's own session, flips it, and asserts the colour the page is
+  painted, how bright the window's own chrome is, and how bright the whole window is.
+  The chrome is libadwaita's answer to the portal; the page's colour is the palette
+  axiomd states from it (`design_decisions.md`, issue #60), so a failure says which
+  of the two did not follow.
 - **The command line.** `flatpak run` carries the reader's working directory
   into the sandbox, and `--filesystem=host:ro` is what makes the folder they
   are standing in readable — so `flatpak run io.github.etf.axiomd notes.md`

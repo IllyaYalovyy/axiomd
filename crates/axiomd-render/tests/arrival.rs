@@ -33,6 +33,9 @@ fn the_pane_is_painted_the_colour_the_page_is_painted() {
     let high_contrast = reading(Palette::Light, Contrast::High)
         .stylesheet()
         .to_owned();
+    let dark_high_contrast = reading(Palette::Dark, Contrast::High)
+        .stylesheet()
+        .to_owned();
 
     // The light document, which is `axiomd.css`'s own `:root`.
     assert!(stylesheet.contains("--axiomd-bg: #ffffff"));
@@ -48,14 +51,19 @@ fn the_pane_is_painted_the_colour_the_page_is_painted() {
         (0x1d, 0x1d, 0x20),
     );
 
-    // High contrast, which is the desktop's accessibility answer and repaints both
-    // readings from the reader's own stylesheet.
+    // High contrast, which is the desktop's accessibility answer and repaints the
+    // palette in force from the reader's own stylesheet — a different reading of it in
+    // each palette, and each one the stylesheet a reader in that palette is given.
     assert!(high_contrast.contains("--axiomd-bg: #ffffff !important"));
     assert_eq!(
         reading(Palette::Light, Contrast::High).background(),
         (0xff, 0xff, 0xff),
     );
-    assert!(high_contrast.contains("--axiomd-bg: #000000 !important"));
+    assert!(
+        !high_contrast.contains("--axiomd-bg: #000000"),
+        "a light reader is given the dark high-contrast page: {high_contrast}",
+    );
+    assert!(dark_high_contrast.contains("--axiomd-bg: #000000 !important"));
     assert_eq!(
         reading(Palette::Dark, Contrast::High).background(),
         (0x00, 0x00, 0x00),

@@ -415,12 +415,40 @@ impl Published {
 /// How bright a picture is, from 0 for black to 1 for white — each channel weighted
 /// the way an eye weights it.
 fn brightness(picture: &Path) -> f64 {
+    brightness_of(picture, None)
+}
+
+/// How bright the window's own chrome is in a picture of a window — the header bar
+/// across the top of it, and none of the document below.
+///
+/// What the two halves of a packaged window's colour chain are told apart by. The
+/// page's palette is a CSS `prefers-color-scheme` block, which WebKit resolves from
+/// libadwaita's style manager: so a window whose header has gone dark says libadwaita
+/// saw the desktop's change and it is the document's resolution of it that did not
+/// follow, while a header still light says the style manager itself never heard
+/// (issue #60). Reading the whole window cannot say it — the document is most of the
+/// pixels, so a window with a dark header and a white page reads as a light one.
+///
+/// The band is the top 40 rows. A window opens 700 tall (`window-height`) and an
+/// Adwaita header bar is 47 pixels of it, so those rows are header and nothing else.
+fn chrome_brightness(picture: &Path) -> f64 {
+    brightness_of(picture, Some(40))
+}
+
+/// The two above, over the whole picture or over `rows` of it from the top.
+fn brightness_of(picture: &Path, rows: Option<usize>) -> f64 {
     let pixels = gtk::gdk_pixbuf::Pixbuf::from_file(picture)
         .unwrap_or_else(|error| panic!("{} is not a picture: {error}", picture.display()));
     let bytes = pixels.read_pixel_bytes();
     let channels = pixels.n_channels() as usize;
     let rowstride = pixels.rowstride() as usize;
     let (width, height) = (pixels.width() as usize, pixels.height() as usize);
+    let height = rows.map_or(height, |rows| rows.min(height));
+    assert!(
+        width > 0 && height > 0,
+        "{} has no pixels to read a brightness from",
+        picture.display(),
+    );
 
     let mut total = 0.0;
     for row in 0..height {
@@ -2759,9 +2787,18 @@ fn the_packaged_webview_lays_a_document_out_in_the_readers_own_font() {
 /// (`Preferences::with_a_settings_portal`). Nothing in axiomd is told anything: the
 /// `theme` preference is left at `system`, which is what makes this a test of following.
 ///
-/// Both halves are asserted because a reader sees both: the page colour WebKit resolves
-/// `prefers-color-scheme` to, and how bright the whole window is — the same weighting
-/// the metainfo screenshots are told apart by, and no new imaging.
+/// Both halves are asserted because a reader sees both: the colour the page is painted,
+/// and how bright the whole window is — the same weighting the metainfo screenshots are
+/// told apart by, and no new imaging.
+///
+/// The window's own chrome is read apart from the rest of it, and first, because it is
+/// what says which half of the chain broke when one does. The chrome is libadwaita's
+/// answer to the settings portal with nothing else in the way; the document's colour is
+/// the palette axiomd states from that same answer (`palette.rs`, issue #60 — the
+/// packaged WebKit resolves `prefers-color-scheme` once per web process and then stops,
+/// so the page is told rather than asked). A window light all over is the style manager
+/// not hearing the desktop; a dark window around a white document is the palette not
+/// reaching the page. Both are read off the one picture, at the one moment.
 #[test]
 #[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
 fn the_installed_flatpak_follows_the_desktop_from_light_to_dark_and_back() {
@@ -2783,6 +2820,67 @@ fn the_installed_flatpak_follows_the_desktop_from_light_to_dark_and_back() {
         path
     }
 
+    /// What one window of the packaged application was last seen as: the colour the
+    /// document resolved, how bright the window's own chrome was, and how bright the
+    /// window was altogether — all three off one picture, so they are the same moment.
+    struct Seen {
+        page: String,
+        chrome: f64,
+        window: f64,
+    }
+
+    /// Watches the window until the document is `wanted` and the window in the picture
+    /// is `repainted` to match, and answers with what it was last seen as whether it
+    /// got there or not.
+    ///
+    /// Bounded exactly like [`axiomd_e2e::App::wait_until`], and for the same reason —
+    /// a desktop's change reaches a sandboxed application through a portal and a style
+    /// manager, which is not instant. What this adds is the evidence on the way out: a
+    /// document that never followed is a different defect depending on what the chrome
+    /// beside it did, and an assertion cannot say which unless both were read at the
+    /// same moment (issue #60).
+    ///
+    /// Which is also why the picture has to be waited for and not only the document. A
+    /// picture is one frame, and the frame at the instant the document's own colour
+    /// flips can be a window half way through repainting: a gate run caught one at
+    /// 0.39, between the 0.97 of a light window and the 0.14 of a dark one, with the
+    /// chrome already light and the document already white. The window these assertions
+    /// are about is the window the reader ends up looking at, so both signals are
+    /// waited for, inside the one deadline. A window that never catches up still fails,
+    /// with the brightness it was stuck at.
+    fn seen(
+        app: &axiomd_e2e::App,
+        pictures: &Scratch,
+        moment: &str,
+        page_colour: &str,
+        wanted: &str,
+        repainted: impl Fn(&Seen) -> bool,
+    ) -> Seen {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let picture = published(app, pictures, moment);
+            let seen = Seen {
+                page: app.dom(page_colour),
+                chrome: chrome_brightness(&picture),
+                window: brightness(&picture),
+            };
+            if (seen.page == wanted && repainted(&seen)) || std::time::Instant::now() >= deadline {
+                return seen;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+
+    /// A window that has finished going dark, and one that has finished coming back:
+    /// the chrome and the window itself on the side of the 0.5 the assertions below
+    /// hold them to.
+    fn gone_dark(seen: &Seen) -> bool {
+        seen.chrome < 0.5 && seen.window < 0.5
+    }
+    fn come_back_to_light(seen: &Seen) -> bool {
+        seen.chrome > 0.5 && seen.window > 0.5
+    }
+
     let page_colour = "getComputedStyle(document.body).backgroundColor";
     let app = axiomd_e2e::launch_installed_flatpak_with(&document, &desktop);
     let pictures = Scratch::new("flatpak-style");
@@ -2799,22 +2897,139 @@ fn the_installed_flatpak_follows_the_desktop_from_light_to_dark_and_back() {
     );
 
     desktop.set_dark(true);
-    app.wait_until(&format!("{page_colour} === 'rgb(29, 29, 32)'"));
-    let in_the_dark = brightness(&published(&app, &pictures, "dark"));
+    let dark = seen(
+        &app,
+        &pictures,
+        "dark",
+        page_colour,
+        "rgb(29, 29, 32)",
+        gone_dark,
+    );
+    // The chrome first, because it is what says which half of the chain broke. It is
+    // libadwaita's own answer to the settings portal, arrived at without WebKit in the
+    // way: a header still light means the style manager never saw the desktop change
+    // inside the sandbox, and nothing about the document below it can be read until
+    // that is ruled out.
     assert!(
-        in_the_dark < 0.5,
+        dark.chrome < 0.5,
+        "the reader's desktop went dark and the packaged window's own chrome stayed \
+         light ({chrome:.2}), with the document at {page}: libadwaita's style manager \
+         did not see the settings portal's change inside the sandbox",
+        chrome = dark.chrome,
+        page = dark.page,
+    );
+    assert_eq!(
+        dark.page,
+        "rgb(29, 29, 32)",
+        "the packaged window's own chrome went dark ({chrome:.2}) and the document in \
+         it stayed {page}: libadwaita followed the desktop and the palette axiomd \
+         states from it did not reach the page (issue #60)",
+        chrome = dark.chrome,
+        page = dark.page,
+    );
+    assert!(
+        dark.window < 0.5,
         "the reader's desktop went dark and the packaged window stayed light: \
-         {in_the_dark}",
+         {window}",
+        window = dark.window,
     );
 
     // And back, because a window that can only go one way has not followed anything.
     desktop.set_dark(false);
-    app.wait_until(&format!("{page_colour} === 'rgb(255, 255, 255)'"));
-    let light_again = brightness(&published(&app, &pictures, "light-again"));
+    let light_again = seen(
+        &app,
+        &pictures,
+        "light-again",
+        page_colour,
+        "rgb(255, 255, 255)",
+        come_back_to_light,
+    );
     assert!(
-        light_again > 0.5,
+        light_again.chrome > 0.5,
+        "the reader's desktop came back to light and the packaged window's own chrome \
+         stayed dark ({chrome:.2}), with the document at {page}: libadwaita's style \
+         manager did not see the settings portal's change inside the sandbox",
+        chrome = light_again.chrome,
+        page = light_again.page,
+    );
+    assert_eq!(
+        light_again.page,
+        "rgb(255, 255, 255)",
+        "the packaged window's own chrome came back to light ({chrome:.2}) and the \
+         document in it stayed {page}: libadwaita followed the desktop and the palette \
+         axiomd states from it did not reach the page (issue #60)",
+        chrome = light_again.chrome,
+        page = light_again.page,
+    );
+    assert!(
+        light_again.window > 0.5,
         "the reader's desktop came back to light and the packaged window stayed dark: \
-         {light_again}",
+         {window}",
+        window = light_again.window,
+    );
+
+    assert!(
+        app.close().is_empty(),
+        "the sandboxed launch left something running",
+    );
+}
+
+/// Style (2 of 2): a diagram in the installed flatpak is drawn in the palette the
+/// desktop asks for, and drawn again when the desktop changes it.
+///
+/// The other half of what issue #60 broke, and the half nothing was watching. A drawn
+/// diagram is a picture the library has to be *told* a palette for, and the plugin read
+/// that palette from the page's `prefers-color-scheme` — the one question the packaged
+/// WebKit answers when a web process starts and then stops answering. So a reader on a
+/// dark desktop got a dark document with a diagram still drawn on white, and no probe
+/// said so. It is asserted here rather than on the host because the host's WebKit
+/// answers the query correctly: only the package can tell the stated palette apart from
+/// the asked one.
+///
+/// The fill of a flowchart node is the one number that says which palette a diagram was
+/// drawn in — the same number `mermaid.rs` holds the host to, and the same two colours.
+#[test]
+#[ignore = "drives the installed flatpak; run by scripts/quality.d/40-flatpak.sh"]
+fn the_installed_flatpak_draws_a_diagram_in_the_palette_the_desktop_asks_for() {
+    installed_flatpak();
+
+    let fixture = Fixture::new("flatpak-diagram");
+    let desktop = Preferences::new("flatpak-diagram").with_a_settings_portal();
+    desktop.set_dark(false);
+    let document = fixture.write(
+        "notes.md",
+        "# Diagram\n\n```mermaid\nflowchart TD\n  A[Start] --> B[Stop]\n```\n",
+    );
+
+    /// How many diagrams in the document the reader is looking at as pictures.
+    const DRAWN: &str = "Array.from(document.querySelectorAll('div.plugin-mermaid')) \
+         .filter(block => block.shadowRoot !== null && \
+         block.shadowRoot.querySelector('svg') !== null).length";
+    /// What a flowchart node is filled with, or `undrawn` while it is still source.
+    const NODE_FILL: &str = "(() => { const root = document.querySelector('div.plugin-mermaid').shadowRoot; \
+         const node = root === null ? null : \
+         root.querySelector('.node rect, .node path, .node polygon'); \
+         return node === null ? 'undrawn' : getComputedStyle(node).fill; })()";
+    const LIGHT_NODE: &str = "rgb(236, 236, 255)";
+    const DARK_NODE: &str = "rgb(31, 32, 32)";
+
+    let app = axiomd_e2e::launch_installed_flatpak_with(&document, &desktop);
+
+    app.wait_until(&format!("{DRAWN} === 1"));
+    assert_eq!(
+        app.dom(NODE_FILL),
+        LIGHT_NODE,
+        "the desktop is a light one and the packaged application drew the diagram in \
+         some other palette",
+    );
+
+    desktop.set_dark(true);
+    app.wait_until(&format!("({NODE_FILL}) !== '{LIGHT_NODE}'"));
+    assert_eq!(
+        app.dom(NODE_FILL),
+        DARK_NODE,
+        "the reader's desktop went dark and the diagram in the packaged window was not \
+         drawn again in the dark palette (issue #60)",
     );
 
     assert!(
